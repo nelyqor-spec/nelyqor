@@ -2,3 +2,35 @@
 [build]
   publish = "."
   command = ""
+
+# Fichiers de développement : jamais servis publiquement (tests, schéma SQL, docs, sources marketing).
+[[redirects]]
+  from = "/tests/*"
+  to = "/index.html"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/supabase/*"
+  to = "/index.html"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/marketing/*"
+  to = "/index.html"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/README.md"
+  to = "/index.html"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/SECURITY.md"
+  to = "/index.html"
+  status = 404
+  force = true
+[[redirects]]
+  from = "/package.json"
+  to = "/index.html"
+  status = 404
+  force = true

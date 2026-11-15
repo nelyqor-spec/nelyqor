@@ -1,10 +1,10 @@
 // Page 1 — Objectif (tableau de bord). Aucun calcul ici : tout vient du snapshot.
 import { h } from '../dom.js';
-import { Logo, Card, ProgressBar, Row, Stat, Badge, Button, Notice, OperationRow, EmptyState, fmt } from '../components.js';
-import { formatDayMonth, formatNumeric, WEEKDAYS_SHORT } from '../../core/dates.js';
+import { TopBar, Card, ProgressBar, Row, Stat, Badge, Button, Notice, OperationRow, EmptyState, fmt } from '../components.js';
+import { formatDayMonth, formatNumeric, formatShort, WEEKDAYS_SHORT } from '../../core/dates.js';
 import { PROJECTION_STATUS_LABEL } from '../../core/calc.js';
 import { getDailyQuote } from '../../content/quotes.js';
-import { setRestDay } from '../../core/store.js';
+import { setRestDay, isPremium } from '../../core/store.js';
 import { PremiumObjectifSection } from '../premium.js';
 
 export function ObjectifPage(ctx) {
@@ -14,7 +14,7 @@ export function ObjectifPage(ctx) {
 
   // --- Header ----------------------------------------------------------------
   const header = h('header', { class: 'page-head', style: { gap: '10px' } },
-    h('div', { class: 'top-bar' }, Logo({ size: 32 })),
+    TopBar({ logoSize: 32 }),
     h('p', { class: 'today-line' }, formatDayMonth(snap.today)),
     prefs.dailyQuoteEnabled && h('p', { class: 'quote' }, getDailyQuote(snap.today, snap.todayIsActivity)));
 
@@ -117,7 +117,25 @@ export function ObjectifPage(ctx) {
   }
   const weekCard = Card(weekParts, { label: 'Objectif de la semaine' });
 
-  // --- En bref (compact, sans doublon avec les cartes du dessus) -------------
+  // --- Cotisations à mettre de côté (échéances mensuelles / trimestrielles) --
+  let contribCard = null;
+  const c = snap.contributions;
+  if (c && c.toSetAside > 0) {
+    const period = c.frequency === 'monthly' ? 'mois' : 'trimestre';
+    contribCard = Card([
+      h('div', { class: 'card-head' },
+        h('div', null, h('p', { class: 'eyebrow' }, 'Cotisations'), h('h2', { class: 'card-title', style: { marginTop: '4px' } }, 'À garder de côté')),
+        Badge(c.frequency === 'monthly' ? 'Mensuelles' : 'Trimestrielles')),
+      h('p', { class: 'amount-lg' }, fmt.eur2(c.toSetAside)),
+      h('div', { class: 'rows' },
+        Row(`Prochaine échéance${c.next.closed ? ` (${period} terminé)` : ''}`, formatShort(c.next.due)),
+        Row(c.next.closed ? `Montant du ${period} précédent` : `Cumul du ${period} en cours`, fmt.eur2(c.next.amount)),
+        c.next.closed && c.current.amount > 0 && Row(`Déjà cumulé ce ${period}`, fmt.eur2(c.current.amount))),
+      h('p', { class: 'field-hint' }, 'Cet argent n’est pas compté dans ton objectif : il est déjà déduit de tes revenus nets et de ta projection.'),
+    ], { label: 'Cotisations à garder de côté' });
+  }
+
+  // --- En bref (Nelyqor+) -----------------------------------------------------
   const plannedNames = s.plannedActivityDays.map((d) => WEEKDAYS_SHORT[d]).join(', ');
   let projection;
   if (snap.targetReached) projection = h('p', { class: 'muted' }, 'La date cible est atteinte : la projection reprendra avec une nouvelle date.');
@@ -126,16 +144,17 @@ export function ObjectifPage(ctx) {
   else {
     projection = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
       h('p', null, 'Au rythme actuel, tu atteindrais environ ', h('strong', { class: 'teal num' }, fmt.eur(snap.simpleProjection)), ' à ta date cible.'),
+      snap.plannedUntilTarget > 0 && h('span', { class: 'field-hint' }, `Dépenses prévues déduites : ${fmt.eur(snap.plannedUntilTarget)}.`),
       h('span', { class: 'field-hint' }, PROJECTION_STATUS_LABEL[snap.pace.status]));
   }
-  const briefCard = Card([
-    h('h2', { class: 'card-title' }, 'En bref'),
+  const briefCard = isPremium() && Card([
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, 'En bref'), Badge('Nelyqor+', 'blue')),
     h('div', { class: 'rows' },
       Row(`Jours d’activité restants avant le ${formatNumeric(s.targetDate)}`, String(snap.remainingActivityDays)),
       Row('Jours d’activité prévus', s.plannedActivityDays.length ? `${s.plannedActivityDays.length} · ${plannedNames}` : 'Aucun')),
     h('div', { style: { borderTop: '1px solid var(--border)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '6px' } },
       h('p', { class: 'eyebrow' }, 'Projection'), projection),
-  ]);
+  ], { cls: 'premium', label: 'En bref' });
 
   // --- Mouvements récents ----------------------------------------------------
   const recent = [
@@ -150,5 +169,5 @@ export function ObjectifPage(ctx) {
       : EmptyState('Aucun mouvement pour le moment.', 'Saisir mes revenus', () => actions.addOperation('revenue'), 'calendar'),
   ]);
 
-  return [header, ...notices, globalCard, todayCard, weekCard, briefCard, PremiumObjectifSection(state, snap), recentCard];
+  return [header, ...notices, globalCard, todayCard, weekCard, contribCard, briefCard, PremiumObjectifSection(state, snap), recentCard];
 }

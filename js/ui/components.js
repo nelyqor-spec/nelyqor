@@ -2,6 +2,7 @@
 import { h, icon } from './dom.js';
 import { formatCents, formatPercent } from '../core/money.js';
 import { formatShort } from '../core/dates.js';
+import { getState } from '../core/store.js';
 
 // ---------------------------------------------------------------------------
 // Logo — composant UNIQUE. Pour changer de logo : remplacer assets/logo-symbol.png.
@@ -18,9 +19,30 @@ export function Logo({ variant = 'full', size = 34 } = {}) {
   );
 }
 
+/** Photo de profil (ou initiale, ou silhouette). */
+export function Avatar({ size = 40, cls = '' } = {}) {
+  const st = getState();
+  const photo = st.profile && st.profile.avatar;
+  const name = ((st.settings && st.settings.displayName) || '').trim();
+  const el = h('span', { class: `avatar ${cls}`, style: { width: size + 'px', height: size + 'px', fontSize: Math.round(size * 0.42) + 'px' }, 'aria-hidden': 'true' });
+  if (photo) el.append(h('img', { src: photo, alt: '', width: size, height: size }));
+  else if (name) el.append(name.charAt(0).toUpperCase());
+  else el.append(icon('user', Math.round(size * 0.5)));
+  return el;
+}
+
+/** Barre du haut : logo à gauche, photo de profil à droite (ouvre le Profil). */
+export function TopBar({ logoSize = 30 } = {}) {
+  return h('div', { class: 'top-bar' }, Logo({ size: logoSize }),
+    h('button', {
+      type: 'button', class: 'avatar-btn', 'aria-label': 'Ouvrir mon profil',
+      onClick: () => document.dispatchEvent(new CustomEvent('nelyqor:open-profile')),
+    }, Avatar({ size: 38 })));
+}
+
 export function PageHeader({ title, subtitle }) {
   return h('header', { class: 'page-head' },
-    h('div', { class: 'top-bar', style: { marginBottom: '10px' } }, Logo({ size: 30 })),
+    h('div', { style: { marginBottom: '10px' } }, TopBar()),
     h('h1', { class: 'page-title' }, title),
     subtitle && h('p', { class: 'page-sub' }, subtitle),
   );
@@ -281,22 +303,23 @@ export function LineChart(points, { formatLabel, ariaLabel }) {
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', ariaLabel);
   const gid = 'g' + Math.random().toString(36).slice(2, 8);
+  const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const labels = idxs.map((i) => {
     const anchor = i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle';
-    return `<text class="chart-axis" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="${anchor}">${formatLabel(points[i])}</text>`;
+    return `<text class="chart-axis" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="${anchor}">${esc(formatLabel(points[i]))}</text>`;
   }).join('');
   const maxLabelX = Math.min(W - padR, Math.max(padL, x(maxIdx)));
   const maxAnchor = maxIdx === 0 ? 'start' : maxIdx === n - 1 ? 'end' : 'middle';
   svg.innerHTML = `
     <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#2ED3B7" stop-opacity="0.32"/><stop offset="100%" stop-color="#2ED3B7" stop-opacity="0"/>
+      <stop offset="0%" style="stop-color:var(--teal)" stop-opacity="0.32"/><stop offset="100%" style="stop-color:var(--teal)" stop-opacity="0"/>
     </linearGradient></defs>
     <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="rgba(255,255,255,0.08)"/>
     <line x1="${padL}" y1="${padT}" x2="${W - padR}" y2="${padT}" stroke="rgba(255,255,255,0.05)" stroke-dasharray="3 4"/>
     <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="#2ED3B7" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
-    <circle cx="${x(maxIdx).toFixed(1)}" cy="${y(max).toFixed(1)}" r="4" fill="#2ED3B7" stroke="#0F1720" stroke-width="2"/>
-    <text class="chart-axis" x="${maxLabelX.toFixed(1)}" y="${(y(max) - 9).toFixed(1)}" text-anchor="${maxAnchor}" style="fill:#F5F7FA;font-weight:600">${formatCents(max)}</text>
+    <path d="${line}" fill="none" style="stroke:var(--teal)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(maxIdx).toFixed(1)}" cy="${y(max).toFixed(1)}" r="4" style="fill:var(--teal)" stroke="#0F1720" stroke-width="2"/>
+    <text class="chart-axis" x="${maxLabelX.toFixed(1)}" y="${(y(max) - 9).toFixed(1)}" text-anchor="${maxAnchor}" style="fill:#F5F7FA;font-weight:600">${esc(formatCents(max))}</text>
     ${labels}`;
   return h('div', { class: 'chart-wrap' }, svg);
 }

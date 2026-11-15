@@ -5,7 +5,7 @@
 
 import { dayNumber } from '../core/dates.js';
 
-const T = '46, 211, 183'; // teal #2ED3B7
+const T = 'var(--accent-rgb)'; // couleur principale choisie par l'utilisateur
 const B = '120, 166, 255'; // bleu #78A6FF
 
 export const BACKGROUNDS = [

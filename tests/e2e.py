@@ -27,7 +27,8 @@ def fill_amount(page, value):
     page.fill("#op-amount", value)
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path="/usr/bin/google-chrome", args=["--no-sandbox"])
+    chrome = os.environ.get("CHROME_PATH")  # facultatif : sinon le Chromium de Playwright
+    browser = p.chromium.launch(**({"executable_path": chrome} if chrome else {}), args=["--no-sandbox"])
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, locale="fr-FR", timezone_id="Europe/Paris", accept_downloads=True)
     page = ctx.new_page()
     it = lambda sel: norm(page.inner_text(sel))
@@ -62,6 +63,8 @@ with sync_playwright() as p:
     page.fill("#ob-rate", "100"); page.click("text=Continuer")
     check("T2 taux ≥ 100 refusé", page.is_visible("text=Le pourcentage doit être compris entre 0 et moins de 100 %."))
     page.fill("#ob-rate", "21"); page.click("text=Continuer")
+    check("T2 fréquence des cotisations demandée", page.is_visible("text=Choisis une fréquence."))
+    page.click(".segmented button:has-text('Tous les 3 mois')"); page.click("text=Continuer")
     page.wait_for_selector("text=Jours d’activité prévus")
     for d in ["Lundi", "Mardi", "Jeudi", "Vendredi"]:
         page.click(f".day-chip[aria-label='{d}']")
@@ -75,7 +78,7 @@ with sync_playwright() as p:
     page.wait_for_selector("text=Objectif global")
     s = state(page)
     st = s["settings"]
-    check("T2 données enregistrées", st["goalAmount"] == 1800000 and st["initialSavings"] == 300000 and st["contributionRate"] == 2100 and st["plannedActivityDays"] == [0, 1, 3, 4] and st["targetDate"] == target, json.dumps(st))
+    check("T2 données enregistrées", st["goalAmount"] == 1800000 and st["initialSavings"] == 300000 and st["contributionRate"] == 2100 and st["contributionFrequency"] == "quarterly" and st["plannedActivityDays"] == [0, 1, 3, 4] and st["targetDate"] == target, json.dumps(st))
     check("T2 plan gratuit", s["subscription"]["status"] == "free")
     check("T2 aucun revenu / virement / retrait", not s["revenues"] and not s["transfers"] and not s["withdrawals"])
     page.reload(); page.wait_for_selector("text=Objectif global")
@@ -184,7 +187,8 @@ with sync_playwright() as p:
     check("Phrase masquée si désactivée", page.query_selector(".quote") is None)
     bg_static = page.evaluate("getComputedStyle(document.querySelector('.bg-layer')).backgroundImage")
     page.reload(); page.wait_for_selector("text=Objectif global")
-    check("Préférences persistantes", state(page)["preferences"] == {"dynamicBackgroundEnabled": False, "dailyQuoteEnabled": False})
+    prefs = state(page)["preferences"]
+    check("Préférences persistantes", prefs["dynamicBackgroundEnabled"] is False and prefs["dailyQuoteEnabled"] is False and prefs["accentColor"] == "#2ED3B7", json.dumps(prefs))
     page.click(".nav-item:has-text('Profil')"); page.click(".menu-item:has-text('Préférences')")
     page.click(".switch[aria-label='Phrase quotidienne']"); page.click(".switch[aria-label='Fond dynamique']")
     page.click(".nav-item:has-text('Objectif')")
@@ -196,13 +200,15 @@ with sync_playwright() as p:
 
     # ---------------- Nelyqor+ ----------------
     check("Gratuit : teaser Nelyqor+", page.is_visible("text=Aller plus loin avec Nelyqor+"))
+    check("Gratuit : « En bref » réservé à Nelyqor+", page.query_selector(".card[aria-label='En bref']") is None)
     page.click("button:has-text('Découvrir Nelyqor+') >> nth=0")
     page.wait_for_selector(".sheet .plan.plus")
     page.click(".sheet button:has-text('Essayer Nelyqor+ gratuitement')")
     page.wait_for_selector("text=Analyse Nelyqor+")
     sub = state(page)["subscription"]
     check("Essai activé (trial, fin +7 j)", sub["status"] == "trial" and sub["trialEndsAt"])
-    ana = it(".card.premium")
+    check("Nelyqor+ : « En bref » affiché", page.query_selector(".card[aria-label='En bref']") is not None)
+    ana = it(".card.premium:has-text('Analyse Nelyqor+')")
     check("Paliers 6/12/18 mois + date cible", all(x in ana for x in ["Dans 6 mois", "Dans 12 mois", "Dans 18 mois", "Date cible"]), ana)
     page.click("button:has-text('Simulateur « Et si… »')"); page.fill("#sim-amount", "150")
     check("Simulateur calcule", "Ajouté par semaine (net)" in it(".sheet"))

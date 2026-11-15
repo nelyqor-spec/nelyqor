@@ -102,16 +102,18 @@ export function netRevenueBetween(state, from, to) {
 // Puis, à mesure que l'historique grandit : de plus en plus de poids au rythme OBSERVÉ.
 //   projectionConfidence = min(1, joursObservés / 20)
 //   projectionDailyPace  = nécessaire × (1 − confiance) + observé × confiance
-// Le rythme observé n'utilise QUE les revenus nets, à la date où ils ont été réalisés
-// (jamais createdAt), jamais les fonds initiaux, virements ou retraits.
+// Le rythme observé n'utilise QUE les revenus nets RÉGULIERS, à la date où ils ont été réalisés
+// (jamais createdAt). Les fonds initiaux, virements, retraits et revenus marqués « exceptionnels »
+// sont comptés UNE SEULE FOIS dans le solde : ils ne sont jamais extrapolés sur l'avenir.
 
-export function computeProjectionPace(state, today, { remaining, futureStart }) {
+export function computeProjectionPace(state, today, { remaining, futureStart, plannedUntilTarget = 0 }) {
   const s = state.settings;
   const rd = restDaysOf(state);
   const remainingPlannedDays = countActivityDays(s, rd, futureStart, s.targetDate);
-  const requiredNetPerActivityDay = remainingPlannedDays > 0 ? remaining / remainingPlannedDays : 0;
+  // Rythme nécessaire : ce qu'il reste à gagner + les dépenses déjà prévues d'ici la date cible.
+  const requiredNetPerActivityDay = remainingPlannedDays > 0 ? (remaining + plannedUntilTarget) / remainingPlannedDays : 0;
 
-  const pastRevenues = state.revenues.filter((r) => r.date <= today);
+  const pastRevenues = state.revenues.filter((r) => r.date <= today && !r.exceptional);
   if (pastRevenues.length === 0) {
     return {
       requiredNetPerActivityDay, observedNetPerActivityDay: null,
@@ -134,7 +136,7 @@ export function computeProjectionPace(state, today, { remaining, futureStart }) 
   const observedActivityDays = observed.length;
   const windowDays = observed.slice(0, PROJECTION_RECENT_WINDOW_DAYS);
   const windowStart = windowDays[windowDays.length - 1];
-  const windowNet = netRevenueBetween(state, windowStart, today);
+  const windowNet = sum(pastRevenues.filter((r) => r.date >= windowStart), (r) => r.netAmount);
   const observedNetPerActivityDay = windowDays.length ? windowNet / windowDays.length : 0;
 
   const projectionConfidence = Math.min(1, observedActivityDays / PROJECTION_FULL_CONFIDENCE_DAYS);
@@ -157,6 +159,91 @@ export const PROJECTION_STATUS_LABEL = {
   provisional: 'Projection provisoire',
   personal: 'Projection basée sur ton rythme',
 };
+
+// ---------------------------------------------------------------------------
+// Dépenses prévues (récurrentes ou ponctuelles)
+// Occurrence n d'une dépense = startDate + n × everyMonths. `done` = échéances déjà traitées.
+// ---------------------------------------------------------------------------
+const MAX_OCCURRENCES = 1000;
+
+/** Échéances encore à venir (ou en retard, non traitées) jusqu'à `to` inclus. */
+export function pendingOccurrences(plan, to) {
+  const out = [];
+  for (let n = plan.done; n < plan.done + MAX_OCCURRENCES; n++) {
+    if (plan.everyMonths === 0 && n > 0) break; // dépense ponctuelle
+    const date = addMonths(plan.startDate, n * plan.everyMonths);
+    if (date > to) break;
+    out.push({ n, date, amount: plan.amount });
+  }
+  return out;
+}
+
+/** Total des dépenses prévues non encore enregistrées, jusqu'à `to` inclus (retards compris). */
+export function plannedTotalUntil(state, to) {
+  return sum(state.plannedExpenses || [], (p) => sum(pendingOccurrences(p, to), (o) => o.amount));
+}
+
+/**
+ * Dépenses prévues à couvrir à partir de `from` (début de semaine) jusqu'à `to` :
+ * toutes les échéances datées dans [from, to] (traitées ou non, pour que l'objectif de la
+ * semaine reste stable quand on valide une dépense) + les échéances en retard non traitées.
+ */
+function plannedFromWeekStart(state, from, to) {
+  let total = 0;
+  for (const p of state.plannedExpenses || []) {
+    for (let n = 0; n < MAX_OCCURRENCES; n++) {
+      if (p.everyMonths === 0 && n > 0) break;
+      const date = addMonths(p.startDate, n * p.everyMonths);
+      if (date > to) break;
+      if (date >= from || n >= p.done) total += p.amount;
+    }
+  }
+  return total;
+}
+
+/** Prochaines échéances, toutes dépenses confondues, triées par date. */
+export function upcomingPlanned(state, today, horizonDays = 365) {
+  const to = addDays(today, horizonDays);
+  const out = [];
+  for (const p of state.plannedExpenses || []) {
+    for (const o of pendingOccurrences(p, to)) out.push({ plan: p, ...o, overdue: o.date < today, due: o.date <= today });
+  }
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+// ---------------------------------------------------------------------------
+// Cotisations : échéances mensuelles ou trimestrielles
+// Échéance = dernier jour du mois qui suit la période (ex. trimestre janv.–mars → 30 avril).
+// ---------------------------------------------------------------------------
+function contributionPeriod(k, frequency) {
+  const [y, m] = k.split('-').map(Number);
+  const startMonth = frequency === 'monthly' ? m : Math.floor((m - 1) / 3) * 3 + 1;
+  const from = `${y}-${String(startMonth).padStart(2, '0')}-01`;
+  const to = endOfMonth(addMonths(from, frequency === 'monthly' ? 0 : 2));
+  return { from, to, due: endOfMonth(addMonths(from, frequency === 'monthly' ? 1 : 3)) };
+}
+
+export function contributionSchedule(state, today) {
+  const s = state.settings;
+  if (!s.hasContributions || !s.contributionRate) return null;
+  const frequency = s.contributionFrequency === 'monthly' ? 'monthly' : 'quarterly';
+  const contribBetween = (from, to) => sum(state.revenues.filter((r) => r.date >= from && r.date <= to), (r) => r.contributionAmount);
+  const current = contributionPeriod(today, frequency);
+  const previous = contributionPeriod(addDays(current.from, -1), frequency);
+  const currentAmount = contribBetween(current.from, minKey(current.to, today));
+  const previousAmount = contribBetween(previous.from, previous.to);
+  // La période précédente reste à payer jusqu'à son échéance.
+  const previousPending = today <= previous.due && previousAmount > 0;
+  const next = previousPending
+    ? { ...previous, amount: previousAmount, closed: true }
+    : { ...current, amount: currentAmount, closed: false };
+  return {
+    frequency,
+    next,
+    current: { ...current, amount: currentAmount },
+    toSetAside: (previousPending ? previousAmount : 0) + currentAmount,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Instantané complet (utilisé par toutes les pages)
@@ -190,7 +277,8 @@ export function computeSnapshot(state, today) {
   const planFrom = maxKey(weekStart, setup);
   const weekPlanEnd = minKey(weekEnd, target);
 
-  const remainingAtWeekStart = Math.max(0, goal - savingsBefore(state, planFrom));
+  const plannedForPlan = plannedFromWeekStart(state, planFrom, target);
+  const remainingAtWeekStart = Math.max(0, goal - savingsBefore(state, planFrom) + plannedForPlan);
   const activityDaysFromWeekStart = countActivityDays(s, rd, planFrom, target);
   const dailyNetTarget = activityDaysFromWeekStart > 0 ? Math.ceil(remainingAtWeekStart / activityDaysFromWeekStart) : 0;
   const dailyGrossTarget = grossNeededForNet(dailyNetTarget, rate);
@@ -228,12 +316,16 @@ export function computeSnapshot(state, today) {
   const transfersTotal = sum(state.transfers, (t) => t.amount);
   const withdrawalsTotal = sum(state.withdrawals, (w) => w.amount);
 
-  // --- Projection simple ----------------------------------------------------
+  // --- Projection ------------------------------------------------------------
+  // solde actuel (virements et revenus exceptionnels comptés une seule fois)
+  // + rythme × jours d'activité à venir − dépenses prévues d'ici là.
   const futureStart = todayIsActivity && todayRealized === 0 ? today : tomorrow;
-  const pace = computeProjectionPace(state, today, { remaining, futureStart });
+  const plannedUntilTarget = plannedTotalUntil(state, target);
+  const pace = computeProjectionPace(state, today, { remaining, futureStart, plannedUntilTarget });
   const projectAt = (dateKey) =>
-    Math.round(balance + pace.projectionDailyPace * countActivityDays(s, rd, futureStart, dateKey));
+    Math.round(balance + pace.projectionDailyPace * countActivityDays(s, rd, futureStart, dateKey) - plannedTotalUntil(state, dateKey));
   const simpleProjection = projectAt(target);
+  const contributions = contributionSchedule(state, today);
 
   return {
     today, rate, goal, target, setup, hasActivityPlan,
@@ -245,7 +337,7 @@ export function computeSnapshot(state, today) {
     todayPlanned, todayMarkedRest, todayIsActivity, todayRealized,
     weekRevenueGross: weeklyRealized, weekRevenueNet, monthRevenueGross, monthRevenueNet,
     transfersTotal, withdrawalsTotal,
-    futureStart, pace, simpleProjection, projectAt,
+    futureStart, pace, simpleProjection, projectAt, plannedUntilTarget, contributions,
   };
 }
 
@@ -270,7 +362,7 @@ export function computePremium(state, today, snap = computeSnapshot(state, today
   let estimatedReachDate = null;
   if (snap.goalReached) estimatedReachDate = today;
   else if (snap.pace.projectionDailyPace > 0) {
-    estimatedReachDate = nthActivityDayFrom(s, rd, snap.futureStart, Math.ceil(snap.remaining / snap.pace.projectionDailyPace));
+    estimatedReachDate = nthActivityDayFrom(s, rd, snap.futureStart, Math.ceil((snap.remaining + snap.plannedUntilTarget) / snap.pace.projectionDailyPace));
   }
 
   // Paliers 6 / 12 / 18 mois + date cible.
@@ -327,8 +419,9 @@ export function simulate(state, today, { dailyGross, daysPerWeek }) {
   const balance = currentSavings(state);
   const weeklyNet = netFor(dailyGross, rate) * daysPerWeek;
   const calendarDaysLeft = Math.max(0, diffDays(today, s.targetDate));
-  const projectedAtTarget = Math.round(balance + (weeklyNet * calendarDaysLeft) / 7);
-  const remaining = Math.max(0, s.goalAmount - balance);
+  const planned = plannedTotalUntil(state, s.targetDate);
+  const projectedAtTarget = Math.round(balance + (weeklyNet * calendarDaysLeft) / 7 - planned);
+  const remaining = Math.max(0, s.goalAmount - balance + planned);
   let reachDate = null;
   if (remaining === 0) reachDate = today;
   else if (weeklyNet > 0) {

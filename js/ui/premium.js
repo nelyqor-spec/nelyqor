@@ -14,11 +14,16 @@ export const FREE_FEATURES = [
   'Calcul des cotisations',
   'Objectif du jour et de la semaine',
   'Progression globale',
-  'Historique récent et projection simple',
+  'Historique récent',
+  'Échéances de cotisations à garder de côté',
+  'Photo de profil, couleur de l’application',
+  'Compte et synchronisation entre appareils',
   'Statistiques simples',
 ];
 
 export const PLUS_FEATURES = [
+  'En bref : jours restants et projection à la date cible',
+  'Dossiers de dépenses (essence, matériel…) et dépenses récurrentes planifiées',
   'Historique complet',
   'Statistiques avancées',
   'Comparaison semaine / semaine et mois / mois',
@@ -122,7 +127,7 @@ export function PremiumTeaser(text) {
 
 export function PremiumObjectifSection(state, snap) {
   if (!store.isPremium()) {
-    return PremiumTeaser('Analyse avance / retard, projections à 6, 12 et 18 mois et jusqu’à ta date cible, simulateur « Et si… ».');
+    return PremiumTeaser('En bref, analyse avance / retard, projections à 6, 12 et 18 mois et jusqu’à ta date cible, simulateur « Et si… ».');
   }
   const p = computePremium(state, snap.today, snap);
   const gapAbs = Math.abs(p.gap);
@@ -221,12 +226,16 @@ export function openSimulator(snap) {
 // ---------------------------------------------------------------------------
 export function buildCSV(state) {
   const euros = (c) => (c / 100).toFixed(2).replace('.', ',');
+  // Protection contre l'injection de formules (Excel / LibreOffice / Sheets) : un texte saisi par
+  // l'utilisateur qui commence par = + - @ tabulation ou retour chariot est neutralisé par une apostrophe.
+  const text = (v) => (/^[=+\-@\t\r]/.test(String(v ?? '')) ? "'" + v : String(v ?? ''));
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Type', 'Date', 'Libellé', 'Brut (€)', 'Cotisations (€)', 'Net / Montant (€)'].map(esc).join(';')];
+  const catName = (id) => (state.categories || []).find((c) => c.id === id)?.name || '';
+  const lines = [['Type', 'Date', 'Libellé', 'Dossier', 'Brut (€)', 'Cotisations (€)', 'Net / Montant (€)'].map(esc).join(';')];
   const rows = [
-    ...state.revenues.map((r) => ['Revenu', r.date, r.label, euros(r.grossAmount), euros(r.contributionAmount), euros(r.netAmount)]),
-    ...state.transfers.map((t) => ['Virement', t.date, t.label, '', '', euros(t.amount)]),
-    ...state.withdrawals.map((w) => ['Retrait', w.date, w.label, '', '', '-' + euros(w.amount)]),
+    ...state.revenues.map((r) => [r.exceptional ? 'Revenu exceptionnel' : 'Revenu', r.date, text(r.label), '', euros(r.grossAmount), euros(r.contributionAmount), euros(r.netAmount)]),
+    ...state.transfers.map((t) => ['Virement', t.date, text(t.label), '', '', '', euros(t.amount)]),
+    ...state.withdrawals.map((w) => ['Retrait', w.date, text(w.label), text(catName(w.categoryId)), '', '', '-' + euros(w.amount)]),
   ].sort((a, b) => (a[1] < b[1] ? 1 : -1));
   rows.forEach((r) => lines.push(r.map(esc).join(';')));
   return '﻿' + lines.join('\r\n');

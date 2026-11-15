@@ -4,9 +4,11 @@
   "description": "Suis tes revenus et progresse vers ton objectif financier.",
   "lang": "fr",
   "start_url": "./index.html",
+  "id": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "any",
   "background_color": "#0F1720",
   "theme_color": "#0F1720",
   "icons": [

@@ -10,6 +10,9 @@ import { openPaywall } from './ui/premium.js';
 import { ObjectifPage } from './ui/pages/objectif.js';
 import { RevenusPage, VirementsPage, RetraitsPage } from './ui/pages/operations.js';
 import { ProfilPage } from './ui/pages/profil.js';
+import { applyAccent } from './ui/theme.js';
+import { openNewPasswordSheet } from './ui/account.js';
+import * as cloud from './core/cloud.js';
 
 const TABS = [
   { id: 'objectif', label: 'Objectif', icon: 'target', page: ObjectifPage },
@@ -67,6 +70,7 @@ function applyBackground(state, today) {
 function render({ scrollTop = false } = {}) {
   store.refreshSubscription();
   const state = store.getState();
+  applyAccent(state.preferences.accentColor);
   const today = todayKey();
   ui.renderedDay = today;
   const y = window.scrollY;
@@ -97,6 +101,17 @@ function render({ scrollTop = false } = {}) {
 
 store.subscribe(() => render());
 
+// Photo de profil (en haut à droite) → Profil.
+document.addEventListener('nelyqor:open-profile', () => actions.openProfile(null));
+
+// Compte : on rafraîchit l'affichage quand l'état de connexion change.
+let recoveryShown = false;
+cloud.onStatus((st) => {
+  if (st.recovery && !recoveryShown) { recoveryShown = true; openNewPasswordSheet(); }
+  if (!st.recovery) recoveryShown = false;
+  if (store.getState().onboardingCompleted && ui.tab === 'profil') render();
+});
+
 // Nouveau jour (application restée ouverte) : nouvelle phrase, nouveau fond, nouvelle semaine.
 function checkDayChange() {
   if (todayKey() !== ui.renderedDay && store.getState().onboardingCompleted) render();
@@ -106,6 +121,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
 setInterval(checkDayChange, 60 * 1000);
 
 render();
+cloud.initCloud();
 
 // Hors-ligne (PWA). Ignoré si non disponible (ex. aperçu).
 if ('serviceWorker' in navigator && location.protocol === 'https:') {

@@ -1,8 +1,9 @@
 // Nelyqor — formulaires d'ajout, détail d'une opération, historique.
 import { h } from './dom.js';
 import {
-  openSheet, Button, AmountInput, DateInput, TextInput, Field, Row, Notice, OperationRow, EmptyState, confirmDialog, toast, fmt,
+  openSheet, Button, AmountInput, DateInput, TextInput, Field, Row, Notice, OperationRow, EmptyState, confirmDialog, toast, fmt, Switch,
 } from './components.js';
+import { CategoryPicker } from './expenses.js';
 import { parseAmountToCents, contributionFor, formatRate } from '../core/money.js';
 import { todayKey, isValidKey, addDays, formatLong } from '../core/dates.js';
 import { computeSnapshot } from '../core/calc.js';
@@ -43,7 +44,19 @@ export function openOperationForm(type, { date } = {}) {
       const labelField = Field(cfg.labelLabel, labelIn.wrap, { forId: 'op-label' });
 
       let suggestions = null;
+      let exceptional = false;
+      let exceptionalRow = null;
+      let categoryId = null;
+      let categoryField = null;
+      if (type === 'withdrawal' && store.isPremium()) {
+        categoryField = h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Dossier (facultatif)'),
+          CategoryPicker(null, (v) => { categoryId = v; }));
+      }
       if (type === 'revenue') {
+        exceptionalRow = h('div', { class: 'switch-row', style: { borderTop: 0, padding: 0 } },
+          h('div', { class: 'txt' }, h('strong', null, 'Revenu exceptionnel'),
+            h('span', { class: 'muted', style: { fontSize: '13px' } }, 'Prime, vente ponctuelle… Compté une seule fois : il ne gonfle pas ta projection.')),
+          Switch(false, (v) => { exceptional = v; }, 'Revenu exceptionnel'));
         suggestions = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px' } },
           LABEL_SUGGESTIONS.map((s) => h('button', {
             type: 'button', class: 'badge', style: { cursor: 'pointer', border: '0', minHeight: '34px', padding: '6px 12px' },
@@ -65,7 +78,8 @@ export function openOperationForm(type, { date } = {}) {
         } else if (type === 'transfer') {
           live.replaceChildren(h('div', { class: 'preview rows' },
             Row('Ajouté à l’objectif', fmt.eur2(cents), { valueClass: 'teal' }),
-            Row('Cotisations', 'Aucune')));
+            Row('Cotisations', 'Aucune')),
+            h('p', { class: 'field-hint' }, 'Un virement est compté une seule fois : il n’est jamais répété dans ta projection.'));
         } else {
           live.replaceChildren(cents > balance
             ? Notice('warn', 'Ce retrait dépasse le montant disponible.',
@@ -97,9 +111,9 @@ export function openOperationForm(type, { date } = {}) {
           if (!confirmed) return;
         }
         const payload = { date: d, label: labelIn.input.value };
-        if (type === 'revenue') store.addRevenue({ ...payload, grossAmount: cents });
+        if (type === 'revenue') store.addRevenue({ ...payload, grossAmount: cents, exceptional });
         else if (type === 'transfer') store.addTransfer({ ...payload, amount: cents });
-        else store.addWithdrawal({ ...payload, amount: cents });
+        else store.addWithdrawal({ ...payload, amount: cents, categoryId });
         close();
         toast(cfg.toast);
       };
@@ -107,7 +121,7 @@ export function openOperationForm(type, { date } = {}) {
       const form = h('form', {
         style: { display: 'flex', flexDirection: 'column', gap: '16px' }, novalidate: true,
         onSubmit: (e) => { e.preventDefault(); submit(); },
-      }, amountField.el, live, dateField.el, labelField.el, Button(cfg.submit, null, { type: 'submit' }));
+      }, amountField.el, live, dateField.el, labelField.el, exceptionalRow, categoryField, Button(cfg.submit, null, { type: 'submit' }));
       return form;
     },
   });
@@ -130,6 +144,7 @@ export function openOperationDetail(type, item, { onDeleted } = {}) {
         Row('Date', formatLong(item.date)));
       if (type === 'revenue') {
         rows.append(
+          item.exceptional && Row('Nature', 'Revenu exceptionnel (hors projection)'),
           Row('Brut', fmt.eur2(item.grossAmount)),
           item.contributionAmount > 0 && Row(`Cotisations réservées${item.contributionRate ? ` (${formatRate(item.contributionRate)})` : ''}`, '−' + fmt.eur2(item.contributionAmount)),
           Row('Net ajouté à l’objectif', fmt.eur2(item.netAmount), { valueClass: 'teal' }));
@@ -137,6 +152,11 @@ export function openOperationDetail(type, item, { onDeleted } = {}) {
         rows.append(Row('Ajouté à l’objectif', fmt.eur2(item.amount), { valueClass: 'teal' }));
       } else {
         rows.append(Row('Retiré de l’objectif', '−' + fmt.eur2(item.amount), { valueClass: 'danger-text' }));
+      }
+      let catBlock = null;
+      if (type === 'withdrawal' && store.isPremium()) {
+        catBlock = h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Dossier'),
+          CategoryPicker(item.categoryId, (v) => { store.setWithdrawalCategory(item.id, v); toast('Dossier mis à jour'); }));
       }
       const del = Button(`Supprimer ce ${names.one.toLowerCase()}`, async () => {
         const ok = await confirmDialog({
@@ -150,7 +170,7 @@ export function openOperationDetail(type, item, { onDeleted } = {}) {
         if (onDeleted) onDeleted();
         toast(names.deleted);
       }, { variant: 'danger', iconName: 'trash' });
-      return [rows, del];
+      return [rows, catBlock, del];
     },
   });
 }
