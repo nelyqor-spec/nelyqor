@@ -1,0 +1,4 @@
+# Netlify : site statique, aucune étape de build.
+[build]
+  publish = "."
+  command = ""
