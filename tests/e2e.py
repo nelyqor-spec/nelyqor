@@ -64,7 +64,11 @@ with sync_playwright() as p:
     check("T2 taux ≥ 100 refusé", page.is_visible("text=Le pourcentage doit être compris entre 0 et moins de 100 %."))
     page.fill("#ob-rate", "21"); page.click("text=Continuer")
     check("T2 fréquence des cotisations demandée", page.is_visible("text=Choisis une fréquence."))
-    page.click(".segmented button:has-text('Tous les 3 mois')"); page.click("text=Continuer")
+    page.click(".segmented button:has-text('Tous les 3 mois')")
+    due = (datetime.date.today() + datetime.timedelta(days=45)).isoformat()
+    page.click("text=Continuer")
+    check("T2 date de prélèvement demandée", page.is_visible("text=Indique la date de ton prochain prélèvement."))
+    page.fill("#ob-due", due); page.click("text=Continuer")
     page.wait_for_selector("text=Jours d’activité prévus")
     for d in ["Lundi", "Mardi", "Jeudi", "Vendredi"]:
         page.click(f".day-chip[aria-label='{d}']")
@@ -78,7 +82,7 @@ with sync_playwright() as p:
     page.wait_for_selector("text=Objectif global")
     s = state(page)
     st = s["settings"]
-    check("T2 données enregistrées", st["goalAmount"] == 1800000 and st["initialSavings"] == 300000 and st["contributionRate"] == 2100 and st["contributionFrequency"] == "quarterly" and st["plannedActivityDays"] == [0, 1, 3, 4] and st["targetDate"] == target, json.dumps(st))
+    check("T2 données enregistrées", st["goalAmount"] == 1800000 and st["initialSavings"] == 300000 and st["contributionRate"] == 2100 and st["contributionFrequency"] == "quarterly" and st["contributionDueDate"] == due and st["plannedActivityDays"] == [0, 1, 3, 4] and st["targetDate"] == target, json.dumps(st))
     check("T2 plan gratuit", s["subscription"]["status"] == "free")
     check("T2 aucun revenu / virement / retrait", not s["revenues"] and not s["transfers"] and not s["withdrawals"])
     page.reload(); page.wait_for_selector("text=Objectif global")
@@ -232,7 +236,7 @@ with sync_playwright() as p:
 
     # ---------------- TEST 6 / 7 : semaine (données injectées) ----------------
     def inject(extra_rev):
-        page.evaluate("""(extra) => { const s = JSON.parse(localStorage.getItem('nelyqor:v1')); s.revenues = extra; s.currentWeekState = {restDays:{}}; s.settings.setupDate = '2026-01-05'; localStorage.setItem('nelyqor:v1', JSON.stringify(s)); }""", extra_rev)
+        page.evaluate("""(extra) => { const s = JSON.parse(localStorage.getItem('nelyqor:v1')); s.revenues = extra; s.calendar = {}; s.settings.setupDate = '2026-01-05'; localStorage.setItem('nelyqor:v1', JSON.stringify(s)); }""", extra_rev)
         page.reload(); page.wait_for_selector("text=Objectif de la semaine")
     page.click(".nav-item:has-text('Objectif')")
     inject([])
@@ -273,7 +277,7 @@ with sync_playwright() as p:
     check("Repos : phrase de repos", it(".quote") != q_act)
     page.click("button:has-text('Finalement, je travaille aujourd’hui')")
     page.wait_for_selector("text=Journée d’activité prévue")
-    check("Repos réversible", state(page)["currentWeekState"]["restDays"] == {})
+    check("Repos réversible", state(page)["calendar"] == {})
 
     # ---------------- TEST responsive : 320 / 375 / 390 / 430 ----------------
     page.evaluate("""() => { const s = JSON.parse(localStorage.getItem('nelyqor:v1')); s.subscription.status='premium'; localStorage.setItem('nelyqor:v1', JSON.stringify(s)); }""")

@@ -10,13 +10,16 @@ import { SubscriptionPanel, statusLabel, trialEndLabel } from '../premium.js';
 import { fileToAvatar, pickImage } from '../image.js';
 import { ACCENT_PRESETS, applyAccent } from '../theme.js';
 import { AccountSection, accountSubtitle } from '../account.js';
+import { ContributionDueFields } from '../contrib.js';
+import { CalendarView } from '../calendar.js';
+import { backupCard } from '../backup.js';
 import * as cloud from '../../core/cloud.js';
 
 const SECTIONS = [
   { id: 'compte', title: 'Compte et synchronisation', icon: 'cloud' },
   { id: 'informations', title: 'Informations', icon: 'user' },
   { id: 'cotisations', title: 'Cotisations', icon: 'percent' },
-  { id: 'jours', title: 'Jours d’activité', icon: 'calendar' },
+  { id: 'jours', title: 'Jours d’activité et calendrier', icon: 'calendar' },
   { id: 'abonnement', title: 'Abonnement Nelyqor+', icon: 'sparkle' },
   { id: 'preferences', title: 'Préférences', icon: 'sliders' },
   { id: 'apropos', title: 'À propos', icon: 'about' },
@@ -38,8 +41,8 @@ function subtitleFor(id, state) {
   switch (id) {
     case 'compte': return accountSubtitle();
     case 'informations': return s.displayName ? `${s.displayName} · objectif ${fmt.eur(s.goalAmount)}` : `Pseudo, objectif ${fmt.eur(s.goalAmount)}, date cible`;
-    case 'cotisations': return s.hasContributions ? `${formatRate(s.contributionRate)} réservés · versement ${s.contributionFrequency === 'monthly' ? 'mensuel' : 'trimestriel'}` : 'Non soumis aux cotisations';
-    case 'jours': return s.plannedActivityDays.length ? `${s.plannedActivityDays.length} · ${s.plannedActivityDays.map((d) => WEEKDAYS_SHORT[d]).join(', ')}` : 'Aucun jour prévu';
+    case 'cotisations': return s.hasContributions ? `${formatRate(s.contributionRate)} réservés · prélèvement ${s.contributionFrequency === 'monthly' ? 'mensuel' : 'trimestriel'}${s.contributionDueDate ? '' : ' · date à indiquer'}` : 'Non soumis aux cotisations';
+    case 'jours': return (s.plannedActivityDays.length ? `${s.plannedActivityDays.length} · ${s.plannedActivityDays.map((d) => WEEKDAYS_SHORT[d]).join(', ')}` : 'Aucun jour prévu') + ' · calendrier';
     case 'abonnement': return statusLabel(state.subscription) + (state.subscription.status === 'trial' ? ` · jusqu’au ${trialEndLabel(state.subscription)}` : '');
     case 'preferences': return 'Couleur de l’app, fond dynamique, phrase du jour';
     case 'apropos': return `Version ${store.APP_VERSION}`;
@@ -132,6 +135,7 @@ function Informations({ state, snap }) {
         : 'Tes données sont enregistrées uniquement sur cet appareil.'),
       Button('Effacer toutes mes données', reset, { variant: 'danger', iconName: 'trash' }),
     ]),
+    backupCard(),
   ];
 }
 
@@ -139,45 +143,60 @@ function Informations({ state, snap }) {
 function Cotisations({ state }) {
   const s = state.settings;
   let has = s.hasContributions;
-  let frequency = s.contributionFrequency || 'quarterly';
-  const freqField = h('div', { class: 'field' },
-    h('span', { class: 'field-label' }, 'À quelle fréquence les verses-tu ?'),
-    Segmented([{ value: 'monthly', label: 'Chaque mois' }, { value: 'quarterly', label: 'Tous les 3 mois' }], frequency, (v) => { frequency = v; }, { label: 'Fréquence de versement' }),
-    h('p', { class: 'field-hint' }, 'Nelyqor t’indique combien garder de côté jusqu’à la prochaine échéance.'));
-  freqField.hidden = !has;
+  let micro = s.microActivity || 'none';
+  const due = ContributionDueFields({ frequency: s.hasContributions ? s.contributionFrequency : null, dueDate: s.contributionDueDate, idPrefix: 'pf' });
+  due.el.hidden = !has;
   const rateIn = AmountInput({ id: 'pf-rate', value: s.hasContributions ? rateToInput(s.contributionRate) : '', placeholder: '21', suffix: '%', label: 'Taux de cotisations' });
-  const rateF = Field('Quel pourcentage souhaites-tu réserver ?', rateIn.wrap, { forId: 'pf-rate' });
+  const rateF = Field('Quel pourcentage souhaites-tu réserver ?', rateIn.wrap, { forId: 'pf-rate', hint: 'Si tu as choisi le versement libératoire de l’impôt, ajoute son taux (ex. 21,2 % + 2,2 %).' });
   rateF.el.hidden = !has;
-  const choice = Segmented([{ value: true, label: 'Oui' }, { value: false, label: 'Non' }], has, (v) => { has = v; rateF.el.hidden = !v; freqField.hidden = !v; }, { label: 'Soumis aux cotisations' });
+  const choice = Segmented([{ value: true, label: 'Oui' }, { value: false, label: 'Non' }], has, (v) => { has = v; rateF.el.hidden = !v; due.el.hidden = !v; }, { label: 'Soumis aux cotisations' });
   const save = () => {
     rateF.setError('');
+    const microValue = micro === 'none' ? null : micro;
     if (!has) {
-      store.updateSettings({ hasContributions: false, contributionRate: 0 });
+      store.updateSettings({ hasContributions: false, contributionRate: 0, microActivity: microValue });
       return toast('Modifications enregistrées');
     }
     const v = parseRateToBp(rateIn.input.value);
+    const sched = due.read();
     if (v === null || v < 0 || v >= RATE_SCALE) return rateF.setError('Indique un pourcentage entre 0 et moins de 100 %.');
-    store.updateSettings({ hasContributions: true, contributionRate: v, contributionFrequency: frequency });
+    if (!sched) return;
+    store.updateSettings({ hasContributions: true, contributionRate: v, ...sched, microActivity: microValue });
     toast('Modifications enregistrées');
   };
-  return Card([
-    h('form', { novalidate: true, style: { display: 'flex', flexDirection: 'column', gap: '16px' }, onSubmit: (e) => { e.preventDefault(); save(); } },
+  return [Card([
+    h('form', { novalidate: true, class: 'form-stack', onSubmit: (e) => { e.preventDefault(); save(); } },
       h('p', { class: 'field-label' }, 'Es-tu soumis à des cotisations sociales sur ces revenus ?'),
-      choice, rateF.el, freqField,
+      choice, rateF.el, due.el,
+      h('div', { class: 'field' },
+        h('span', { class: 'field-label' }, 'Es-tu micro-entrepreneur ?'),
+        Segmented([
+          { value: 'none', label: 'Non' }, { value: 'services', label: 'Services' },
+          { value: 'vente', label: 'Vente' }, { value: 'mixte', label: 'Mixte' },
+        ], micro, (v) => { micro = v; }, { small: true, label: 'Type d’activité micro-entreprise' }),
+        h('p', { class: 'field-hint' }, 'Avec Nelyqor+, suis ton chiffre d’affaires de l’année face au plafond micro et au seuil de TVA.')),
       Notice('info', null, 'Le nouveau taux s’applique aux prochains revenus. Les revenus déjà enregistrés gardent les cotisations calculées au moment de leur saisie.'),
       Button('Enregistrer', null, { type: 'submit' })),
-  ]);
+  ])];
 }
 
 // ---------------------------------------------------------------------------
 function Jours({ state }) {
   let days = [...state.settings.plannedActivityDays];
   const picker = ActivityDaysPicker(days, (d) => { days = d; });
-  return Card([
-    h('p', { class: 'muted' }, 'Choisis tes jours d’activité habituels. Tes objectifs journaliers, ton objectif de la semaine, tes jours restants et ta projection seront recalculés.'),
-    picker,
-    Button('Enregistrer', () => { store.updateSettings({ plannedActivityDays: days }); toast('Modifications enregistrées'); }),
-  ]);
+  return [
+    Card([
+      h('h2', { class: 'card-title' }, 'Mon planning habituel'),
+      h('p', { class: 'muted' }, 'Les jours où tu travailles d’habitude, chaque semaine.'),
+      picker,
+      Button('Enregistrer', () => { store.updateSettings({ plannedActivityDays: days }); toast('Modifications enregistrées'); }),
+    ]),
+    Card([
+      h('h2', { class: 'card-title' }, 'Mon calendrier'),
+      h('p', { class: 'muted' }, 'Une exception ? Appuie sur un jour pour le travailler exceptionnellement (ex. ce dimanche seulement) ou le passer en repos. Seul ce jour change.'),
+      CalendarView(),
+    ]),
+  ];
 }
 
 // ---------------------------------------------------------------------------

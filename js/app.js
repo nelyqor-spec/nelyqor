@@ -12,6 +12,7 @@ import { RevenusPage, VirementsPage, RetraitsPage } from './ui/pages/operations.
 import { ProfilPage } from './ui/pages/profil.js';
 import { applyAccent } from './ui/theme.js';
 import { openNewPasswordSheet } from './ui/account.js';
+import { openCalendar } from './ui/calendar.js';
 import * as cloud from './core/cloud.js';
 
 const TABS = [
@@ -122,6 +123,19 @@ setInterval(checkDayChange, 60 * 1000);
 
 render();
 cloud.initCloud();
+
+// Saisie rapide : raccourcis de l'icône (appui long) → ?action=revenu | retrait | calendrier
+(function quickAction() {
+  const url = new URL(location.href);
+  const action = url.searchParams.get('action');
+  if (!action) return;
+  url.searchParams.delete('action');
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+  if (!store.getState().onboardingCompleted) return;
+  if (action === 'revenu') actions.addOperation('revenue');
+  else if (action === 'retrait') { actions.goTab('retraits'); actions.addOperation('withdrawal'); }
+  else if (action === 'calendrier') openCalendar();
+})();
 
 // Hors-ligne (PWA). Ignoré si non disponible (ex. aperçu).
 if ('serviceWorker' in navigator && location.protocol === 'https:') {

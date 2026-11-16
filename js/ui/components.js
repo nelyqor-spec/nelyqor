@@ -214,8 +214,8 @@ export function ActivityDaysPicker(initial, onChange) {
           render(); emit();
         },
       }, s)));
-    root.replaceChildren(stepper, chips,
-      count === 0 ? h('p', { class: 'field-hint' }, 'Aucun jour d’activité prévu : aucune cible journalière ne sera calculée.') : null);
+    root.replaceChildren(...[stepper, chips,
+      count === 0 ? h('p', { class: 'field-hint' }, 'Aucun jour d’activité prévu : aucune cible journalière ne sera calculée.') : null].filter(Boolean));
   };
   render();
   return root;

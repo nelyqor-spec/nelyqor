@@ -11,6 +11,11 @@
   "orientation": "any",
   "background_color": "#0F1720",
   "theme_color": "#0F1720",
+  "shortcuts": [
+    { "name": "Ajouter un revenu", "short_name": "Revenu", "url": "./index.html?action=revenu", "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Ajouter un retrait", "short_name": "Retrait", "url": "./index.html?action=retrait", "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Mon calendrier", "short_name": "Calendrier", "url": "./index.html?action=calendrier", "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },

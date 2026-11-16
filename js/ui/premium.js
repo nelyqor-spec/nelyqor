@@ -1,7 +1,7 @@
 // Nelyqor+ — offre, analyses avancées, simulateur « Et si… », export CSV.
 import { h, icon } from './dom.js';
 import { openSheet, Button, Card, Row, Stat, Notice, AmountInput, Field, toast, fmt, Badge } from './components.js';
-import { computePremium, simulate } from '../core/calc.js';
+import { computePremium, simulate, microStatus } from '../core/calc.js';
 import { parseAmountToCents, formatRate } from '../core/money.js';
 import { formatShort, formatNumeric, todayKey } from '../core/dates.js';
 import * as store from '../core/store.js';
@@ -24,6 +24,7 @@ export const FREE_FEATURES = [
 export const PLUS_FEATURES = [
   'En bref : jours restants et projection à la date cible',
   'Dossiers de dépenses (essence, matériel…) et dépenses récurrentes planifiées',
+  'Micro-entreprise : alertes plafond de chiffre d’affaires et seuil de TVA',
   'Historique complet',
   'Statistiques avancées',
   'Comparaison semaine / semaine et mois / mois',
@@ -261,4 +262,42 @@ export async function exportCSV() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   toast('Export CSV prêt');
+}
+
+// ---------------------------------------------------------------------------
+// Micro-entreprise : plafond de CA et franchise de TVA (page Revenus)
+// ---------------------------------------------------------------------------
+export function MicroCard(state, snap, { onSetup } = {}) {
+  if (!store.isPremium()) return null;
+  const m = microStatus(state, snap.today, snap);
+  if (!m) {
+    if (state.settings.microActivity === null && onSetup) {
+      return Card([
+        h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, 'Micro-entrepreneur ?'), Badge('Nelyqor+', 'blue')),
+        h('p', { class: 'muted' }, 'Suis ton chiffre d’affaires de l’année face au plafond micro et au seuil de TVA, avec une alerte avant de les dépasser.'),
+        Button('Activer le suivi', onSetup, { variant: 'secondary' }),
+      ], { cls: 'premium', label: 'Micro-entreprise' });
+    }
+    return null;
+  }
+  const bar = (value, max, label) => h('div', { class: 'micro-bar' },
+    h('div', { class: 'micro-row' }, h('span', null, label), h('strong', { class: 'num' }, `${fmt.eur(value)} / ${fmt.eur(max)}`)),
+    h('div', { class: 'progress' + (value >= max ? ' over' : value >= max * 0.8 ? ' near' : '') },
+      h('span', { style: { width: Math.min(100, (value / max) * 100) + '%' } })));
+  const alerts = [];
+  if (m.tvaLevel === 'over') alerts.push(Notice('danger', 'Seuil de TVA dépassé', `Au-delà de ${fmt.eur(m.tvaMajore)}, tu dois facturer la TVA dès le 1er jour du mois de dépassement. Renseigne-toi auprès de ton service des impôts.`));
+  else if (m.revenue > m.tva) alerts.push(Notice('warn', 'Seuil de TVA franchi', `Tu as dépassé ${fmt.eur(m.tva)} : tu deviendras redevable de la TVA au 1er janvier (ou dès ${fmt.eur(m.tvaMajore)}).`));
+  else if (m.tvaLevel === 'near') alerts.push(Notice('warn', 'Tu approches du seuil de TVA', `Plus que ${fmt.eur(m.tva - m.revenue)} avant ${fmt.eur(m.tva)}.`));
+  else if (m.tvaProjectedOver) alerts.push(Notice('info', 'À ce rythme, tu dépasserais le seuil de TVA cette année', `Projection fin d’année : ${fmt.eur(m.projectedYear)}.`));
+  if (m.plafondLevel === 'over') alerts.push(Notice('danger', 'Plafond micro-entreprise dépassé', 'Un dépassement deux années de suite fait sortir du régime micro. Fais le point avec un expert-comptable.'));
+  else if (m.plafondLevel === 'near' || m.plafondProjectedOver) alerts.push(Notice('warn', 'Attention au plafond micro-entreprise', `Projection fin d’année : ${fmt.eur(m.projectedYear)} pour un plafond de ${fmt.eur(m.plafond)}.`));
+  return Card([
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, `Chiffre d’affaires ${m.year === Number(snap.today.slice(0, 4)) ? m.year : snap.today.slice(0, 4)}`), Badge('Nelyqor+', 'blue')),
+    h('p', { class: 'muted', style: { fontSize: '13.5px' } }, m.label),
+    bar(m.revenue, m.tva, 'Franchise de TVA'),
+    bar(m.revenue, m.plafond, 'Plafond micro-entreprise'),
+    h('div', { class: 'rows' }, Row('Projection fin d’année (à ton rythme)', fmt.eur(m.projectedYear))),
+    ...alerts,
+    h('p', { class: 'field-hint' }, `Seuils ${m.year} (encaissements bruts de l’année civile). Ils sont réduits au prorata la 1re année d’activité. À confirmer sur urssaf.fr / impots.gouv.fr.`),
+  ], { cls: 'premium', label: 'Micro-entreprise' });
 }

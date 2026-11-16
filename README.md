@@ -1,6 +1,16 @@
-# Nelyqor — V1.1
+# Nelyqor — V1.2
 
 Application mobile de suivi d’objectif financier : revenus (avec cotisations), virements, retraits, objectif du jour et de la semaine, projection progressive, offre Nelyqor+.
+
+**Nouveautés 1.2** : calendrier mensuel (travail ou repos exceptionnel sur un jour précis, sans toucher au planning habituel), cotisations calculées à partir de la vraie date de prélèvement de chacun (mensuel ou trimestriel), sauvegarde / restauration des données dans un fichier, raccourcis de saisie rapide (appui long sur l'icône), suivi micro-entreprise : plafond de CA et seuil de TVA 2026 (Nelyqor+).
+
+## Mettre à jour l'app sans perdre ses données
+
+Les données sont enregistrées **dans le navigateur du téléphone, pour l'adresse du site**. Elles sont donc conservées tant que :
+1. la nouvelle version est publiée **sur le même site Netlify (même adresse)**, jamais sur un nouveau site ;
+2. on ne vide pas les données du navigateur et on ne désinstalle pas l'app de l'écran d'accueil.
+
+À chaque mise à jour, l'app convertit automatiquement les anciennes données au nouveau format (testé). Par sécurité, avant chaque mise à jour : **Profil → Informations → Sauvegarder mes données**. En cas de souci, **Restaurer une sauvegarde** ajoute les données du fichier sans rien effacer. Une fois Supabase configuré, les données sont aussi copiées sur le compte.
 
 **Nouveautés 1.1** : compte et synchronisation entre appareils (Supabase : Apple, Google, e-mail), photo de profil, couleur principale au choix, échéances de cotisations mensuelles ou trimestrielles, revenus exceptionnels, dossiers de dépenses et dépenses récurrentes planifiées (Nelyqor+), « En bref » réservé à Nelyqor+, affichage plein écran sans zoom et adapté aux tablettes et ordinateurs, audit de sécurité (voir [SECURITY.md](SECURITY.md)).
 
@@ -36,11 +46,11 @@ Les réglages de sécurité conseillés côté Supabase (CAPTCHA, mots de passe 
 ## Tests
 
 ```bash
-node --test tests/calc.test.mjs tests/v11.test.mjs   # 32 tests du moteur de calcul, validation, fusion, CSV
+node --test tests/calc.test.mjs tests/v11.test.mjs   # 34 tests du moteur de calcul, validation, fusion, CSV
 python3 -m http.server 8765 &                         # serveur local
 node tests/sync_e2e.mjs                               # 19 vérifications : synchro entre 2 appareils (faux serveur)
 pip install playwright
-CHROME_PATH=/chemin/vers/chrome python3 tests/e2e.py   # 123 vérifications : parcours complet + responsive 320/375/390/430
+CHROME_PATH=/chemin/vers/chrome python3 tests/e2e.py   # 124 vérifications : parcours complet + responsive 320/375/390/430
 ```
 
 ## Structure
@@ -66,6 +76,9 @@ js/ui/expenses.js          Nelyqor+ : dossiers de dépenses, dépenses prévues 
 js/ui/account.js           écrans de connexion et de gestion du compte
 js/ui/theme.js             couleur principale personnalisable
 js/ui/image.js             photo de profil (recadrage, réduction, suppression des métadonnées)
+js/ui/calendar.js          calendrier mensuel des jours d’activité (exceptions)
+js/ui/contrib.js           question « quand tombent tes cotisations ? »
+js/ui/backup.js            sauvegarde / restauration des données (fichier .json)
 js/ui/onboarding.js        5 étapes + choix Gratuit / Nelyqor+
 js/ui/pages/*.js           Objectif, Revenus / Virements / Retraits, Profil
 assets/logo-symbol.png     symbole du logo (remplacer ce fichier = logo changé partout)
@@ -84,7 +97,9 @@ _headers                   en-têtes de sécurité HTTP (Netlify)
 - **Projection** : solde actuel + rythme × jours d’activité à venir − dépenses prévues d’ici là. Rythme utilisé = rythme nécessaire × (1 − confiance) + rythme observé × confiance, avec confiance = min(1, jours observés ÷ 20). Le rythme observé ne prend que les revenus nets **réguliers**, à leur date de réalisation, sur les 30 derniers jours d’activité observés.
 - **Virements et revenus exceptionnels** : comptés **une seule fois** dans le solde, jamais extrapolés sur l’avenir (un gros virement n’est pas répété dans la projection).
 - **Dépenses prévues** (Nelyqor+) : échéance n = première date + n × fréquence (1 fois, 1, 2, 3, 4, 6 ou 12 mois). Elles sont déduites de la projection et ajoutées au « reste à gagner » de l’objectif du jour ; une fois l’échéance arrivée, « Payée » crée le retrait, « Pas cette fois » la passe.
-- **Cotisations** : versement mensuel ou trimestriel. Montant à garder de côté = cotisations du mois / trimestre en cours (+ celles de la période précédente tant que son échéance, fin du mois suivant, n’est pas passée).
+- **Jours d’activité** : planning habituel (jours de la semaine) + exceptions datées du calendrier (`work` = travail exceptionnel, `off` = repos). Une exception ne concerne que ce jour-là ; objectifs et projection sont recalculés.
+- **Cotisations** : prélèvement mensuel ou trimestriel, à partir d’une date de prélèvement donnée par l’utilisateur (les suivantes s’en déduisent). Chaque prélèvement porte sur la période civile précédente (5 déc. → novembre ; 31 janv. → oct.–déc.). À garder de côté = cotisations des revenus de la période du prochain prélèvement + celles déjà accumulées pour le suivant.
+- **Micro-entreprise** (Nelyqor+) : CA de l’année civile (encaissements bruts) comparé au seuil de franchise de TVA et au plafond micro (montants 2026 dans `MICRO_THRESHOLDS`, `js/core/calc.js`), avec projection de fin d’année.
 
 ## Passer sur le Play Store et l’App Store (Capacitor)
 

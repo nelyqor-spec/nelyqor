@@ -1,0 +1,100 @@
+// Nelyqor — sauvegarde et restauration de TOUTES les données dans un fichier (gratuit).
+// Le fichier .json reste chez l'utilisateur (Fichiers, iCloud Drive, Google Drive, e-mail…).
+// À la restauration, il est validé puis FUSIONNÉ avec les données présentes : rien n'est écrasé.
+import { h } from './dom.js';
+import { Card, Button, Notice, toast, confirmDialog } from './components.js';
+import { todayKey } from '../core/dates.js';
+import * as store from '../core/store.js';
+import { mergeStates } from '../core/sync.js';
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const LAST_BACKUP_KEY = 'nelyqor:last-backup';
+
+export function buildBackup(state = store.getState()) {
+  return JSON.stringify({ app: 'nelyqor', format: 1, appVersion: store.APP_VERSION, exportedAt: new Date().toISOString(), data: store.sanitize(state) }, null, 1);
+}
+
+/** Lit un fichier de sauvegarde. Lève une Error lisible si le fichier n'est pas valable. */
+export function parseBackup(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch { throw new Error('Ce fichier n’est pas une sauvegarde Nelyqor.'); }
+  if (!obj || obj.app !== 'nelyqor' || typeof obj.data !== 'object') throw new Error('Ce fichier n’est pas une sauvegarde Nelyqor.');
+  const data = store.sanitize(obj.data);
+  if (!data.onboardingCompleted) throw new Error('Cette sauvegarde ne contient pas d’objectif.');
+  return { data, exportedAt: obj.exportedAt };
+}
+
+export async function saveBackup() {
+  const name = `nelyqor-sauvegarde-${todayKey()}.json`;
+  const blob = new Blob([buildBackup()], { type: 'application/json' });
+  // Sur téléphone : feuille de partage (Enregistrer dans Fichiers, Drive, e-mail…).
+  try {
+    const file = new File([blob], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Sauvegarde Nelyqor' });
+      markSaved();
+      toast('Sauvegarde prête');
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // partage annulé
+  }
+  const url = URL.createObjectURL(blob);
+  const a = h('a', { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  markSaved();
+  toast('Sauvegarde téléchargée');
+}
+
+function markSaved() {
+  try { localStorage.setItem(LAST_BACKUP_KEY, new Date().toISOString()); } catch { /* ignore */ }
+}
+
+function lastSaved() {
+  try { return localStorage.getItem(LAST_BACKUP_KEY); } catch { return null; }
+}
+
+export function restoreBackup() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.style.display = 'none';
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (!file) return;
+    try {
+      if (file.size > MAX_BYTES) throw new Error('Fichier trop lourd pour une sauvegarde Nelyqor.');
+      const { data, exportedAt } = parseBackup(await file.text());
+      const when = exportedAt ? new Date(exportedAt).toLocaleDateString('fr-FR', { dateStyle: 'long' }) : 'date inconnue';
+      const ok = await confirmDialog({
+        title: 'Restaurer cette sauvegarde ?',
+        message: `Sauvegarde du ${when} : ${data.revenues.length} revenu(s), ${data.transfers.length} virement(s), ${data.withdrawals.length} retrait(s). Elle sera ajoutée à tes données actuelles, sans rien effacer.`,
+        confirmLabel: 'Restaurer',
+      });
+      if (!ok) return;
+      store.replaceState(mergeStates(store.getState(), data));
+      toast('Sauvegarde restaurée');
+    } catch (e) {
+      toast(e.message || 'Restauration impossible.');
+    }
+  }, { once: true });
+  document.body.append(input);
+  input.click();
+}
+
+export function backupCard() {
+  const last = lastSaved();
+  return Card([
+    h('h2', { class: 'card-title' }, 'Sauvegarde de mes données'),
+    h('p', { class: 'muted' }, 'Enregistre une copie complète de tes données dans un fichier (Fichiers, iCloud Drive, Google Drive, e-mail…). Tu pourras la restaurer à tout moment, même sur un autre téléphone.'),
+    last && h('p', { class: 'field-hint' }, `Dernière sauvegarde : ${new Date(last).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}`),
+    h('div', { class: 'btn-stack' },
+      Button('Sauvegarder mes données', saveBackup, { iconName: 'download' }),
+      Button('Restaurer une sauvegarde', restoreBackup, { variant: 'secondary', iconName: 'refresh' })),
+    !last && Notice('info', null, 'Conseil : fais une sauvegarde avant chaque mise à jour importante de l’application.'),
+  ], { label: 'Sauvegarde de mes données' });
+}

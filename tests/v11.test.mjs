@@ -1,7 +1,7 @@
 // Tests des nouveautés 1.1 — lancer avec : node --test tests/v11.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeSnapshot, computePremium, buildRevenueAmounts, plannedTotalUntil, contributionSchedule, upcomingPlanned, simulate } from '../js/core/calc.js';
+import { computeSnapshot, computePremium, buildRevenueAmounts, plannedTotalUntil, contributionSchedule, upcomingPlanned, simulate, microStatus } from '../js/core/calc.js';
 import { sanitize, emptyState } from '../js/core/store.js';
 import { mergeStates } from '../js/core/sync.js';
 import { buildCSV } from '../js/ui/premium.js';
@@ -75,21 +75,59 @@ test('objectif de la semaine stable quand on valide une dépense prévue de la s
   assert.equal(after.weeklyTarget, before.weeklyTarget);
 });
 
-test('cotisations trimestrielles : montant à garder et échéance', () => {
-  const s = st({ revenues: [rev('2026-10-05', 100000), rev('2026-11-02', 50000), rev('2026-09-20', 20000)] });
-  // T = 16 nov. : le T3 (juil.–sept.) est dû le 31 oct. → déjà passé. Trimestre en cours : oct.–déc., dû le 31 janv.
-  const c = contributionSchedule(s, T);
-  assert.equal(c.next.due, '2027-01-31');
-  assert.equal(c.toSetAside, 21000 + 10500);
-  // Le 15 oct., le trimestre précédent (avec la cotisation de septembre) est encore dû.
-  const c2 = contributionSchedule(s, '2026-10-15');
-  assert.equal(c2.next.due, '2026-10-31');
-  assert.ok(c2.next.closed);
-  assert.equal(c2.toSetAside, 4200 + 21000);
-  // Mensuel
-  const m = contributionSchedule(st({ settings: { contributionFrequency: 'monthly' }, revenues: [rev('2026-11-02', 50000)] }), T);
-  assert.equal(m.next.due, '2026-12-31');
+test('cotisations : prélèvement à la date indiquée par l’utilisateur', () => {
+  const revs = [rev('2026-10-05', 100000), rev('2026-11-02', 50000), rev('2026-09-20', 20000)];
+  // Mensuel, prélevé le 5 : le 5 déc. porte sur novembre.
+  const m = contributionSchedule(st({ settings: { contributionFrequency: 'monthly', contributionDueDate: '2026-12-05' }, revenues: revs }), T);
+  assert.equal(m.needsDueDate, false);
+  assert.equal(m.next.due, '2026-12-05');
+  assert.equal(m.next.from, '2026-11-01');
+  assert.equal(m.next.amount, 10500);
+  assert.equal(m.following.due, '2027-01-05');
+  // Le 3 nov. : le prélèvement du 5 nov. (octobre) n'est pas encore passé.
+  const m2 = contributionSchedule(st({ settings: { contributionFrequency: 'monthly', contributionDueDate: '2026-12-05' }, revenues: revs }), '2026-11-03');
+  assert.equal(m2.next.due, '2026-11-05');
+  assert.equal(m2.next.amount, 21000);
+  assert.ok(m2.next.complete);
+  assert.equal(m2.following.amount, 10500, 'novembre déjà commencé : à garder pour le suivant');
+  assert.equal(m2.toSetAside, 31500);
+  // Trimestriel, date ancienne (l'app retrouve les échéances suivantes) : 31 janv. → oct.–déc.
+  const q = contributionSchedule(st({ settings: { contributionFrequency: 'quarterly', contributionDueDate: '2025-01-31' }, revenues: revs }), T);
+  assert.equal(q.next.due, '2027-01-31');
+  assert.equal(q.next.from, '2026-10-01');
+  assert.equal(q.toSetAside, 21000 + 10500);
+  // Pas de date renseignée (version 1.1) : on le signale.
+  assert.equal(contributionSchedule(st({ revenues: revs }), T).needsDueDate, true);
   assert.equal(computeSnapshot(st({ settings: { hasContributions: false, contributionRate: 0 } }), T).contributions, null);
+});
+
+test('calendrier : un dimanche travaillé exceptionnellement ne change que ce dimanche', () => {
+  const base = st({ revenues: regular() });
+  const a = computeSnapshot(base, T);
+  const withSunday = { ...base, calendar: { '2026-11-22': 'work' } };
+  const b = computeSnapshot(withSunday, T);
+  assert.equal(b.remainingActivityDays, a.remainingActivityDays + 1, 'un seul jour en plus');
+  assert.equal(b.weekActivityDays, a.weekActivityDays + 1);
+  assert.ok(b.dailyNetTarget < a.dailyNetTarget, 'objectif du jour réparti sur un jour de plus');
+  assert.ok(b.simpleProjection > a.simpleProjection, 'la projection gagne un jour de travail');
+  // Les autres dimanches restent libres.
+  assert.equal(computeSnapshot(withSunday, '2026-11-29').todayIsActivity, false);
+  assert.equal(computeSnapshot(withSunday, '2026-11-22').todayIsActivity, true);
+  assert.equal(computeSnapshot(withSunday, '2026-11-22').todayExtraWork, true);
+  // Repos exceptionnel un mardi.
+  const c = computeSnapshot({ ...base, calendar: { '2026-11-17': 'off' } }, T);
+  assert.equal(c.remainingActivityDays, a.remainingActivityDays - 1);
+});
+
+test('micro-entreprise : plafond et franchise de TVA', () => {
+  const revs = Array.from({ length: 10 }, (_, i) => rev(`2026-0${(i % 9) + 1}-10`, 350000));
+  const s0 = st({ settings: { microActivity: 'services' }, revenues: revs });
+  const snap = computeSnapshot(s0, T);
+  const m = microStatus(s0, T, snap);
+  assert.equal(m.revenue, 3500000);
+  assert.equal(m.tvaLevel, 'near'); // 35 000 € sur 37 500 €
+  assert.equal(m.plafondLevel, 'ok');
+  assert.equal(microStatus(st(), T, snap), null);
 });
 
 test('simulateur : tient compte des dépenses prévues', () => {
@@ -137,7 +175,7 @@ test('migration : les données de la version 1.0 sont conservées', () => {
   assert.equal(s.settings.contributionFrequency, 'quarterly');
   assert.equal(s.settings.displayName, 'Léa');
   assert.equal(s.preferences.dynamicBackgroundEnabled, false);
-  assert.ok(s.currentWeekState.restDays['2026-11-03']);
+  assert.equal(s.calendar['2026-11-03'], 'off', 'anciens jours de repos conservés');
 });
 
 test('fusion cloud : union, suppressions, rubrique la plus récente', () => {

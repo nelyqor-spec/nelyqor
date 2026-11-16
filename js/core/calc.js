@@ -19,15 +19,28 @@ export const PROJECTION_REFINING_DAYS = 5;
 const OBSERVATION_LOOKBACK_DAYS = 365 * 3;
 
 const sum = (arr, fn) => arr.reduce((acc, x) => acc + fn(x), 0);
-const restDaysOf = (state) => (state.currentWeekState && state.currentWeekState.restDays) || {};
+/**
+ * Exceptions au planning, par date : 'work' (travail exceptionnel) ou 'off' (repos exceptionnel).
+ * Compatibilité : l'ancien format { restDays: { date: true } } est lu comme 'off'.
+ */
+export function dayOverridesOf(state) {
+  const out = {};
+  const legacy = state.currentWeekState && state.currentWeekState.restDays;
+  if (legacy) for (const [k, v] of Object.entries(legacy)) if (v) out[k] = 'off';
+  return Object.assign(out, state.calendar || {});
+}
+const restDaysOf = dayOverridesOf;
+const isOff = (v) => v === true || v === 'off';
 
 // ---------------------------------------------------------------------------
 // Jours d'activité
 // ---------------------------------------------------------------------------
 
-/** Le jour `k` est-il un jour d'activité ? (planning habituel + journées passées en repos) */
-export function isActivityDay(settings, restDays, k) {
-  if (restDays && restDays[k]) return false;
+/** Le jour `k` est-il un jour d'activité ? (planning habituel + exceptions du calendrier) */
+export function isActivityDay(settings, overrides, k) {
+  const o = overrides && overrides[k];
+  if (o === 'work') return true;
+  if (isOff(o)) return false;
   return settings.plannedActivityDays.includes(weekday(k));
 }
 
@@ -35,13 +48,15 @@ export function isActivityDay(settings, restDays, k) {
 export function countActivityDays(settings, restDays, from, to) {
   if (!from || !to || from > to) return 0;
   const planned = new Set(settings.plannedActivityDays);
-  if (planned.size === 0) return 0;
   const total = diffDays(from, to) + 1;
   let count = Math.floor(total / 7) * planned.size;
   const startWd = weekday(from);
   for (let i = 0; i < total % 7; i++) if (planned.has((startWd + i) % 7)) count++;
-  for (const [k, isRest] of Object.entries(restDays || {})) {
-    if (isRest && k >= from && k <= to && planned.has(weekday(k))) count--;
+  for (const [k, o] of Object.entries(restDays || {})) {
+    if (k < from || k > to) continue;
+    const p = planned.has(weekday(k));
+    if (isOff(o) && p) count--; // repos exceptionnel sur un jour normalement travaillé
+    else if (o === 'work' && !p) count++; // travail exceptionnel sur un jour normalement libre
   }
   return count;
 }
@@ -49,7 +64,7 @@ export function countActivityDays(settings, restDays, from, to) {
 /** Date du n-ième jour d'activité à partir de `from` (inclus). null si impossible. */
 export function nthActivityDayFrom(settings, restDays, from, n, maxDays = 365 * 30) {
   if (n <= 0) return from;
-  if (!settings.plannedActivityDays.length) return null;
+  if (!settings.plannedActivityDays.length && !Object.values(restDays || {}).includes('work')) return null;
   let k = from;
   let c = 0;
   for (let i = 0; i < maxDays; i++) {
@@ -212,15 +227,33 @@ export function upcomingPlanned(state, today, horizonDays = 365) {
 }
 
 // ---------------------------------------------------------------------------
-// Cotisations : échéances mensuelles ou trimestrielles
-// Échéance = dernier jour du mois qui suit la période (ex. trimestre janv.–mars → 30 avril).
+// Cotisations : prélèvements mensuels ou trimestriels, à la date indiquée par l'utilisateur.
+// Chaque prélèvement porte sur la période (mois ou trimestre civil) qui précède celle où il tombe
+// (ex. prélèvement du 5 décembre → revenus de novembre ; du 31 janvier → revenus d'octobre à décembre).
 // ---------------------------------------------------------------------------
-function contributionPeriod(k, frequency) {
+function periodContaining(k, frequency) {
   const [y, m] = k.split('-').map(Number);
   const startMonth = frequency === 'monthly' ? m : Math.floor((m - 1) / 3) * 3 + 1;
   const from = `${y}-${String(startMonth).padStart(2, '0')}-01`;
-  const to = endOfMonth(addMonths(from, frequency === 'monthly' ? 0 : 2));
-  return { from, to, due: endOfMonth(addMonths(from, frequency === 'monthly' ? 1 : 3)) };
+  return { from, to: endOfMonth(addMonths(from, frequency === 'monthly' ? 0 : 2)) };
+}
+
+/** Période de revenus couverte par un prélèvement tombant le `due`. */
+export function periodCoveredBy(due, frequency) {
+  const cur = periodContaining(due, frequency);
+  return periodContaining(addDays(cur.from, -1), frequency);
+}
+
+/** Prochain prélèvement à partir de `today` (inclus), d'après une date de prélèvement connue. */
+export function nextContributionDue(anchor, frequency, today) {
+  const step = frequency === 'monthly' ? 1 : 3;
+  // Point de départ proche d'aujourd'hui, puis on avance / recule par pas de 1 ou 3 mois.
+  const months = (Number(today.slice(0, 4)) - Number(anchor.slice(0, 4))) * 12 + Number(today.slice(5, 7)) - Number(anchor.slice(5, 7));
+  let k = Math.floor(months / step) - 1;
+  let d = addMonths(anchor, k * step);
+  for (let i = 0; i < 6 && d < today; i++) d = addMonths(anchor, ++k * step);
+  while (k > -100000) { const prev = addMonths(anchor, (k - 1) * step); if (prev >= today) { k--; d = prev; } else break; }
+  return d;
 }
 
 export function contributionSchedule(state, today) {
@@ -228,20 +261,56 @@ export function contributionSchedule(state, today) {
   if (!s.hasContributions || !s.contributionRate) return null;
   const frequency = s.contributionFrequency === 'monthly' ? 'monthly' : 'quarterly';
   const contribBetween = (from, to) => sum(state.revenues.filter((r) => r.date >= from && r.date <= to), (r) => r.contributionAmount);
-  const current = contributionPeriod(today, frequency);
-  const previous = contributionPeriod(addDays(current.from, -1), frequency);
-  const currentAmount = contribBetween(current.from, minKey(current.to, today));
-  const previousAmount = contribBetween(previous.from, previous.to);
-  // La période précédente reste à payer jusqu'à son échéance.
-  const previousPending = today <= previous.due && previousAmount > 0;
-  const next = previousPending
-    ? { ...previous, amount: previousAmount, closed: true }
-    : { ...current, amount: currentAmount, closed: false };
+  const needsDueDate = !isValidDateKey(s.contributionDueDate);
+  // Sans date connue : hypothèse URSSAF (fin du mois qui suit la période).
+  const anchor = needsDueDate ? endOfMonth(addMonths(periodContaining(today, frequency).from, frequency === 'monthly' ? 1 : 3)) : s.contributionDueDate;
+  const due = nextContributionDue(anchor, frequency, today);
+  const covered = periodCoveredBy(due, frequency);
+  const nextAmount = contribBetween(covered.from, minKey(covered.to, today));
+  const afterFrom = addDays(covered.to, 1);
+  const followingAmount = afterFrom <= today ? contribBetween(afterFrom, today) : 0;
+  const following = nextContributionDue(anchor, frequency, addDays(due, 1));
   return {
     frequency,
-    next,
-    current: { ...current, amount: currentAmount },
-    toSetAside: (previousPending ? previousAmount : 0) + currentAmount,
+    needsDueDate,
+    next: { due, from: covered.from, to: covered.to, amount: nextAmount, complete: covered.to < today },
+    following: { due: following, amount: followingAmount },
+    toSetAside: nextAmount + followingAmount,
+  };
+}
+
+const isValidDateKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
+
+// ---------------------------------------------------------------------------
+// Micro-entreprise (Nelyqor+) : plafond de chiffre d'affaires et franchise de TVA.
+// Montants 2026 (plafonds valables 2026-2028). À mettre à jour ici si la loi change.
+// ---------------------------------------------------------------------------
+export const MICRO_THRESHOLDS = {
+  year: 2026,
+  services: { label: 'Prestations de services / libéral', plafond: 8360000, tva: 3750000, tvaMajore: 4125000 },
+  vente: { label: 'Vente de marchandises / hébergement', plafond: 20310000, tva: 8500000, tvaMajore: 9350000 },
+  mixte: { label: 'Activité mixte', plafond: 20310000, tva: 8500000, tvaMajore: 9350000 },
+};
+
+export function microStatus(state, today, snap) {
+  const kind = state.settings.microActivity;
+  if (!kind || !MICRO_THRESHOLDS[kind]) return null;
+  const t = MICRO_THRESHOLDS[kind];
+  const yearStart = today.slice(0, 4) + '-01-01';
+  const yearEnd = today.slice(0, 4) + '-12-31';
+  const revenue = grossRevenueBetween(state, yearStart, today); // chiffre d'affaires = encaissements bruts
+  // Projection à fin d'année : rythme brut observé (revenus réguliers) × jours d'activité restants.
+  const rate = state.settings.hasContributions ? state.settings.contributionRate : 0;
+  const grossPace = snap && snap.pace ? grossNeededForNet(Math.round(snap.pace.projectionDailyPace), rate) : 0;
+  const daysLeft = countActivityDays(state.settings, dayOverridesOf(state), addDays(today, 1), yearEnd);
+  const projectedYear = revenue + grossPace * daysLeft;
+  const level = (v, max) => (v >= max ? 'over' : v >= max * 0.8 ? 'near' : 'ok');
+  return {
+    kind, ...t, revenue, projectedYear,
+    tvaLevel: revenue > t.tvaMajore ? 'over' : level(revenue, t.tva),
+    plafondLevel: level(revenue, t.plafond),
+    tvaProjectedOver: projectedYear > t.tva,
+    plafondProjectedOver: projectedYear > t.plafond,
   };
 }
 
@@ -298,8 +367,9 @@ export function computeSnapshot(state, today) {
 
   // --- Aujourd'hui ---------------------------------------------------------
   const todayPlanned = s.plannedActivityDays.includes(weekday(today));
-  const todayMarkedRest = Boolean(rd[today]);
-  const todayIsActivity = todayPlanned && !todayMarkedRest && today <= target;
+  const todayMarkedRest = todayPlanned && isOff(rd[today]);
+  const todayExtraWork = !todayPlanned && rd[today] === 'work';
+  const todayIsActivity = isActivityDay(s, rd, today) && today <= target;
   const todayRealized = grossRevenueBetween(state, today, today);
 
   // Avance de la semaine : réalisé − objectif cumulé des jours d'activité déjà passés
@@ -334,7 +404,7 @@ export function computeSnapshot(state, today) {
     weekActivityDays, weeklyTarget, weeklyRealized, weeklyRemaining,
     weeklyProgress, weeklyBarPct, weeklyReached, weeklyExceeded, weeklySurplus, weeklyAdvance,
     weekDaysElapsed, remainingWeekActivityDays, remainingPerActivityDay,
-    todayPlanned, todayMarkedRest, todayIsActivity, todayRealized,
+    todayPlanned, todayMarkedRest, todayExtraWork, todayIsActivity, todayRealized,
     weekRevenueGross: weeklyRealized, weekRevenueNet, monthRevenueGross, monthRevenueNet,
     transfersTotal, withdrawalsTotal,
     futureStart, pace, simpleProjection, projectAt, plannedUntilTarget, contributions,

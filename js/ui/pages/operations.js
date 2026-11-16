@@ -4,7 +4,7 @@ import { PageHeader, Card, Stat, Button, Badge, Segmented, LineChart, OperationR
 import { revenueSeries, computePremium, upcomingPlanned, CHART_RANGES } from '../../core/calc.js';
 import { WEEKDAYS_SHORT, weekday, formatDM, formatMonth } from '../../core/dates.js';
 import { isPremium } from '../../core/store.js';
-import { PremiumRevenueStats, PremiumTeaser, comparisonNote } from '../premium.js';
+import { PremiumRevenueStats, PremiumTeaser, MicroCard, comparisonNote } from '../premium.js';
 import { openCategorySheet, openCategoryForm, openPlanForm, PlanList, DueBanner } from '../expenses.js';
 
 const RECENT_COUNT = 10;
@@ -72,6 +72,7 @@ export function RevenusPage({ state, snap, actions }) {
     PageHeader({ title: 'Revenus', subtitle: 'Enregistre tes revenus et suis leur évolution.' }),
     Button('Ajouter un revenu', () => actions.addOperation('revenue'), { iconName: 'plus' }),
     summary,
+    MicroCard(state, snap, { onSetup: () => actions.openProfile('cotisations') }),
     chartCard,
     PremiumRevenueStats(state, snap),
     listCard,

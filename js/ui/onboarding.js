@@ -7,6 +7,7 @@ import { todayKey, addDays, isValidKey } from '../core/dates.js';
 import { completeOnboarding } from '../core/store.js';
 import { PRICE_LINE, FREE_FEATURES, PLUS_FEATURES, checklist } from './premium.js';
 import { openAuthSheet } from './account.js';
+import { ContributionDueFields } from './contrib.js';
 import { isConfigured } from '../core/cloud.js';
 
 const TOTAL_STEPS = 5;
@@ -14,7 +15,7 @@ const TOTAL_STEPS = 5;
 export function renderOnboarding(root) {
   const draft = {
     goalAmount: null, targetDate: '', hasSavings: null, initialSavings: null,
-    hasContributions: null, contributionRate: null, contributionFrequency: null, plannedActivityDays: [],
+    hasContributions: null, contributionRate: null, contributionFrequency: null, contributionDueDate: null, plannedActivityDays: [],
   };
   let step = 1;
 
@@ -108,33 +109,29 @@ export function renderOnboarding(root) {
     const rate = AmountInput({ id: 'ob-rate', placeholder: '21', suffix: '%', value: rateToInput(draft.contributionRate), label: 'Pourcentage de cotisations' });
     const field = Field('Quel pourcentage souhaites-tu réserver pour tes cotisations ?', rate.wrap, { forId: 'ob-rate', hint: 'Ce pourcentage sera mis de côté sur chaque revenu brut.' });
     field.el.hidden = draft.hasContributions !== true;
-    const freqError = h('p', { class: 'field-error', role: 'alert', hidden: true });
-    const freq = h('div', { class: 'field' },
-      h('span', { class: 'field-label' }, 'À quelle fréquence verses-tu tes cotisations ?'),
-      Segmented([{ value: 'monthly', label: 'Chaque mois' }, { value: 'quarterly', label: 'Tous les 3 mois' }], draft.contributionFrequency, (v) => {
-        draft.contributionFrequency = v; freqError.hidden = true;
-      }, { label: 'Fréquence de versement des cotisations' }),
-      h('p', { class: 'field-hint' }, 'La plupart des indépendants les versent tous les 3 mois. Nelyqor te dira combien garder de côté jusqu’à l’échéance.'),
-      freqError);
-    freq.hidden = draft.hasContributions !== true;
+    const due = ContributionDueFields({ frequency: draft.contributionFrequency, dueDate: draft.contributionDueDate, idPrefix: 'ob' });
+    due.el.hidden = draft.hasContributions !== true;
     const choiceError = h('p', { class: 'field-error', role: 'alert', hidden: true });
     const choice = Segmented([{ value: true, label: 'Oui' }, { value: false, label: 'Non' }], draft.hasContributions, (v) => {
       draft.hasContributions = v;
       choiceError.hidden = true;
       field.el.hidden = !v;
-      freq.hidden = !v;
+      due.el.hidden = !v;
       if (v) setTimeout(() => rate.input.focus(), 50);
     }, { label: 'Es-tu soumis à des cotisations sociales ?' });
     return frame({
       question: 'Es-tu soumis à des cotisations sociales sur ces revenus ?',
-      body: [choice, choiceError, field.el, freq],
+      body: [choice, choiceError, field.el, due.el],
       onNext: () => {
         if (draft.hasContributions === null) { choiceError.textContent = 'Choisis Oui ou Non.'; choiceError.hidden = false; return; }
         if (draft.hasContributions === false) { draft.contributionRate = 0; return go(5); }
         const v = parseRateToBp(rate.input.value);
         if (v === null) return field.setError('Indique un pourcentage (ex. 21).');
         if (v < 0 || v >= RATE_SCALE) return field.setError('Le pourcentage doit être compris entre 0 et moins de 100 %.');
-        if (!draft.contributionFrequency) { freqError.textContent = 'Choisis une fréquence.'; freqError.hidden = false; return; }
+        const sched = due.read();
+        if (!sched) return;
+        draft.contributionFrequency = sched.contributionFrequency;
+        draft.contributionDueDate = sched.contributionDueDate;
         draft.contributionRate = v;
         go(5);
       },
@@ -163,6 +160,7 @@ export function renderOnboarding(root) {
       hasContributions: draft.hasContributions === true,
       contributionRate: draft.contributionRate || 0,
       contributionFrequency: draft.contributionFrequency || 'quarterly',
+      contributionDueDate: draft.contributionDueDate,
       plannedActivityDays: draft.plannedActivityDays,
       plan,
     });

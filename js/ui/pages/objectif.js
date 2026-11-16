@@ -4,7 +4,8 @@ import { TopBar, Card, ProgressBar, Row, Stat, Badge, Button, Notice, OperationR
 import { formatDayMonth, formatNumeric, formatShort, WEEKDAYS_SHORT } from '../../core/dates.js';
 import { PROJECTION_STATUS_LABEL } from '../../core/calc.js';
 import { getDailyQuote } from '../../content/quotes.js';
-import { setRestDay, isPremium } from '../../core/store.js';
+import { setDayWorked, isPremium } from '../../core/store.js';
+import { openCalendar } from '../calendar.js';
 import { PremiumObjectifSection } from '../premium.js';
 
 export function ObjectifPage(ctx) {
@@ -48,7 +49,9 @@ export function ObjectifPage(ctx) {
   ], { cls: 'accent', label: 'Objectif global' });
 
   // --- Carte Aujourd'hui -----------------------------------------------------
-  const todayStatus = snap.todayIsActivity
+  const todayStatus = snap.todayExtraWork
+    ? Badge('Travail exceptionnel', 'teal')
+    : snap.todayIsActivity
     ? Badge('Journée d’activité prévue', 'teal')
     : snap.todayMarkedRest ? Badge('Journée de repos (exceptionnelle)', 'warn') : Badge('Journée de repos');
   const todayRows = h('div', { class: 'rows' });
@@ -59,11 +62,15 @@ export function ObjectifPage(ctx) {
   if (snap.todayRealized > 0) todayRows.append(Row('Réalisé aujourd’hui · brut', fmt.eur2(snap.todayRealized)));
   const todayButtons = h('div', { class: 'btn-stack' },
     Button('Saisir mes revenus', () => actions.addOperation('revenue'), { iconName: 'plus' }));
-  if (snap.todayPlanned && !snap.targetReached) {
-    todayButtons.append(snap.todayMarkedRest
-      ? Button('Finalement, je travaille aujourd’hui', () => setRestDay(snap.today, false), { variant: 'secondary' })
-      : Button('Je ne travaille pas aujourd’hui', () => setRestDay(snap.today, true), { variant: 'secondary' }));
+  if (!snap.targetReached) {
+    let label;
+    if (snap.todayMarkedRest) label = 'Finalement, je travaille aujourd’hui';
+    else if (snap.todayExtraWork) label = 'Finalement, je ne travaille pas aujourd’hui';
+    else if (snap.todayIsActivity) label = 'Je ne travaille pas aujourd’hui';
+    else label = 'Je travaille exceptionnellement aujourd’hui';
+    todayButtons.append(Button(label, () => setDayWorked(snap.today, !snap.todayIsActivity), { variant: 'secondary' }));
   }
+  todayButtons.append(Button('Mon calendrier', openCalendar, { variant: 'ghost', iconName: 'calendar' }));
   const todayCard = Card([
     h('div', { class: 'card-head' },
       h('div', null, h('p', { class: 'eyebrow' }, 'Aujourd’hui'), h('h2', { class: 'card-title', style: { marginTop: '4px' } }, formatDayMonth(snap.today))),
@@ -117,20 +124,27 @@ export function ObjectifPage(ctx) {
   }
   const weekCard = Card(weekParts, { label: 'Objectif de la semaine' });
 
-  // --- Cotisations à mettre de côté (échéances mensuelles / trimestrielles) --
+  // --- Cotisations à garder de côté (selon la date de prélèvement de l'utilisateur) --
   let contribCard = null;
   const c = snap.contributions;
-  if (c && c.toSetAside > 0) {
-    const period = c.frequency === 'monthly' ? 'mois' : 'trimestre';
+  if (c && (c.toSetAside > 0 || c.needsDueDate)) {
+    const monthName = new Intl.DateTimeFormat('fr-FR', { month: 'long', timeZone: 'UTC' });
+    const mShort = new Intl.DateTimeFormat('fr-FR', { month: 'short', timeZone: 'UTC' });
+    const d = (k) => Date.parse(k + 'T12:00:00Z');
+    const periodLabel = c.frequency === 'monthly' ? `revenus de ${monthName.format(d(c.next.from))}` : `revenus ${mShort.format(d(c.next.from)).replace('.', '')}–${mShort.format(d(c.next.to)).replace('.', '')}`;
     contribCard = Card([
       h('div', { class: 'card-head' },
         h('div', null, h('p', { class: 'eyebrow' }, 'Cotisations'), h('h2', { class: 'card-title', style: { marginTop: '4px' } }, 'À garder de côté')),
-        Badge(c.frequency === 'monthly' ? 'Mensuelles' : 'Trimestrielles')),
+        Badge(c.frequency === 'monthly' ? 'Chaque mois' : 'Tous les 3 mois')),
       h('p', { class: 'amount-lg' }, fmt.eur2(c.toSetAside)),
-      h('div', { class: 'rows' },
-        Row(`Prochaine échéance${c.next.closed ? ` (${period} terminé)` : ''}`, formatShort(c.next.due)),
-        Row(c.next.closed ? `Montant du ${period} précédent` : `Cumul du ${period} en cours`, fmt.eur2(c.next.amount)),
-        c.next.closed && c.current.amount > 0 && Row(`Déjà cumulé ce ${period}`, fmt.eur2(c.current.amount))),
+      c.needsDueDate
+        ? h('div', { class: 'btn-stack' },
+          Notice('warn', 'Quand tombent tes cotisations ?', 'Indique la date de ton prochain prélèvement pour un calcul exact.'),
+          Button('Indiquer la date de prélèvement', () => actions.openProfile('cotisations'), { variant: 'secondary', iconName: 'calendar' }))
+        : h('div', { class: 'rows' },
+          Row('Prochain prélèvement', formatShort(c.next.due), { valueClass: 'teal' }),
+          Row(`Estimé (${periodLabel}${c.next.complete ? '' : ', en cours'})`, fmt.eur2(c.next.amount)),
+          c.following.amount > 0 && Row(`Pour le prélèvement du ${formatShort(c.following.due)}`, fmt.eur2(c.following.amount))),
       h('p', { class: 'field-hint' }, 'Cet argent n’est pas compté dans ton objectif : il est déjà déduit de tes revenus nets et de ta projection.'),
     ], { label: 'Cotisations à garder de côté' });
   }

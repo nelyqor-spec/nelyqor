@@ -1,4 +1,4 @@
-# Nelyqor — audit de sécurité (version 1.1.0)
+# Nelyqor — audit de sécurité (version 1.2.0)
 
 Audit du code de l'application (HTML / CSS / JavaScript), de la configuration Netlify et de
 l'intégration Supabase. Les corrections listées « ✅ corrigé » sont incluses dans cette version.
@@ -137,3 +137,43 @@ reconnu par ton serveur.
 - `node tests/sync_e2e.mjs` : deux appareils + faux serveur ; données piégées venant du cloud,
   rejet des mots de passe faibles, suppression du compte.
 - `python3 tests/e2e.py` : parcours complet et responsive (320 → 430 px).
+
+## 9. Checklist « avant de lancer une application » (25 points)
+
+Légende : ✅ fait · ⚙️ réglage à faire dans Supabase / Netlify · ⚠️ à faire avant la vente · — sans objet pour Nelyqor.
+
+| # | Point | État | Comment c'est couvert dans Nelyqor |
+|---|---|---|---|
+| **Accès & données** |||
+| 1 | Vraie authentification | ✅ | Supabase Auth (Apple, Google, e-mail), flux PKCE, sessions qui expirent et se renouvellent. |
+| 2 | Clés d'API cachées | ✅ | Seule la clé publique « anon » est dans l'app (prévue pour ça). Aucune clé secrète dans le code ni dans l'historique Git (vérifié). |
+| 3 | Base de données sécurisée | ✅ | RLS activée et forcée : chacun ne lit / écrit que sa ligne ; aucun droit pour les visiteurs. |
+| 4 | HTTPS imposé | ✅ | Netlify en HTTPS + en-tête HSTS + `upgrade-insecure-requests`. |
+| 5 | Mots de passe hachés | ✅ | Gérés par Supabase (bcrypt) ; l'app ne voit ni ne stocke jamais un mot de passe. |
+| **Attaques** |||
+| 6 | Validation côté serveur | ✅ | Base : type JSON, taille max 5 Mo, RLS. App : `sanitize()` revalide tout ce qui vient du serveur ou d'un fichier. |
+| 7 | Protection contre le XSS | ✅ | Textes affichés en nœuds texte uniquement, CSP stricte sans script en ligne, test automatique avec données piégées. |
+| 8 | Activités suspectes surveillées | ⚙️ | Journaux d'authentification Supabase (*Logs → Auth*) ; activer les alertes e-mail du projet. |
+| 9 | Routes admin verrouillées | — / ✅ | Aucune page ni route d'administration dans l'app ; l'administration se fait dans le tableau de bord Supabase (protégé par MFA, § 4). |
+| 10 | Requêtes paramétrées | ✅ | Aucune requête SQL construite à la main : l'app passe par l'API Supabase (PostgREST), paramétrée par conception. |
+| **Configuration** |||
+| 11 | Variables d'environnement | ✅ | Pas de secret côté app ; les seules valeurs (URL + clé publique) sont dans `js/config.js`, publiques par conception. |
+| 12 | Limite de requêtes | ⚙️ | Limites de Supabase Auth (connexion, inscription, e-mails) actives par défaut ; ajouter un CAPTCHA à l'ouverture (§ 4). |
+| 13 | CORS restreint | ✅ | L'app n'a pas d'API à elle. CSP `connect-src` : l'app ne peut appeler que son domaine et Supabase. Côté Supabase, la protection repose sur RLS, pas sur CORS. |
+| 14 | En-têtes de sécurité | ✅ | `_headers` : CSP, HSTS, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy. |
+| 15 | Cookies de session sécurisés | — | Aucun cookie : la session est un jeton envoyé dans l'en-tête de chaque requête (protégé par la CSP). En natif : trousseau sécurisé (§ 5). |
+| **Abus** |||
+| 16 | Protection CSRF | ✅ | Sans cookie de session, une attaque CSRF n'a rien à exploiter ; formulaires limités au domaine (`form-action 'self'`). |
+| 17 | Liens de réinitialisation qui expirent | ⚙️ | Supabase : liens à usage unique ; régler *Auth → Email → OTP expiry* à 1 h maximum (3 600 s, valeur par défaut). |
+| 18 | Fichiers : type et taille limités | ✅ | Photo : types image uniquement, 15 Mo max, ré-encodée en JPEG 256 px. Sauvegarde : JSON Nelyqor uniquement, 10 Mo max, validée. |
+| 19 | Prix et paiements vérifiés | ⚠️ | Abonnement encore simulé : à valider côté serveur avec RevenueCat avant la vente (§ 6). |
+| **Production** |||
+| 20 | Mode debug désactivé | ✅ | Aucun `console.log`, aucun mode debug ; les erreurs montrées à l'utilisateur ne contiennent aucun détail technique. |
+| 21 | Dépendances à jour | ✅ | Une seule dépendance (Supabase 2.117.3, octobre 2026), figée et vérifiée par empreinte SRI. À mettre à jour tous les 2-3 mois. |
+| 22 | Paquets inutilisés supprimés | ✅ | Aucun autre paquet : pas de framework, pas de `node_modules` livré. |
+| **Fuites** |||
+| 23 | Fichiers exposés détectés | ✅ | Tests, schéma SQL, README, SECURITY.md et fichiers marketing bloqués sur le site (`netlify.toml`). Le zip de mise en ligne ne contient que l'app. |
+| 24 | Secrets dans l'historique Git | ✅ | Historique scanné (clés API, JWT, clés privées, mots de passe) : rien trouvé. |
+| 25 | Clés qui ont fuité révoquées | ✅ | Aucune clé n'a fui. Si une clé secrète Supabase fuitait un jour : *Project Settings → API → Roll* immédiatement. |
+
+**Bilan : 19 points faits, plus le 9 sans risque (pas de route d'administration) ; 3 réglages à cocher dans Supabase (8, 12, 17, voir aussi § 4) ; 1 point bloquant avant la vente (19 : paiement réel) ; 1 sans objet (15 : pas de cookie).**

@@ -3,7 +3,7 @@
 //  - Opérations, dossiers et dépenses prévues : union par identifiant ; en cas de conflit,
 //    la version modifiée le plus récemment l'emporte (updatedAt).
 //  - Suppressions : un élément supprimé d'un côté est supprimé partout (journal `deleted`).
-//  - Réglages, profil, préférences, abonnement, jours de repos : la rubrique modifiée
+//  - Réglages, profil, préférences, abonnement, calendrier : la rubrique modifiée
 //    le plus récemment l'emporte (updatedAt par rubrique).
 import { sanitize, byDateDesc } from './store.js';
 
@@ -46,7 +46,7 @@ export function mergeStates(localRaw, remoteRaw) {
     profile: pick('profile'),
     preferences: pick('preferences'),
     subscription,
-    currentWeekState: pick('restDays', 'currentWeekState'),
+    calendar: pick('calendar'),
     revenues: mergeList(local.revenues, remote.revenues, deleted).sort(byDateDesc),
     transfers: mergeList(local.transfers, remote.transfers, deleted).sort(byDateDesc),
     withdrawals: mergeList(local.withdrawals, remote.withdrawals, deleted).sort(byDateDesc),

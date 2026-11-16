@@ -8,7 +8,7 @@ import { todayKey, isValidKey, addMonths } from './dates.js';
 const STORAGE_KEY = 'nelyqor:v1'; // clé conservée pour ne perdre aucune donnée existante
 export const SCHEMA_VERSION = 2;
 export const TRIAL_DAYS = 7;
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 export const DEFAULT_ACCENT = '#2ED3B7';
 export const LABEL_MAX = 40;
 export const CATEGORY_NAME_MAX = 30;
@@ -23,7 +23,8 @@ const MAX_ITEMS = 20000;
  * {
  *   version, onboardingCompleted,
  *   settings: { goalAmount, targetDate, initialSavings, hasContributions, contributionRate,
- *               contributionFrequency: 'monthly'|'quarterly', plannedActivityDays, displayName, setupDate, createdAt },
+ *               contributionFrequency: 'monthly'|'quarterly', contributionDueDate: 'YYYY-MM-DD' | null (une date de prélèvement),
+ *               microActivity: null|'services'|'vente'|'mixte', plannedActivityDays, displayName, setupDate, createdAt },
  *   profile: { avatar: 'data:image/jpeg;base64,…' | null },
  *   revenues:    [{ id, date, grossAmount, contributionAmount, netAmount, contributionRate, label, exceptional, createdAt, updatedAt }],
  *   transfers:   [{ id, date, amount, label, createdAt, updatedAt }],
@@ -33,8 +34,8 @@ const MAX_ITEMS = 20000;
  *   deleted: { [id]: isoDate },   // suppressions, pour que la synchro ne fasse pas « revenir » un élément
  *   subscription: { status: 'free'|'trial'|'premium', trialStartedAt, trialEndsAt, trialUsed },
  *   preferences:  { dynamicBackgroundEnabled, dailyQuoteEnabled, accentColor },
- *   currentWeekState: { restDays: { 'YYYY-MM-DD': true } },
- *   updatedAt: { settings, profile, preferences, subscription, restDays } // horodatage par rubrique (fusion cloud)
+ *   calendar: { 'YYYY-MM-DD': 'work' | 'off' }, // exceptions au planning : travail exceptionnel / repos exceptionnel
+ *   updatedAt: { settings, profile, preferences, subscription, calendar } // horodatage par rubrique (fusion cloud)
  * }
  * Montants en centimes, taux en points de base (21 % = 2100), jours 0 = lundi … 6 = dimanche.
  */
@@ -52,7 +53,7 @@ export function emptyState() {
     deleted: {},
     subscription: { status: 'free', trialStartedAt: null, trialEndsAt: null, trialUsed: false },
     preferences: { dynamicBackgroundEnabled: true, dailyQuoteEnabled: true, accentColor: DEFAULT_ACCENT },
-    currentWeekState: { restDays: {} },
+    calendar: {},
     updatedAt: {},
   };
 }
@@ -163,6 +164,8 @@ function cleanSettings(s) {
     hasContributions: has,
     contributionRate: rate,
     contributionFrequency: s.contributionFrequency === 'monthly' ? 'monthly' : 'quarterly',
+    contributionDueDate: has && isValidKey(s.contributionDueDate) ? s.contributionDueDate : null,
+    microActivity: ['services', 'vente', 'mixte'].includes(s.microActivity) ? s.microActivity : null,
     plannedActivityDays: days,
     displayName: str(s.displayName, 30),
     setupDate: s.setupDate,
@@ -176,13 +179,16 @@ export function sanitize(data) {
   const settings = cleanSettings(data.settings);
   const sub = isObj(data.subscription) ? data.subscription : {};
   const prefs = isObj(data.preferences) ? data.preferences : {};
-  const restIn = isObj(data.currentWeekState) && isObj(data.currentWeekState.restDays) ? data.currentWeekState.restDays : {};
-  const restDays = {};
-  for (const [k, v] of Object.entries(restIn).slice(0, 2000)) if (v === true && isValidKey(k)) restDays[k] = true;
+  // Calendrier : exceptions au planning. Migration : anciens « jours de repos » (v1.0) → 'off'.
+  const calendar = {};
+  const legacy = isObj(data.currentWeekState) && isObj(data.currentWeekState.restDays) ? data.currentWeekState.restDays : {};
+  for (const [k, v] of Object.entries(legacy).slice(0, 5000)) if (v === true && isValidKey(k)) calendar[k] = 'off';
+  if (isObj(data.calendar)) for (const [k, v] of Object.entries(data.calendar).slice(0, 5000)) if ((v === 'work' || v === 'off') && isValidKey(k)) calendar[k] = v;
   const deleted = {};
   if (isObj(data.deleted)) for (const [k, v] of Object.entries(data.deleted).slice(0, 50000)) if (id(k) && iso(v)) deleted[k] = v;
   const updatedAt = {};
-  if (isObj(data.updatedAt)) for (const k of ['settings', 'profile', 'preferences', 'subscription', 'restDays']) if (iso(data.updatedAt[k])) updatedAt[k] = data.updatedAt[k];
+  if (isObj(data.updatedAt)) for (const k of ['settings', 'profile', 'preferences', 'subscription', 'calendar']) if (iso(data.updatedAt[k])) updatedAt[k] = data.updatedAt[k];
+  if (!updatedAt.calendar && isObj(data.updatedAt) && iso(data.updatedAt.restDays)) updatedAt.calendar = data.updatedAt.restDays;
   const notDeleted = (x) => !deleted[x.id];
 
   return {
@@ -207,7 +213,7 @@ export function sanitize(data) {
       dailyQuoteEnabled: prefs.dailyQuoteEnabled !== false,
       accentColor: isHexColor(prefs.accentColor) ? prefs.accentColor.toUpperCase() : DEFAULT_ACCENT,
     },
-    currentWeekState: { restDays },
+    calendar,
     updatedAt,
   };
 }
@@ -259,7 +265,7 @@ export const uid = () =>
 // Onboarding / réglages / profil
 // ---------------------------------------------------------------------------
 
-export function completeOnboarding({ goalAmount, targetDate, initialSavings, hasContributions, contributionRate, contributionFrequency, plannedActivityDays, plan }) {
+export function completeOnboarding({ goalAmount, targetDate, initialSavings, hasContributions, contributionRate, contributionFrequency, contributionDueDate, plannedActivityDays, plan }) {
   const now = new Date();
   const settings = cleanSettings({
     goalAmount,
@@ -268,6 +274,7 @@ export function completeOnboarding({ goalAmount, targetDate, initialSavings, has
     hasContributions,
     contributionRate: hasContributions ? contributionRate : 0,
     contributionFrequency,
+    contributionDueDate,
     plannedActivityDays,
     displayName: state.settings ? state.settings.displayName : '',
     setupDate: todayKey(),
@@ -278,7 +285,7 @@ export function completeOnboarding({ goalAmount, targetDate, initialSavings, has
     ? { status: 'trial', trialStartedAt: now.toISOString(), trialEndsAt: new Date(now.getTime() + TRIAL_DAYS * DAY_MS).toISOString(), trialUsed: true }
     : b.subscription;
   commit({ ...b, onboardingCompleted: true, settings, subscription, preferences: state.preferences, profile: state.profile },
-    { touched: ['settings', 'subscription', 'preferences', 'profile', 'restDays'] });
+    { touched: ['settings', 'subscription', 'preferences', 'profile', 'calendar'] });
 }
 
 export function updateSettings(patch) {
@@ -471,14 +478,27 @@ export function skipPlannedExpense(planId) {
 const minDate = (a, b) => (a < b ? a : b);
 
 // ---------------------------------------------------------------------------
-// Semaine en cours : « Je ne travaille pas aujourd'hui » (réversible)
+// Calendrier : un jour précis travaillé ou non, sans toucher au planning habituel.
 // ---------------------------------------------------------------------------
 
+/** Ce jour est-il travaillé selon le planning habituel (sans exception) ? */
+export function isPlannedWeekday(dateKey) {
+  const wd = (new Date(dateKey + 'T12:00:00Z').getUTCDay() + 6) % 7;
+  return Boolean(state.settings && state.settings.plannedActivityDays.includes(wd));
+}
+
+/** Indique si `dateKey` est travaillé. Si c'est déjà le planning habituel, l'exception est retirée. */
+export function setDayWorked(dateKey, worked) {
+  if (!isValidKey(dateKey)) return;
+  const calendar = { ...state.calendar };
+  if (worked === isPlannedWeekday(dateKey)) delete calendar[dateKey];
+  else calendar[dateKey] = worked ? 'work' : 'off';
+  commit({ ...state, calendar }, { touched: ['calendar'] });
+}
+
+/** Ancienne API (« Je ne travaille pas aujourd'hui ») conservée pour compatibilité. */
 export function setRestDay(dateKey, isRest) {
-  const restDays = { ...state.currentWeekState.restDays };
-  if (isRest) restDays[dateKey] = true;
-  else delete restDays[dateKey];
-  commit({ ...state, currentWeekState: { restDays } }, { touched: ['restDays'] });
+  setDayWorked(dateKey, !isRest);
 }
 
 // ---------------------------------------------------------------------------

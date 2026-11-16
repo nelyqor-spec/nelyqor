@@ -397,3 +397,36 @@ img { display: block; max-width: 100%; }
   :root { --nav-h: 56px; }
   .nav-item .nav-label { font-size: 10px; }
 }
+
+/* ---------- Calendrier ---------- */
+.cal { display: flex; flex-direction: column; gap: 10px; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cal-title { font-size: 17px; font-weight: 700; text-align: center; flex: 1; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.cal-wd span { text-align: center; font-size: 12px; font-weight: 650; color: var(--muted); }
+.cal-day { position: relative; aspect-ratio: 1; min-height: 40px; border-radius: 12px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.02); color: var(--muted); font-weight: 650; font-size: 14.5px; cursor: pointer; display: grid; place-items: center; padding: 0; font-variant-numeric: tabular-nums; }
+.cal-day.work { background: var(--teal-soft); border-color: rgba(var(--accent-rgb), 0.35); color: var(--text); }
+.cal-day.extra { background: var(--teal); color: var(--teal-ink); border-color: var(--teal); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25); }
+.cal-day.rest { background: var(--warn-soft); border: 1px dashed rgba(255, 196, 107, 0.6); color: var(--warn); }
+.cal-day.rest .cal-num { text-decoration: line-through; }
+.cal-day.today { outline: 2px solid var(--text); outline-offset: 1px; }
+.cal-day.past { opacity: 0.55; }
+.cal-day.after { opacity: 0.35; }
+.cal-dot { position: absolute; bottom: 4px; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--blue); }
+.cal-sum { font-size: 14px; color: var(--muted); }
+.cal-sum strong { color: var(--text); }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--muted); }
+.cal-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.lg { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
+.lg.work { background: var(--teal-soft); border: 1px solid rgba(var(--accent-rgb), 0.35); }
+.lg.extra { background: var(--teal); }
+.lg.rest { background: var(--warn-soft); border: 1px dashed rgba(255, 196, 107, 0.6); }
+.lg.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); }
+.cal-pad { aspect-ratio: 1; }
+
+/* ---------- Micro-entreprise ---------- */
+.micro-bar { display: flex; flex-direction: column; gap: 6px; }
+.micro-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 14px; color: var(--muted); }
+.micro-row strong { color: var(--text); }
+.progress.near > span { background: linear-gradient(90deg, #e6a94a, var(--warn)); }
+.progress.over > span { background: linear-gradient(90deg, #e2675d, var(--danger)); }
