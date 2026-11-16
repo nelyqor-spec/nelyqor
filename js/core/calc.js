@@ -306,7 +306,7 @@ export function microStatus(state, today, snap) {
   const projectedYear = revenue + grossPace * daysLeft;
   const level = (v, max) => (v >= max ? 'over' : v >= max * 0.8 ? 'near' : 'ok');
   return {
-    kind, ...t, revenue, projectedYear,
+    kind, ...t, year: MICRO_THRESHOLDS.year, revenue, projectedYear,
     tvaLevel: revenue > t.tvaMajore ? 'over' : level(revenue, t.tva),
     plafondLevel: level(revenue, t.plafond),
     tvaProjectedOver: projectedYear > t.tva,

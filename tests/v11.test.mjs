@@ -125,6 +125,7 @@ test('micro-entreprise : plafond et franchise de TVA', () => {
   const snap = computeSnapshot(s0, T);
   const m = microStatus(s0, T, snap);
   assert.equal(m.revenue, 3500000);
+  assert.equal(m.year, 2026);
   assert.equal(m.tvaLevel, 'near'); // 35 000 € sur 37 500 €
   assert.equal(m.plafondLevel, 'ok');
   assert.equal(microStatus(st(), T, snap), null);

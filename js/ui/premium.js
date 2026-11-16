@@ -292,7 +292,7 @@ export function MicroCard(state, snap, { onSetup } = {}) {
   if (m.plafondLevel === 'over') alerts.push(Notice('danger', 'Plafond micro-entreprise dépassé', 'Un dépassement deux années de suite fait sortir du régime micro. Fais le point avec un expert-comptable.'));
   else if (m.plafondLevel === 'near' || m.plafondProjectedOver) alerts.push(Notice('warn', 'Attention au plafond micro-entreprise', `Projection fin d’année : ${fmt.eur(m.projectedYear)} pour un plafond de ${fmt.eur(m.plafond)}.`));
   return Card([
-    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, `Chiffre d’affaires ${m.year === Number(snap.today.slice(0, 4)) ? m.year : snap.today.slice(0, 4)}`), Badge('Nelyqor+', 'blue')),
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, `Chiffre d’affaires ${snap.today.slice(0, 4)}`), Badge('Nelyqor+', 'blue')),
     h('p', { class: 'muted', style: { fontSize: '13.5px' } }, m.label),
     bar(m.revenue, m.tva, 'Franchise de TVA'),
     bar(m.revenue, m.plafond, 'Plafond micro-entreprise'),
