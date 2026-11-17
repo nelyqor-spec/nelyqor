@@ -252,7 +252,8 @@ export function openSheet({ title, build, onClose }) {
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Fermer', onClick: close }, icon('close', 20))),
   );
   const content = build(close);
-  sheet.append(...[].concat(content));
+  // Les éléments conditionnels (`cond && h(...)`) valent false/null : on ne les affiche pas.
+  sheet.append(...[].concat(content).flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false && c !== ''));
   document.body.append(backdrop, sheet);
   document.body.style.overflow = 'hidden';
   setTimeout(() => { if (!sheet.contains(document.activeElement)) sheet.focus?.(); }, 0);
