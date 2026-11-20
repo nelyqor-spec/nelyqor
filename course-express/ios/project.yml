@@ -1,0 +1,107 @@
+# Projet Xcode généré avec XcodeGen :  brew install xcodegen && cd ios && xcodegen generate
+# Puis ouvrir CourseExpress.xcodeproj, choisir votre équipe (Signing & Capabilities) et adapter
+# BUNDLE_PREFIX + l'App Group (ici group.com.example.courseexpress, aussi dans Shared/RideActivityAttributes.swift).
+name: CourseExpress
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "18.0"
+  developmentLanguage: fr
+settings:
+  base:
+    SWIFT_VERSION: "5.0"            # mode Swift 5 (Xcode 16+) ; passer à 6 après une première compilation
+    SWIFT_STRICT_CONCURRENCY: targeted
+    DEVELOPMENT_TEAM: ""            # ← votre Team ID Apple
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  CourseExpress:
+    type: application
+    platform: iOS
+    sources:
+      - path: CourseExpress/App
+      - path: CourseExpress/Shared
+    dependencies:
+      - target: CourseExpressWidget
+      - target: CourseExpressShare
+    entitlements:
+      path: CourseExpress/App/CourseExpress.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.example.courseexpress]
+        com.apple.developer.usernotifications.time-sensitive: true
+    info:
+      path: CourseExpress/App/Info.plist
+      properties:
+        CFBundleDisplayName: Course Express
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSLocationWhenInUseUsageDescription: "Votre position sert uniquement à calculer le temps de conduite jusqu'au restaurant. Elle n'est pas conservée."
+        NSPhotoLibraryUsageDescription: "Pour tester l'analyse avec une capture de proposition de course."
+        NSSupportsLiveActivities: true
+        CEBackendURL: ""             # optionnel : URL du serveur par défaut (sinon Réglages de l'app)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.courseexpress
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+  CourseExpressWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CourseExpress/Widget
+      - path: CourseExpress/Shared/RideActivityAttributes.swift
+    info:
+      path: CourseExpress/Widget/Info.plist
+      properties:
+        CFBundleDisplayName: Course Express
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: CourseExpress/Widget/CourseExpressWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.example.courseexpress]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.courseexpress.widget
+  CourseExpressShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CourseExpress/Share
+      - path: CourseExpress/Shared/RideActivityAttributes.swift
+    info:
+      path: CourseExpress/Share/Info.plist
+      properties:
+        CFBundleDisplayName: Course Express
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+    entitlements:
+      path: CourseExpress/Share/CourseExpressShare.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.example.courseexpress]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.courseexpress.share
+  CourseExpressTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: CourseExpress/Tests
+      - path: ../fixtures/ocr
+        buildPhase: resources
+        excludes: ["*.md"]
+      - path: ../fixtures/uber_offre_pizza_cosy.jpeg
+        buildPhase: resources
+    dependencies:
+      - target: CourseExpress
+schemes:
+  CourseExpress:
+    build:
+      targets:
+        CourseExpress: all
+        CourseExpressTests: [test]
+    test:
+      targets: [CourseExpressTests]
