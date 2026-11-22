@@ -431,3 +431,11 @@ img { display: block; max-width: 100%; }
 .micro-row strong { color: var(--text); }
 .progress.near > span { background: linear-gradient(90deg, #e6a94a, var(--warn)); }
 .progress.over > span { background: linear-gradient(90deg, #e2675d, var(--danger)); }
+
+/* ---------- Rythme par jour de la semaine ---------- */
+.wk { display: flex; flex-direction: column; gap: 8px; }
+.wk-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 150px; align-items: center; gap: 10px; font-size: 14px; }
+.wk-day { color: var(--muted); }
+.wk-bar { height: 8px; border-radius: 99px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
+.wk-bar i { display: block; height: 100%; border-radius: 99px; background: var(--teal); }
+.wk-val { font-weight: 650; text-align: right; white-space: nowrap; }

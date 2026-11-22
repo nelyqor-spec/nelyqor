@@ -201,3 +201,30 @@ test('export CSV : injection de formules neutralisée', () => {
   assert.ok(csv.includes(`"'=HYPERLINK(""http://x"")"`));
   assert.ok(!/;"=/.test(csv));
 });
+
+test('projection par jour de la semaine : un lundi qui rapporte plus pèse plus', () => {
+  // 12 semaines d'historique : lundis à 200 € brut, autres jours à 100 € brut.
+  const revs = [];
+  for (let i = 1; i <= 84; i++) {
+    const d = new Date(Date.UTC(2026, 10, 16) - i * 864e5).toISOString().slice(0, 10);
+    const w = (new Date(d + 'T12:00:00Z').getUTCDay() + 6) % 7;
+    if (w > 4) continue;
+    revs.push(rev(d, w === 0 ? 20000 : 10000));
+  }
+  const base = st({ settings: { setupDate: '2026-08-01' }, revenues: revs });
+  const s0 = computeSnapshot(base, T);
+  const p = s0.pace;
+  assert.equal(p.status, 'personal');
+  assert.ok(p.weekdayObservedNet[0] > p.weekdayObservedNet[1] * 1.9, 'le lundi rapporte environ deux fois plus');
+  assert.equal(p.weekdaySamples[0], 8, '8 derniers lundis');
+  // Retirer un lundi fait perdre plus que retirer un mardi.
+  const offMonday = computeSnapshot({ ...base, calendar: { '2026-11-23': 'off' } }, T);
+  const offTuesday = computeSnapshot({ ...base, calendar: { '2026-11-24': 'off' } }, T);
+  const lossMon = s0.simpleProjection - offMonday.simpleProjection;
+  const lossTue = s0.simpleProjection - offTuesday.simpleProjection;
+  assert.ok(lossMon > lossTue * 1.6, `lundi ${lossMon} vs mardi ${lossTue}`);
+  // Un samedi jamais travaillé compte pour la moyenne générale (ni 0, ni le rythme du lundi).
+  const sat = computeSnapshot({ ...base, calendar: { '2026-11-21': 'work', '2026-11-28': 'work' } }, T);
+  const gainSat = (sat.simpleProjection - s0.simpleProjection) / 2;
+  assert.ok(gainSat > lossTue * 0.9 && gainSat < lossMon, `samedi ${gainSat}`);
+});

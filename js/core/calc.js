@@ -15,6 +15,10 @@ export const PROJECTION_FULL_CONFIDENCE_DAYS = 20;
 export const PROJECTION_RECENT_WINDOW_DAYS = 30;
 /** Seuil sous lequel la projection est « en cours d'affinage ». */
 export const PROJECTION_REFINING_DAYS = 5;
+/** Rythme par jour de la semaine : nombre de jours récents pris en compte pour chaque jour (8 derniers lundis…). */
+export const WEEKDAY_SAMPLES = 8;
+/** Lissage : poids de la moyenne générale quand un jour de la semaine a encore peu d'historique. */
+const WEEKDAY_SHRINK = 2;
 /** Limite de recherche en arrière pour l'historique observé (3 ans). */
 const OBSERVATION_LOOKBACK_DAYS = 365 * 3;
 
@@ -59,6 +63,26 @@ export function countActivityDays(settings, restDays, from, to) {
     else if (o === 'work' && !p) count++; // travail exceptionnel sur un jour normalement libre
   }
   return count;
+}
+
+/** Nombre de jours d'activité entre from et to inclus, par jour de la semaine (0 = lundi … 6 = dimanche). */
+export function countActivityDaysByWeekday(settings, overrides, from, to) {
+  const out = [0, 0, 0, 0, 0, 0, 0];
+  if (!from || !to || from > to) return out;
+  const planned = new Set(settings.plannedActivityDays);
+  const total = diffDays(from, to) + 1;
+  const full = Math.floor(total / 7);
+  for (const w of planned) out[w] += full;
+  const startWd = weekday(from);
+  for (let i = 0; i < total % 7; i++) { const w = (startWd + i) % 7; if (planned.has(w)) out[w]++; }
+  for (const [k, o] of Object.entries(overrides || {})) {
+    if (k < from || k > to) continue;
+    const w = weekday(k);
+    const p = planned.has(w);
+    if (isOff(o) && p) out[w]--;
+    else if (o === 'work' && !p) out[w]++;
+  }
+  return out;
 }
 
 /** Date du n-ième jour d'activité à partir de `from` (inclus). null si impossible. */
@@ -134,6 +158,8 @@ export function computeProjectionPace(state, today, { remaining, futureStart, pl
       requiredNetPerActivityDay, observedNetPerActivityDay: null,
       observedActivityDays: 0, projectionConfidence: 0,
       projectionDailyPace: requiredNetPerActivityDay, status: 'none', remainingPlannedDays,
+      weekdayDailyPace: Array(7).fill(requiredNetPerActivityDay),
+      weekdayObservedNet: Array(7).fill(null), weekdaySamples: Array(7).fill(0),
     };
   }
 
@@ -158,6 +184,24 @@ export function computeProjectionPace(state, today, { remaining, futureStart, pl
   const projectionDailyPace =
     requiredNetPerActivityDay * (1 - projectionConfidence) + observedNetPerActivityDay * projectionConfidence;
 
+  // Rythme par jour de la semaine : moyenne nette des 8 derniers jours de ce type (lundis, mardis…),
+  // lissée vers la moyenne générale tant qu'il y a peu de données pour ce jour-là.
+  const netByDay = new Map();
+  for (const r of pastRevenues) netByDay.set(r.date, (netByDay.get(r.date) || 0) + r.netAmount);
+  const wSum = Array(7).fill(0);
+  const wN = Array(7).fill(0);
+  for (const k of observed) {
+    const w = weekday(k);
+    if (wN[w] >= WEEKDAY_SAMPLES) continue;
+    wN[w]++;
+    wSum[w] += netByDay.get(k) || 0;
+  }
+  const weekdayObservedNet = wN.map((n, w) => (n ? wSum[w] / n : null));
+  const weekdayDailyPace = wN.map((n, w) => {
+    const observedW = (wSum[w] + WEEKDAY_SHRINK * observedNetPerActivityDay) / (n + WEEKDAY_SHRINK);
+    return requiredNetPerActivityDay * (1 - projectionConfidence) + observedW * projectionConfidence;
+  });
+
   const status = observedActivityDays < PROJECTION_REFINING_DAYS
     ? 'refining'
     : observedActivityDays < PROJECTION_FULL_CONFIDENCE_DAYS ? 'provisional' : 'personal';
@@ -165,7 +209,30 @@ export function computeProjectionPace(state, today, { remaining, futureStart, pl
   return {
     requiredNetPerActivityDay, observedNetPerActivityDay, observedActivityDays,
     projectionConfidence, projectionDailyPace, status, remainingPlannedDays,
+    weekdayDailyPace, weekdayObservedNet, weekdaySamples: wN,
   };
+}
+
+/** Somme des rythmes par jour de la semaine sur les jours d'activité de [from, to]. */
+function projectedEarnings(settings, overrides, from, to, weekdayPace) {
+  const counts = countActivityDaysByWeekday(settings, overrides, from, to);
+  return counts.reduce((acc, n, w) => acc + n * weekdayPace[w], 0);
+}
+
+/** Premier jour où le cumul des rythmes (par jour de la semaine) atteint `amount`. null si impossible. */
+function reachDateByWeekday(settings, overrides, from, amount, weekdayPace, maxDays = 365 * 30) {
+  if (amount <= 0) return from;
+  if (!weekdayPace.some((p) => p > 0)) return null;
+  let acc = 0;
+  let k = from;
+  for (let i = 0; i < maxDays; i++) {
+    if (isActivityDay(settings, overrides, k)) {
+      acc += weekdayPace[weekday(k)];
+      if (acc >= amount) return k;
+    }
+    k = addDays(k, 1);
+  }
+  return null;
 }
 
 export const PROJECTION_STATUS_LABEL = {
@@ -392,8 +459,10 @@ export function computeSnapshot(state, today) {
   const futureStart = todayIsActivity && todayRealized === 0 ? today : tomorrow;
   const plannedUntilTarget = plannedTotalUntil(state, target);
   const pace = computeProjectionPace(state, today, { remaining, futureStart, plannedUntilTarget });
+  // Chaque jour à venir compte pour le rythme habituel de CE jour de la semaine (un lundi qui rapporte
+  // plus pèse plus), et un jour ajouté ou retiré dans le calendrier change la projection d'autant.
   const projectAt = (dateKey) =>
-    Math.round(balance + pace.projectionDailyPace * countActivityDays(s, rd, futureStart, dateKey) - plannedTotalUntil(state, dateKey));
+    Math.round(balance + projectedEarnings(s, rd, futureStart, dateKey, pace.weekdayDailyPace) - plannedTotalUntil(state, dateKey));
   const simpleProjection = projectAt(target);
   const contributions = contributionSchedule(state, today);
 
@@ -431,8 +500,8 @@ export function computePremium(state, today, snap = computeSnapshot(state, today
   // Date estimée d'atteinte avec le rythme de projection.
   let estimatedReachDate = null;
   if (snap.goalReached) estimatedReachDate = today;
-  else if (snap.pace.projectionDailyPace > 0) {
-    estimatedReachDate = nthActivityDayFrom(s, rd, snap.futureStart, Math.ceil((snap.remaining + snap.plannedUntilTarget) / snap.pace.projectionDailyPace));
+  else {
+    estimatedReachDate = reachDateByWeekday(s, rd, snap.futureStart, snap.remaining + snap.plannedUntilTarget, snap.pace.weekdayDailyPace);
   }
 
   // Paliers 6 / 12 / 18 mois + date cible.

@@ -2,7 +2,7 @@
 // projection comprise (Nelyqor+).
 import { h } from '../dom.js';
 import { PageHeader, Card, Stat, Button, Badge, Row, fmt } from '../components.js';
-import { WEEKDAYS_SHORT, formatNumeric, formatShort } from '../../core/dates.js';
+import { WEEKDAYS, WEEKDAYS_SHORT, formatNumeric, formatShort } from '../../core/dates.js';
 import { computePremium, PROJECTION_STATUS_LABEL } from '../../core/calc.js';
 import { percentOf } from '../../core/money.js';
 import { isPremium } from '../../core/store.js';
@@ -49,6 +49,31 @@ function ProjectionCard(state, snap) {
   return Card([head, body], { cls: 'premium', label: 'Projection' });
 }
 
+/** Ce que l'utilisateur gagne en moyenne selon le jour de la semaine (base de la projection). */
+function WeekdayCard(snap) {
+  if (!isPremium() || snap.pace.status === 'none') return null;
+  const avg = snap.pace.observedNetPerActivityDay || 0;
+  const vals = snap.pace.weekdayObservedNet;
+  const max = Math.max(1, ...vals.filter((v) => v !== null));
+  const rows = WEEKDAYS.map((name, w) => {
+    const v = vals[w];
+    const diff = v === null ? 0 : v - avg;
+    const tag = v === null ? null : Math.abs(diff) >= 500
+      ? h('small', { style: { color: diff > 0 ? 'var(--teal)' : 'var(--warn)', fontWeight: '700', marginLeft: '6px' } }, `${diff > 0 ? '+' : '−'}${fmt.eur(Math.abs(diff))}`)
+      : null;
+    return h('div', { class: 'wk-row' },
+      h('span', { class: 'wk-day' }, name),
+      h('span', { class: 'wk-bar' }, h('i', { style: { width: v === null ? '0%' : `${Math.max(4, (v / max) * 100)}%` } })),
+      h('span', { class: 'wk-val num' }, v === null ? '—' : fmt.eur(v), tag));
+  });
+  return Card([
+    h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, 'Ton rythme selon le jour'), Badge('Nelyqor+', 'blue')),
+    h('p', { class: 'muted', style: { fontSize: '14px' } }, `Moyenne nette de tes ${8} derniers jours de chaque type. La projection s’en sert : un jour qui rapporte plus compte plus.`),
+    h('div', { class: 'wk' }, rows),
+    h('p', { class: 'field-hint' }, `Moyenne générale : ${fmt.eur(avg)} par jour d’activité. Un jour sans historique (ex. un samedi exceptionnel) compte pour cette moyenne.`),
+  ], { cls: 'premium', label: 'Ton rythme selon le jour' });
+}
+
 export function CalendrierPage({ state, snap, actions }) {
   const s = state.settings;
   const planned = s.plannedActivityDays.length
@@ -67,6 +92,7 @@ export function CalendrierPage({ state, snap, actions }) {
     ], { cls: 'accent', label: 'Cette semaine' }),
     ProjectionCard(state, snap),
     Card([CalendarView()], { label: 'Calendrier du mois' }),
+    WeekdayCard(snap),
     Card([
       h('h2', { class: 'card-title' }, 'Mon planning habituel'),
       h('p', { class: 'muted' }, planned),
