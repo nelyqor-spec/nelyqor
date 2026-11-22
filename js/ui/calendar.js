@@ -13,9 +13,12 @@ const DAY_LONG = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numer
 const monthLabel = (k) => { const s = MONTH.format(Date.parse(k + 'T12:00:00Z')); return s.charAt(0).toUpperCase() + s.slice(1); };
 const dayLabel = (k) => DAY_LONG.format(Date.parse(k + 'T12:00:00Z'));
 
-/** Calendrier autonome (utilisé dans une feuille ou dans le Profil). */
+// Mois affiché, conservé quand l'app se redessine (après un appui sur un jour d'un autre mois).
+let shownMonth = null;
+
+/** Calendrier autonome (onglet Calendrier, feuille, Profil). */
 export function CalendarView({ initialMonth } = {}) {
-  let month = startOfMonth(initialMonth && isValidKey(initialMonth) ? initialMonth : todayKey());
+  let month = startOfMonth(initialMonth && isValidKey(initialMonth) ? initialMonth : shownMonth || todayKey());
   const root = h('div', { class: 'cal' });
 
   const render = () => {
@@ -29,8 +32,8 @@ export function CalendarView({ initialMonth } = {}) {
 
     const prev = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Mois précédent' }, icon('back', 20));
     const next = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Mois suivant' }, icon('chevron', 20));
-    prev.addEventListener('click', () => { month = addMonths(month, -1); render(); });
-    next.addEventListener('click', () => { month = addMonths(month, 1); render(); });
+    prev.addEventListener('click', () => { month = addMonths(month, -1); shownMonth = month; render(); });
+    next.addEventListener('click', () => { month = addMonths(month, 1); shownMonth = month; render(); });
 
     const cells = [];
     for (let i = 0; i < weekday(first); i++) cells.push(h('span', { class: 'cal-pad', 'aria-hidden': 'true' }));
@@ -50,6 +53,7 @@ export function CalendarView({ initialMonth } = {}) {
         'aria-label': `${dayLabel(k)} : ${state}${revenueDays.has(k) ? ', revenu enregistré' : ''}. Appuie pour changer.`,
       }, h('span', { class: 'cal-num' }, String(Number(k.slice(8)))), revenueDays.has(k) && h('span', { class: 'cal-dot', 'aria-hidden': 'true' }));
       btn.addEventListener('click', () => {
+        shownMonth = month;
         store.setDayWorked(k, !worked);
         const nowWorked = !worked;
         toast(nowWorked === planned

@@ -8,7 +8,7 @@ import { todayKey, isValidKey, addMonths } from './dates.js';
 const STORAGE_KEY = 'nelyqor:v1'; // clé conservée pour ne perdre aucune donnée existante
 export const SCHEMA_VERSION = 2;
 export const TRIAL_DAYS = 7;
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
 export const DEFAULT_ACCENT = '#2ED3B7';
 export const LABEL_MAX = 40;
 export const CATEGORY_NAME_MAX = 30;

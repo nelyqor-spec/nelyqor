@@ -1,7 +1,7 @@
 // Nelyqor — service worker : fonctionnement hors-ligne (cache des fichiers de l'app uniquement).
 // Sécurité : on ne met JAMAIS en cache une réponse d'un autre domaine (Supabase…), ni une adresse
 // contenant des paramètres (ex. ?code= renvoyé après une connexion), ni une réponse en erreur.
-const CACHE = 'nelyqor-v1.2.0';
+const CACHE = 'nelyqor-v1.2.1';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/config.js',
@@ -10,7 +10,7 @@ const FILES = [
   './js/ui/dom.js', './js/ui/components.js', './js/ui/forms.js', './js/ui/premium.js', './js/ui/onboarding.js',
   './js/ui/theme.js', './js/ui/image.js', './js/ui/account.js', './js/ui/expenses.js',
   './js/ui/calendar.js', './js/ui/contrib.js', './js/ui/backup.js',
-  './js/ui/pages/objectif.js', './js/ui/pages/operations.js', './js/ui/pages/profil.js',
+  './js/ui/pages/objectif.js', './js/ui/pages/operations.js', './js/ui/pages/profil.js', './js/ui/pages/calendrier.js',
   './js/vendor/supabase-2.117.3.umd.js',
   './assets/logo-symbol.png', './assets/icons/icon-192.png', './assets/icons/icon-512.png', './assets/icons/icon-180.png',
 ];

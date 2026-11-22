@@ -1,4 +1,4 @@
-// Nelyqor — point d'entrée : navigation 5 onglets, rendu, fonds.
+// Nelyqor — point d'entrée : navigation 6 onglets, rendu, fonds.
 import { h, icon } from './ui/dom.js';
 import * as store from './core/store.js';
 import { computeSnapshot } from './core/calc.js';
@@ -10,6 +10,7 @@ import { openPaywall } from './ui/premium.js';
 import { ObjectifPage } from './ui/pages/objectif.js';
 import { RevenusPage, VirementsPage, RetraitsPage } from './ui/pages/operations.js';
 import { ProfilPage } from './ui/pages/profil.js';
+import { CalendrierPage } from './ui/pages/calendrier.js';
 import { applyAccent } from './ui/theme.js';
 import { openNewPasswordSheet } from './ui/account.js';
 import { openCalendar } from './ui/calendar.js';
@@ -21,6 +22,7 @@ const TABS = [
   { id: 'virements', label: 'Virements', icon: 'transfer', page: VirementsPage },
   { id: 'retraits', label: 'Retraits', icon: 'withdrawal', page: RetraitsPage },
   { id: 'profil', label: 'Profil', icon: 'user', page: ProfilPage },
+  { id: 'calendrier', label: 'Calendrier', icon: 'calendar', page: CalendrierPage },
 ];
 
 const ui = { tab: 'objectif', profileSection: null, renderedDay: todayKey(), wasOnboarded: null };
