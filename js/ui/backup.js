@@ -76,7 +76,11 @@ export function restoreBackup() {
         confirmLabel: 'Restaurer',
       });
       if (!ok) return;
-      store.replaceState(mergeStates(store.getState(), data));
+      // La sauvegarde restaurée l'emporte sur les réglages actuels (ex. un objectif créé juste
+      // pour accéder à l'app) ; les opérations des deux côtés sont conservées.
+      const t = new Date().toISOString();
+      const fresh = { ...data, updatedAt: Object.fromEntries(['settings', 'profile', 'preferences', 'subscription', 'calendar'].map((k) => [k, t])) };
+      store.replaceState(mergeStates(store.getState(), fresh));
       toast('Sauvegarde restaurée');
     } catch (e) {
       toast(e.message || 'Restauration impossible.');

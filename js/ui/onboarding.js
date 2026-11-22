@@ -8,6 +8,7 @@ import { completeOnboarding } from '../core/store.js';
 import { PRICE_LINE, FREE_FEATURES, PLUS_FEATURES, checklist } from './premium.js';
 import { openAuthSheet } from './account.js';
 import { ContributionDueFields } from './contrib.js';
+import { restoreBackup } from './backup.js';
 import { isConfigured } from '../core/cloud.js';
 
 const TOTAL_STEPS = 5;
@@ -47,9 +48,10 @@ export function renderOnboarding(root) {
     const field = Field('Montant de ton objectif', amount.wrap, { forId: 'ob-goal', hint: 'Le montant total que tu veux atteindre.' });
     return frame({
       question: 'Quel est ton objectif ?',
-      body: [field.el, isConfigured() && h('div', { class: 'ob-login' },
-        h('span', { class: 'muted' }, 'Déjà un compte Nelyqor ?'),
-        h('button', { type: 'button', class: 'btn-link', onClick: () => openAuthSheet({ mode: 'signin' }) }, 'Me connecter et récupérer mes données'))],
+      body: [field.el, h('div', { class: 'ob-login' },
+        h('span', { class: 'muted' }, 'Tu as déjà utilisé Nelyqor ?'),
+        h('button', { type: 'button', class: 'btn-link', onClick: () => restoreBackup() }, 'Restaurer une sauvegarde'),
+        isConfigured() && h('button', { type: 'button', class: 'btn-link', onClick: () => openAuthSheet({ mode: 'signin' }) }, 'Me connecter et récupérer mes données'))],
       onNext: () => {
         const v = parseAmountToCents(amount.input.value);
         if (!v || v <= 0) return field.setError('Indique un montant supérieur à 0 €.');
