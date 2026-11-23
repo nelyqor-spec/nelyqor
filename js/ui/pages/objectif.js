@@ -6,6 +6,7 @@ import { PROJECTION_STATUS_LABEL } from '../../core/calc.js';
 import { getDailyQuote } from '../../content/quotes.js';
 import { setDayWorked, isPremium } from '../../core/store.js';
 import { openCalendar } from '../calendar.js';
+import { WeekdayCard } from './calendrier.js';
 import { PremiumObjectifSection } from '../premium.js';
 
 export function ObjectifPage(ctx) {
@@ -183,5 +184,5 @@ export function ObjectifPage(ctx) {
       : EmptyState('Aucun mouvement pour le moment.', 'Saisir mes revenus', () => actions.addOperation('revenue'), 'calendar'),
   ]);
 
-  return [header, ...notices, globalCard, todayCard, weekCard, contribCard, briefCard, PremiumObjectifSection(state, snap), recentCard];
+  return [header, ...notices, globalCard, todayCard, weekCard, WeekdayCard(snap), contribCard, briefCard, PremiumObjectifSection(state, snap), recentCard];
 }

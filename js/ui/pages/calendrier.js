@@ -50,7 +50,7 @@ function ProjectionCard(state, snap) {
 }
 
 /** Moyenne de tous les revenus saisis, jour par jour : meilleurs et moins bons jours (base de la projection). */
-function WeekdayCard(snap) {
+export function WeekdayCard(snap) {
   if (!isPremium() || snap.pace.status === 'none') return null;
   const vals = snap.pace.weekdayObservedGross;
   const nets = snap.pace.weekdayObservedNet;
