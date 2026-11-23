@@ -49,28 +49,34 @@ function ProjectionCard(state, snap) {
   return Card([head, body], { cls: 'premium', label: 'Projection' });
 }
 
-/** Ce que l'utilisateur gagne en moyenne selon le jour de la semaine (base de la projection). */
+/** Moyenne de tous les revenus saisis, jour par jour : meilleurs et moins bons jours (base de la projection). */
 function WeekdayCard(snap) {
   if (!isPremium() || snap.pace.status === 'none') return null;
-  const avg = snap.pace.observedNetPerActivityDay || 0;
-  const vals = snap.pace.weekdayObservedNet;
-  const max = Math.max(1, ...vals.filter((v) => v !== null));
+  const vals = snap.pace.weekdayObservedGross;
+  const nets = snap.pace.weekdayObservedNet;
+  const counts = snap.pace.weekdaySamples;
+  const known = vals.map((v, w) => ({ v, w })).filter((x) => x.v !== null);
+  const sorted = [...known].sort((a, b) => b.v - a.v);
+  const best = sorted.length >= 2 ? sorted[0].w : -1;
+  const worst = sorted.length >= 2 ? sorted[sorted.length - 1].w : -1;
+  const max = Math.max(1, ...known.map((x) => x.v));
+  const totalDays = counts.reduce((a, b) => a + b, 0);
   const rows = WEEKDAYS.map((name, w) => {
     const v = vals[w];
-    const diff = v === null ? 0 : v - avg;
-    const tag = v === null ? null : Math.abs(diff) >= 500
-      ? h('small', { style: { color: diff > 0 ? 'var(--teal)' : 'var(--warn)', fontWeight: '700', marginLeft: '6px' } }, `${diff > 0 ? '+' : '−'}${fmt.eur(Math.abs(diff))}`)
-      : null;
-    return h('div', { class: 'wk-row' },
-      h('span', { class: 'wk-day' }, name),
+    const mark = w === best ? h('span', { class: 'wk-tag best' }, 'Meilleur') : w === worst ? h('span', { class: 'wk-tag worst' }, 'Moins bon') : null;
+    return h('div', { class: 'wk-row' + (w === best ? ' is-best' : '') },
+      h('span', { class: 'wk-day' }, name, h('small', null, counts[w] ? `${counts[w]} jour${counts[w] > 1 ? 's' : ''}` : 'aucun revenu')),
       h('span', { class: 'wk-bar' }, h('i', { style: { width: v === null ? '0%' : `${Math.max(4, (v / max) * 100)}%` } })),
-      h('span', { class: 'wk-val num' }, v === null ? '—' : fmt.eur(v), tag));
+      h('span', { class: 'wk-val num' }, v === null ? '—' : fmt.eur2(v), v !== null && h('small', null, `net ${fmt.eur2(nets[w])}`), mark));
   });
   return Card([
     h('div', { class: 'card-head' }, h('h2', { class: 'card-title' }, 'Ton rythme selon le jour'), Badge('Nelyqor+', 'blue')),
-    h('p', { class: 'muted', style: { fontSize: '14px' } }, `Moyenne nette de tes ${8} derniers jours de chaque type. La projection s’en sert : un jour qui rapporte plus compte plus.`),
+    h('p', { class: 'muted', style: { fontSize: '14px' } }, `Moyenne de tous tes revenus saisis, jour par jour (${totalDays} jour${totalDays > 1 ? 's' : ''} avec revenu). La projection s’en sert : un jour qui rapporte plus compte plus.`),
+    best >= 0 && h('div', { class: 'wk-podium' },
+      h('div', null, h('span', null, 'Meilleur jour'), h('strong', { class: 'teal' }, WEEKDAYS[best]), h('em', null, fmt.eur2(vals[best]))),
+      h('div', null, h('span', null, 'Moins bon jour'), h('strong', null, WEEKDAYS[worst]), h('em', null, fmt.eur2(vals[worst])))),
     h('div', { class: 'wk' }, rows),
-    h('p', { class: 'field-hint' }, `Moyenne générale : ${fmt.eur(avg)} par jour d’activité. Un jour sans historique (ex. un samedi exceptionnel) compte pour cette moyenne.`),
+    h('p', { class: 'field-hint' }, `Moyenne générale : ${fmt.eur2(snap.pace.avgGrossPerRevenueDay)} brut par jour avec revenu (hors revenus exceptionnels). Un jour jamais travaillé compte pour cette moyenne dans la projection.`),
   ], { cls: 'premium', label: 'Ton rythme selon le jour' });
 }
 

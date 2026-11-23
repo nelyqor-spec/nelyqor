@@ -202,7 +202,7 @@ test('export CSV : injection de formules neutralisée', () => {
   assert.ok(!/;"=/.test(csv));
 });
 
-test('projection par jour de la semaine : un lundi qui rapporte plus pèse plus', () => {
+test('projection par jour de la semaine (tous les revenus) : un lundi qui rapporte plus pèse plus', () => {
   // 12 semaines d'historique : lundis à 200 € brut, autres jours à 100 € brut.
   const revs = [];
   for (let i = 1; i <= 84; i++) {
@@ -216,7 +216,8 @@ test('projection par jour de la semaine : un lundi qui rapporte plus pèse plus'
   const p = s0.pace;
   assert.equal(p.status, 'personal');
   assert.ok(p.weekdayObservedNet[0] > p.weekdayObservedNet[1] * 1.9, 'le lundi rapporte environ deux fois plus');
-  assert.equal(p.weekdaySamples[0], 8, '8 derniers lundis');
+  assert.equal(p.weekdaySamples[0], 12, 'tous les lundis avec revenu (12 semaines)');
+  assert.equal(Math.round(p.weekdayObservedGross[0]), 20000, 'moyenne brute des lundis');
   // Retirer un lundi fait perdre plus que retirer un mardi.
   const offMonday = computeSnapshot({ ...base, calendar: { '2026-11-23': 'off' } }, T);
   const offTuesday = computeSnapshot({ ...base, calendar: { '2026-11-24': 'off' } }, T);
@@ -227,4 +228,12 @@ test('projection par jour de la semaine : un lundi qui rapporte plus pèse plus'
   const sat = computeSnapshot({ ...base, calendar: { '2026-11-21': 'work', '2026-11-28': 'work' } }, T);
   const gainSat = (sat.simpleProjection - s0.simpleProjection) / 2;
   assert.ok(gainSat > lossTue * 0.9 && gainSat < lossMon, `samedi ${gainSat}`);
+});
+
+test('rythme par jour : un jour prévu sans revenu ne fait pas baisser la moyenne du jour', () => {
+  // Mardis : un à 100 €, un sans revenu (jour prévu non saisi) → moyenne du mardi = 100 €, pas 50 €.
+  const s0 = st({ settings: { setupDate: '2026-11-01', plannedActivityDays: [1] }, revenues: [rev('2026-11-03', 10000)] });
+  const snap = computeSnapshot(s0, '2026-11-12');
+  assert.equal(snap.pace.weekdaySamples[1], 1);
+  assert.equal(snap.pace.weekdayObservedGross[1], 10000);
 });

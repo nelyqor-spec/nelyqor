@@ -15,8 +15,6 @@ export const PROJECTION_FULL_CONFIDENCE_DAYS = 20;
 export const PROJECTION_RECENT_WINDOW_DAYS = 30;
 /** Seuil sous lequel la projection est « en cours d'affinage ». */
 export const PROJECTION_REFINING_DAYS = 5;
-/** Rythme par jour de la semaine : nombre de jours récents pris en compte pour chaque jour (8 derniers lundis…). */
-export const WEEKDAY_SAMPLES = 8;
 /** Lissage : poids de la moyenne générale quand un jour de la semaine a encore peu d'historique. */
 const WEEKDAY_SHRINK = 2;
 /** Limite de recherche en arrière pour l'historique observé (3 ans). */
@@ -159,7 +157,8 @@ export function computeProjectionPace(state, today, { remaining, futureStart, pl
       observedActivityDays: 0, projectionConfidence: 0,
       projectionDailyPace: requiredNetPerActivityDay, status: 'none', remainingPlannedDays,
       weekdayDailyPace: Array(7).fill(requiredNetPerActivityDay),
-      weekdayObservedNet: Array(7).fill(null), weekdaySamples: Array(7).fill(0),
+      weekdayObservedNet: Array(7).fill(null), weekdayObservedGross: Array(7).fill(null), weekdaySamples: Array(7).fill(0),
+      avgNetPerRevenueDay: null, avgGrossPerRevenueDay: null,
     };
   }
 
@@ -184,21 +183,30 @@ export function computeProjectionPace(state, today, { remaining, futureStart, pl
   const projectionDailyPace =
     requiredNetPerActivityDay * (1 - projectionConfidence) + observedNetPerActivityDay * projectionConfidence;
 
-  // Rythme par jour de la semaine : moyenne nette des 8 derniers jours de ce type (lundis, mardis…),
-  // lissée vers la moyenne générale tant qu'il y a peu de données pour ce jour-là.
-  const netByDay = new Map();
-  for (const r of pastRevenues) netByDay.set(r.date, (netByDay.get(r.date) || 0) + r.netAmount);
-  const wSum = Array(7).fill(0);
-  const wN = Array(7).fill(0);
-  for (const k of observed) {
-    const w = weekday(k);
-    if (wN[w] >= WEEKDAY_SAMPLES) continue;
-    wN[w]++;
-    wSum[w] += netByDay.get(k) || 0;
+  // Rythme par jour de la semaine : moyenne de TOUS les revenus saisis pour ce jour (tous les
+  // lundis, tous les mardis…), calculée sur les jours où un revenu a été enregistré. Tant qu'un jour
+  // a peu d'historique, la moyenne est lissée vers la moyenne générale (par jour avec revenu).
+  const byDay = new Map();
+  for (const r of pastRevenues) {
+    const d = byDay.get(r.date) || { net: 0, gross: 0 };
+    d.net += r.netAmount; d.gross += r.grossAmount;
+    byDay.set(r.date, d);
   }
-  const weekdayObservedNet = wN.map((n, w) => (n ? wSum[w] / n : null));
+  const wNet = Array(7).fill(0);
+  const wGross = Array(7).fill(0);
+  const wN = Array(7).fill(0);
+  for (const [k, d] of byDay) {
+    if (k < start) continue; // limite de 3 ans
+    const w = weekday(k);
+    wN[w]++; wNet[w] += d.net; wGross[w] += d.gross;
+  }
+  const revenueDaysCount = wN.reduce((a, b) => a + b, 0);
+  const avgNetPerRevenueDay = revenueDaysCount ? wNet.reduce((a, b) => a + b, 0) / revenueDaysCount : 0;
+  const avgGrossPerRevenueDay = revenueDaysCount ? wGross.reduce((a, b) => a + b, 0) / revenueDaysCount : 0;
+  const weekdayObservedNet = wN.map((n, w) => (n ? wNet[w] / n : null));
+  const weekdayObservedGross = wN.map((n, w) => (n ? wGross[w] / n : null));
   const weekdayDailyPace = wN.map((n, w) => {
-    const observedW = (wSum[w] + WEEKDAY_SHRINK * observedNetPerActivityDay) / (n + WEEKDAY_SHRINK);
+    const observedW = (wNet[w] + WEEKDAY_SHRINK * avgNetPerRevenueDay) / (n + WEEKDAY_SHRINK);
     return requiredNetPerActivityDay * (1 - projectionConfidence) + observedW * projectionConfidence;
   });
 
@@ -209,7 +217,8 @@ export function computeProjectionPace(state, today, { remaining, futureStart, pl
   return {
     requiredNetPerActivityDay, observedNetPerActivityDay, observedActivityDays,
     projectionConfidence, projectionDailyPace, status, remainingPlannedDays,
-    weekdayDailyPace, weekdayObservedNet, weekdaySamples: wN,
+    weekdayDailyPace, weekdayObservedNet, weekdayObservedGross, weekdaySamples: wN,
+    avgNetPerRevenueDay, avgGrossPerRevenueDay,
   };
 }
 
