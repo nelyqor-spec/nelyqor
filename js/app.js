@@ -15,6 +15,8 @@ import { applyAccent } from './ui/theme.js';
 import { openNewPasswordSheet } from './ui/account.js';
 import { openCalendar } from './ui/calendar.js';
 import * as cloud from './core/cloud.js';
+import { applyLinkedBackup } from './ui/backup.js';
+import { toast } from './ui/components.js';
 
 const TABS = [
   { id: 'objectif', label: 'Objectif', icon: 'target', page: ObjectifPage },
@@ -125,6 +127,7 @@ setInterval(checkDayChange, 60 * 1000);
 
 render();
 cloud.initCloud();
+applyLinkedBackup().then((added) => { if (added) toast('Tes données sont chargées'); }).catch(() => toast('Lien de données illisible.'));
 
 // Saisie rapide : raccourcis de l'icône (appui long) → ?action=revenu | retrait | calendrier
 (function quickAction() {

@@ -57,6 +57,48 @@ function lastSaved() {
   try { return localStorage.getItem(LAST_BACKUP_KEY); } catch { return null; }
 }
 
+/**
+ * Fusionne des données de sauvegarde. Avec preferBackup, ses réglages l'emportent (ex. un objectif
+ * créé juste pour accéder à l'app) ; les opérations des deux côtés sont toujours conservées.
+ */
+function applyBackupData(data, preferBackup) {
+  const t = new Date().toISOString();
+  const incoming = preferBackup
+    ? { ...data, updatedAt: Object.fromEntries(['settings', 'profile', 'preferences', 'subscription', 'calendar'].map((k) => [k, t])) }
+    : data;
+  store.replaceState(mergeStates(store.getState(), incoming));
+}
+
+function hashOf(str) {
+  let x = 2166136261;
+  for (let i = 0; i < str.length; i++) x = Math.imul(x ^ str.charCodeAt(i), 16777619);
+  return (x >>> 0).toString(36) + ':' + str.length;
+}
+
+/**
+ * Lien personnel « tout compris » : …/index.html#d=<sauvegarde compressée>. Les données sont dans
+ * le fragment (#), qui n'est jamais envoyé au serveur. Appliqué une seule fois par appareil ;
+ * le fragment reste dans l'adresse pour que l'icône d'écran d'accueil (stockage séparé sur iPhone)
+ * reçoive aussi les données à sa première ouverture.
+ * @returns {Promise<boolean>} true si des données ont été ajoutées
+ */
+export async function applyLinkedBackup() {
+  const m = /^#d=([A-Za-z0-9_-]{16,})$/.exec(location.hash);
+  if (!m || typeof DecompressionStream === 'undefined') return false;
+  const SEED_KEY = 'nelyqor:link-seed';
+  const sig = hashOf(m[1]);
+  try { if (localStorage.getItem(SEED_KEY) === sig) return false; } catch { /* ignore */ }
+  const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  const text = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+  if (text.length > MAX_BYTES) return false;
+  const { data } = parseBackup(text);
+  applyBackupData(data, !store.getState().onboardingCompleted);
+  try { localStorage.setItem(SEED_KEY, sig); } catch { /* ignore */ }
+  return true;
+}
+
 export function restoreBackup() {
   const input = document.createElement('input');
   input.type = 'file';
@@ -93,11 +135,7 @@ export function restoreBackup() {
         confirmLabel: 'Restaurer',
       });
       if (!ok) return;
-      // La sauvegarde restaurée l'emporte sur les réglages actuels (ex. un objectif créé juste
-      // pour accéder à l'app) ; les opérations des deux côtés sont conservées.
-      const t = new Date().toISOString();
-      const fresh = { ...data, updatedAt: Object.fromEntries(['settings', 'profile', 'preferences', 'subscription', 'calendar'].map((k) => [k, t])) };
-      store.replaceState(mergeStates(store.getState(), fresh));
+      applyBackupData(data, true);
       toast('Sauvegarde restaurée');
     } catch (e) {
       toast(e.message || 'Restauration impossible.');
