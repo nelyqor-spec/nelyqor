@@ -237,3 +237,16 @@ test('rythme par jour : un jour prévu sans revenu ne fait pas baisser la moyenn
   assert.equal(snap.pace.weekdaySamples[1], 1);
   assert.equal(snap.pace.weekdayObservedGross[1], 10000);
 });
+
+test('historique importé : compte dans les moyennes, pas dans l’objectif ni les cotisations', () => {
+  const now = [rev('2026-11-10', 6379), rev('2026-11-12', 11056)];
+  const hist = [{ ...rev('2026-10-01', 7974), history: true }, { ...rev('2026-10-08', 7318), history: true }];
+  const a = computeSnapshot(st({ settings: { setupDate: '2026-11-10' }, revenues: now }), T);
+  const b = computeSnapshot(st({ settings: { setupDate: '2026-11-10' }, revenues: [...now, ...hist] }), T);
+  assert.equal(b.balance, a.balance, 'le solde ne bouge pas');
+  assert.equal(b.pace.weekdaySamples[3], 3, 'jeudis : 12 nov. + 1er et 8 oct.');
+  assert.ok(b.pace.weekdayObservedGross[3] !== a.pace.weekdayObservedGross[3], 'la moyenne du jeudi change');
+  const c = contributionSchedule(st({ settings: { contributionFrequency: 'monthly', contributionDueDate: '2026-11-05' }, revenues: hist }), '2026-11-03');
+  assert.equal(c.toSetAside, 0, 'pas de cotisations sur l’historique');
+  assert.equal(sanitize({ revenues: hist }).revenues.every((r) => r.history), true);
+});

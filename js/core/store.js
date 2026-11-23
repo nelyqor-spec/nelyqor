@@ -119,7 +119,7 @@ function cleanRevenue(r) {
   const contrib = cents(r.contributionAmount);
   if (!b || !isValidKey(r.date) || gross === null || contrib === null || contrib > gross) return null;
   const rate = Number.isSafeInteger(r.contributionRate) && r.contributionRate >= 0 && r.contributionRate < 10000 ? r.contributionRate : 0;
-  return { ...b, date: r.date, grossAmount: gross, contributionAmount: contrib, netAmount: gross - contrib, contributionRate: rate, label: str(r.label, LABEL_MAX), exceptional: bool(r.exceptional) };
+  return { ...b, date: r.date, grossAmount: gross, contributionAmount: contrib, netAmount: gross - contrib, contributionRate: rate, label: str(r.label, LABEL_MAX), exceptional: bool(r.exceptional), history: bool(r.history) };
 }
 
 function cleanAmountOp(r, withCategory) {
@@ -387,6 +387,29 @@ const COLLECTIONS = { revenue: 'revenues', transfer: 'transfers', withdrawal: 'w
 export function deleteOperation(type, itemId) {
   const key = COLLECTIONS[type];
   commit({ ...state, [key]: state[key].filter((x) => x.id !== itemId), deleted: { ...state.deleted, [itemId]: nowIso() } });
+}
+
+/**
+ * Import d'historique : revenus d'avant Nelyqor (ex. un ancien tableur). Ils comptent dans les
+ * moyennes, statistiques, graphiques et le chiffre d'affaires, mais PAS dans l'objectif (le montant
+ * « déjà de côté » couvre déjà cette période) ni dans les cotisations à garder de côté.
+ * Les doublons (même date, même montant brut) et les identifiants déjà présents sont ignorés.
+ * @returns {number} nombre de revenus ajoutés
+ */
+export function importHistoryRevenues(list) {
+  const clean = sanitize({ revenues: list }).revenues;
+  const ids = new Set(state.revenues.map((r) => r.id));
+  const keys = new Set(state.revenues.map((r) => `${r.date}|${r.grossAmount}`));
+  const t = nowIso();
+  const added = [];
+  for (const r of clean) {
+    const k = `${r.date}|${r.grossAmount}`;
+    if (ids.has(r.id) || keys.has(k)) continue;
+    keys.add(k);
+    added.push({ ...r, history: true, updatedAt: t });
+  }
+  if (added.length) commit({ ...state, revenues: [...state.revenues, ...added].sort(byDateDesc) });
+  return added.length;
 }
 
 // ---------------------------------------------------------------------------

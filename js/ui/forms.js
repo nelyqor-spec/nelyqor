@@ -145,6 +145,7 @@ export function openOperationDetail(type, item, { onDeleted } = {}) {
       if (type === 'revenue') {
         rows.append(
           item.exceptional && Row('Nature', 'Revenu exceptionnel (hors projection)'),
+          item.history && Row('Nature', 'Historique : compte dans les moyennes, pas dans l’objectif'),
           Row('Brut', fmt.eur2(item.grossAmount)),
           item.contributionAmount > 0 && Row(`Cotisations réservées${item.contributionRate ? ` (${formatRate(item.contributionRate)})` : ''}`, '−' + fmt.eur2(item.contributionAmount)),
           Row('Net ajouté à l’objectif', fmt.eur2(item.netAmount), { valueClass: 'teal' }));

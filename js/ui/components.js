@@ -117,7 +117,7 @@ export function OperationRow(type, item, onOpen) {
     h('span', { class: `op-icon ${type}` }, icon(meta.icon, 20)),
     h('span', { class: 'op-main' },
       h('span', { class: 'op-label' }, item.label || meta.fallback),
-      h('span', { class: 'op-date' }, formatShort(item.date))),
+      h('span', { class: 'op-date' }, formatShort(item.date) + (item.history ? ' · historique' : ''))),
     amount);
 }
 

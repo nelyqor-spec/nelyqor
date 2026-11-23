@@ -234,7 +234,7 @@ export function buildCSV(state) {
   const catName = (id) => (state.categories || []).find((c) => c.id === id)?.name || '';
   const lines = [['Type', 'Date', 'Libellé', 'Dossier', 'Brut (€)', 'Cotisations (€)', 'Net / Montant (€)'].map(esc).join(';')];
   const rows = [
-    ...state.revenues.map((r) => [r.exceptional ? 'Revenu exceptionnel' : 'Revenu', r.date, text(r.label), '', euros(r.grossAmount), euros(r.contributionAmount), euros(r.netAmount)]),
+    ...state.revenues.map((r) => [r.history ? 'Revenu (historique)' : r.exceptional ? 'Revenu exceptionnel' : 'Revenu', r.date, text(r.label), '', euros(r.grossAmount), euros(r.contributionAmount), euros(r.netAmount)]),
     ...state.transfers.map((t) => ['Virement', t.date, text(t.label), '', '', '', euros(t.amount)]),
     ...state.withdrawals.map((w) => ['Retrait', w.date, text(w.label), text(catName(w.categoryId)), '', '', '-' + euros(w.amount)]),
   ].sort((a, b) => (a[1] < b[1] ? 1 : -1));

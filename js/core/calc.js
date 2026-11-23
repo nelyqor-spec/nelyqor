@@ -106,9 +106,10 @@ export function buildRevenueAmounts(grossAmount, rateBp) {
   return { grossAmount, contributionAmount, netAmount: grossAmount - contributionAmount };
 }
 
+// Les revenus « historique » (importés d'avant Nelyqor) ne comptent pas dans l'objectif.
 function flow(state, keep = () => true) {
   return (
-    sum(state.revenues.filter((r) => keep(r.date)), (r) => r.netAmount) +
+    sum(state.revenues.filter((r) => !r.history && keep(r.date)), (r) => r.netAmount) +
     sum(state.transfers.filter((t) => keep(t.date)), (t) => t.amount) -
     sum(state.withdrawals.filter((w) => keep(w.date)), (w) => w.amount)
   );
@@ -336,7 +337,7 @@ export function contributionSchedule(state, today) {
   const s = state.settings;
   if (!s.hasContributions || !s.contributionRate) return null;
   const frequency = s.contributionFrequency === 'monthly' ? 'monthly' : 'quarterly';
-  const contribBetween = (from, to) => sum(state.revenues.filter((r) => r.date >= from && r.date <= to), (r) => r.contributionAmount);
+  const contribBetween = (from, to) => sum(state.revenues.filter((r) => !r.history && r.date >= from && r.date <= to), (r) => r.contributionAmount);
   const needsDueDate = !isValidDateKey(s.contributionDueDate);
   // Sans date connue : hypothèse URSSAF (fin du mois qui suit la période).
   const anchor = needsDueDate ? endOfMonth(addMonths(periodContaining(today, frequency).from, frequency === 'monthly' ? 1 : 3)) : s.contributionDueDate;

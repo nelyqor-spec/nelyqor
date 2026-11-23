@@ -68,7 +68,24 @@ export function restoreBackup() {
     if (!file) return;
     try {
       if (file.size > MAX_BYTES) throw new Error('Fichier trop lourd pour une sauvegarde Nelyqor.');
-      const { data, exportedAt } = parseBackup(await file.text());
+      const text = await file.text();
+      // Fichier d'historique (revenus d'avant Nelyqor) : ajouté sans toucher au reste.
+      let raw = null;
+      try { raw = JSON.parse(text); } catch { /* traité par parseBackup */ }
+      if (raw && raw.app === 'nelyqor' && raw.kind === 'history' && Array.isArray(raw.revenues)) {
+        if (!store.getState().onboardingCompleted) throw new Error('Restaure d’abord ta sauvegarde (ou crée ton objectif), puis importe l’historique.');
+        const n = raw.revenues.length;
+        const ok = await confirmDialog({
+          title: 'Ajouter ton historique ?',
+          message: `${n} revenu(s) ${raw.label ? `(${raw.label}) ` : ''}vont être ajoutés. Ils comptent dans tes moyennes par jour et tes statistiques, mais pas dans ton objectif. Tes données actuelles ne changent pas.`,
+          confirmLabel: 'Ajouter l’historique',
+        });
+        if (!ok) return;
+        const added = store.importHistoryRevenues(raw.revenues);
+        toast(added ? `${added} revenus d’historique ajoutés` : 'Cet historique est déjà dans l’app');
+        return;
+      }
+      const { data, exportedAt } = parseBackup(text);
       const when = exportedAt ? new Date(exportedAt).toLocaleDateString('fr-FR', { dateStyle: 'long' }) : 'date inconnue';
       const ok = await confirmDialog({
         title: 'Restaurer cette sauvegarde ?',
