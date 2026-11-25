@@ -1,0 +1,300 @@
+{
+  "date": "2026-11-25T12:24:59+00:00",
+  "source": "SYNTHETIQUE (fixture, aucune valeur probante)",
+  "marches": [
+    "BTC-EUR",
+    "ETH-EUR",
+    "SOL-EUR"
+  ],
+  "n_essais_total": 68,
+  "duree_s": 11.2,
+  "resultats": [
+    {
+      "strategy": "momentum",
+      "wf_oos_net": -0.07565604747747912,
+      "wf_oos_trades": 117,
+      "holdout_net": -0.03742486738770767,
+      "holdout_doubled_fees": -0.0615550885875179,
+      "holdout_wide_spread": -0.05194202929353753,
+      "pf": 0.39750996490669155,
+      "trades": 45,
+      "maxdd": -0.04354306485432147,
+      "sharpe": -6.148435234545708,
+      "ci95_trade": [
+        -0.014526748410959935,
+        0.00029369822060051155
+      ],
+      "dsr": 4.6526649538905356e-05,
+      "stabilite_parametres": 1.0,
+      "regimes": {
+        "haussier": -0.017053947120137747,
+        "baissier": -0.0006833271983439637,
+        "inconnu": -0.012951347320878326,
+        "lateral": -0.00280051390790359,
+        "volatil": 0.0002528124393654796
+      },
+      "promu": false,
+      "non_satisfaits": [
+        "rendement_hors_echantillon_positif",
+        "profit_factor_>_1.2",
+        "au_moins_100_transactions",
+        "borne_basse_IC95_rendement_moyen_>_0",
+        "frais_doubles_rendement_positif",
+        "stabilite_regimes"
+      ],
+      "buy_hold": {
+        "BTC-EUR": -0.5182931956713794,
+        "ETH-EUR": 0.6910548276981787,
+        "SOL-EUR": -0.25720508482291693
+      }
+    },
+    {
+      "strategy": "breakout",
+      "wf_oos_net": -0.03877387887775052,
+      "wf_oos_trades": 76,
+      "holdout_net": -0.012364076217161735,
+      "holdout_doubled_fees": -0.024456801767290037,
+      "holdout_wide_spread": -0.01923977870840854,
+      "pf": 0.6305802642099454,
+      "trades": 25,
+      "maxdd": -0.022794156370304908,
+      "sharpe": -2.631477505261829,
+      "ci95_trade": [
+        -0.01821369064447262,
+        0.00812609998571168
+      ],
+      "dsr": 0.0033594678191616796,
+      "stabilite_parametres": 0.75,
+      "regimes": {
+        "haussier": -0.008536362355757499,
+        "baissier": -0.000794308488497264,
+        "inconnu": -0.003942406871928039,
+        "lateral": 0.006432053683715244,
+        "volatil": 0.0
+      },
+      "promu": false,
+      "non_satisfaits": [
+        "rendement_hors_echantillon_positif",
+        "profit_factor_>_1.2",
+        "au_moins_100_transactions",
+        "borne_basse_IC95_rendement_moyen_>_0",
+        "frais_doubles_rendement_positif",
+        "stabilite_regimes"
+      ],
+      "buy_hold": {
+        "BTC-EUR": -0.5182931956713794,
+        "ETH-EUR": 0.6910548276981787,
+        "SOL-EUR": -0.25720508482291693
+      }
+    },
+    {
+      "strategy": "mean_reversion",
+      "wf_oos_net": -0.002142535845719884,
+      "wf_oos_trades": 16,
+      "holdout_net": -0.01489168269773078,
+      "holdout_doubled_fees": -0.019058241641419005,
+      "holdout_wide_spread": -0.016741231863376393,
+      "pf": 0.3468356298403172,
+      "trades": 6,
+      "maxdd": -0.015100315275899723,
+      "sharpe": -3.2742498768145416,
+      "ci95_trade": [
+        -0.020948483862972322,
+        0.008478889942829785
+      ],
+      "dsr": 0.000457992871530807,
+      "stabilite_parametres": 1.0,
+      "regimes": {
+        "haussier": 0.0,
+        "baissier": -0.004137345322327235,
+        "inconnu": -0.002863643436835983,
+        "lateral": -0.007958162539458913,
+        "volatil": 0.0
+      },
+      "promu": false,
+      "non_satisfaits": [
+        "rendement_hors_echantillon_positif",
+        "profit_factor_>_1.2",
+        "au_moins_100_transactions",
+        "borne_basse_IC95_rendement_moyen_>_0",
+        "frais_doubles_rendement_positif",
+        "stabilite_regimes"
+      ],
+      "buy_hold": {
+        "BTC-EUR": -0.5182931956713794,
+        "ETH-EUR": 0.6910548276981787,
+        "SOL-EUR": -0.25720508482291693
+      }
+    },
+    {
+      "strategy": "trend_following",
+      "wf_oos_net": -0.007367315123940399,
+      "wf_oos_trades": 58,
+      "holdout_net": -0.008088848242213897,
+      "holdout_doubled_fees": -0.018277479694354226,
+      "holdout_wide_spread": -0.013074721502395081,
+      "pf": 0.796105691876604,
+      "trades": 23,
+      "maxdd": -0.022587226413793293,
+      "sharpe": -1.2897249029894993,
+      "ci95_trade": [
+        -0.020589487042108827,
+        0.024825769190549702
+      ],
+      "dsr": 0.0010948836756527424,
+      "stabilite_parametres": 0.5,
+      "regimes": {
+        "haussier": -0.003156118356017812,
+        "baissier": 0.005423243296576841,
+        "inconnu": -0.003332219813961257,
+        "lateral": -0.0005410593652918072,
+        "volatil": -0.0045927771281476515
+      },
+      "promu": false,
+      "non_satisfaits": [
+        "rendement_hors_echantillon_positif",
+        "profit_factor_>_1.2",
+        "au_moins_100_transactions",
+        "borne_basse_IC95_rendement_moyen_>_0",
+        "frais_doubles_rendement_positif",
+        "stabilite_regimes"
+      ],
+      "buy_hold": {
+        "BTC-EUR": -0.5182931956713794,
+        "ETH-EUR": 0.6910548276981787,
+        "SOL-EUR": -0.25720508482291693
+      }
+    },
+    {
+      "strategy": "swing",
+      "wf_oos_net": -0.014211265393888395,
+      "wf_oos_trades": 14,
+      "holdout_net": -0.01351072196455616,
+      "holdout_doubled_fees": -0.01584460397795473,
+      "holdout_wide_spread": -0.014912965542524304,
+      "pf": 0.03968916180985985,
+      "trades": 5,
+      "maxdd": -0.014210357470195722,
+      "sharpe": -4.5587087058925135,
+      "ci95_trade": [
+        -0.034830883666083466,
+        -0.011597817991604798
+      ],
+      "dsr": 1.691675357129328e-05,
+      "stabilite_parametres": 0.75,
+      "regimes": {
+        "haussier": -0.0006407488480673074,
+        "baissier": -0.003440890822088538,
+        "inconnu": 0.0004911937874161332,
+        "lateral": -0.009956222312225038,
+        "volatil": 0.0
+      },
+      "promu": false,
+      "non_satisfaits": [
+        "rendement_hors_echantillon_positif",
+        "profit_factor_>_1.2",
+        "au_moins_100_transactions",
+        "borne_basse_IC95_rendement_moyen_>_0",
+        "frais_doubles_rendement_positif",
+        "stabilite_regimes"
+      ],
+      "buy_hold": {
+        "BTC-EUR": -0.5182931956713794,
+        "ETH-EUR": 0.6910548276981787,
+        "SOL-EUR": -0.25720508482291693
+      }
+    },
+    {
+      "strategy": "rebound",
+      "wf_oos_net": -0.005593392079162762,
+      "wf_oos_trades": 10,
+      "holdout_net": -0.025127059568059162,
+      "holdout_doubled_fees": -0.028744332690769148,
+      "holdout_wide_spread": -0.02698320591960468,
+      "pf": 0.058670049166809075,
+      "trades": 7,
+      "maxdd": -0.0284372027299018,
+      "sharpe": -4.150316494277345,
+      "ci95_trade": [
+        -0.040453791987976224,
+        -0.016251080701895293
+      ],
+      "dsr": 1.3130255896020034e-05,
+      "stabilite_parametres": 0.75,
+      "regimes": {
+        "haussier": 0.0,
+        "baissier": -0.013976281143901814,
+        "inconnu": 0.0,
+        "lateral": -0.0040811646319132144,
+        "volatil": -0.007257287418496738
+      },
+      "promu": false,
+      "non_satisfaits": [
+        "rendement_hors_echantillon_positif",
+        "profit_factor_>_1.2",
+        "au_moins_100_transactions",
+        "borne_basse_IC95_rendement_moyen_>_0",
+        "frais_doubles_rendement_positif",
+        "stabilite_regimes"
+      ],
+      "buy_hold": {
+        "BTC-EUR": -0.5182931956713794,
+        "ETH-EUR": 0.6910548276981787,
+        "SOL-EUR": -0.25720508482291693
+      }
+    }
+  ],
+  "modeles": [
+    {
+      "modele": "logistic",
+      "horizon_bougies": 1,
+      "brier": 0.1776260769628236,
+      "brier_reference": 0.17482484904000894,
+      "statut": "estimation non calibrée",
+      "n_test": 1160
+    },
+    {
+      "modele": "logistic",
+      "horizon_bougies": 6,
+      "brier": 0.23546522701804373,
+      "brier_reference": 0.22735097054005732,
+      "statut": "estimation non calibrée",
+      "n_test": 1159
+    },
+    {
+      "modele": "logistic",
+      "horizon_bougies": 24,
+      "brier": 0.2573165543354917,
+      "brier_reference": 0.2375376795159815,
+      "statut": "estimation non calibrée",
+      "n_test": 1156
+    },
+    {
+      "modele": "lightgbm",
+      "horizon_bougies": 1,
+      "brier": 0.17917257449984875,
+      "brier_reference": 0.17482484904000894,
+      "statut": "estimation non calibrée",
+      "n_test": 1160
+    },
+    {
+      "modele": "lightgbm",
+      "horizon_bougies": 6,
+      "brier": 0.23199921665096646,
+      "brier_reference": 0.22735097054005732,
+      "statut": "estimation non calibrée",
+      "n_test": 1159
+    },
+    {
+      "modele": "lightgbm",
+      "horizon_bougies": 24,
+      "brier": 0.2570452448421495,
+      "brier_reference": 0.2375376795159815,
+      "statut": "estimation non calibrée",
+      "n_test": 1156
+    }
+  ],
+  "buy_hold_btc": -0.5182931956713794,
+  "benchmark_euros": 0.0,
+  "conclusion": "Aucune stratégie promue : rester en simulation."
+}

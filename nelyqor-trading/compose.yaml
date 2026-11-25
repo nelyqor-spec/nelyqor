@@ -1,0 +1,101 @@
+# Nelyqor Trading — 3 services permanents + laboratoire à la demande.
+# Séparation des permissions :
+#  - engine : SEUL service avec les secrets Bitvavo ; pas de port exposé.
+#  - api    : contrôle/visualisation ; aucun secret Bitvavo ; écoute uniquement sur le réseau interne.
+#  - caddy  : HTTPS public (Let's Encrypt) -> api.
+#  - lab    : aucun secret, aucun socket Docker, CPU/RAM limités, priorité basse, base de travail séparée.
+name: nelyqor
+
+x-common: &common
+  build: .
+  image: nelyqor-trading:local
+  restart: unless-stopped
+  read_only: true
+  tmpfs: ["/tmp"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+
+services:
+  engine:
+    <<: *common
+    command: ["python", "-m", "backend.runner"]
+    environment:
+      NELYQOR_ROLE: engine
+      NELYQOR_REAL_TRADING_ALLOWED: ${NELYQOR_REAL_TRADING_ALLOWED:-false}
+      BITVAVO_OPERATOR_ID: ${BITVAVO_OPERATOR_ID:-1}
+      NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
+      LOG_LEVEL: INFO
+    volumes:
+      - data:/data
+    secrets:
+      - bitvavo_api_key
+      - bitvavo_api_secret
+    deploy:
+      resources:
+        limits: {cpus: "1.5", memory: 1200M}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3,json,time,sys;r=sqlite3.connect('/data/nelyqor.db').execute(\"select v from kv where k='engine_heartbeat'\").fetchone();sys.exit(0 if r and time.time()*1000-json.loads(r[0])['ts']<180000 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  api:
+    <<: *common
+    command: ["uvicorn", "backend.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers",
+              "--forwarded-allow-ips", "*"]
+    environment:
+      NELYQOR_ROLE: api
+      NELYQOR_COOKIE_SECURE: "true"
+      NELYQOR_REAL_TRADING_ALLOWED: ${NELYQOR_REAL_TRADING_ALLOWED:-false}
+      NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
+    volumes:
+      - data:/data
+    secrets:
+      - owner_password_hash
+    expose: ["8000"]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 300M}
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      NELYQOR_DOMAIN: ${NELYQOR_DOMAIN:?définir NELYQOR_DOMAIN dans .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api]
+
+  lab:
+    <<: *common
+    profiles: ["lab"]
+    restart: "no"
+    command: ["nice", "-n", "19", "python", "scripts/run_lab.py", "--source", "db", "--db", "/data/nelyqor.db"]
+    environment:
+      NELYQOR_ROLE: lab
+    volumes:
+      - data:/data
+    # aucun secret, aucun socket Docker
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 1500M}
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
+
+secrets:
+  bitvavo_api_key:
+    file: ./secrets/bitvavo_api_key
+  bitvavo_api_secret:
+    file: ./secrets/bitvavo_api_secret
+  owner_password_hash:
+    file: ./secrets/owner_password_hash

@@ -1,0 +1,16 @@
+{
+  "_comment": "Bornes immuables chargées au démarrage du moteur, hashées et journalisées. Ni l'API ni le LAB ne peuvent les modifier. Valeurs de départ prudentes, à revoir par le propriétaire.",
+  "allow_margin": false,
+  "allow_short": false,
+  "allow_derivatives": false,
+  "allow_withdrawals": false,
+  "allow_martingale": false,
+  "max_position_fraction": "0.35",
+  "max_total_exposure_fraction": "0.90",
+  "min_reserve_fraction": "0.10",
+  "max_order_eur": "500",
+  "max_stale_ms": 15000,
+  "max_spread_bps": "80",
+  "min_quote_volume_24h_eur": "50000",
+  "anomaly_refuse_threshold": "0.80"
+}

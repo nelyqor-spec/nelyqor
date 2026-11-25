@@ -1,0 +1,28 @@
+[
+  {
+    "marches": 30,
+    "cycle_s_premier": 0.602,
+    "cycle_s_median": 0.34,
+    "cycle_s_max": 0.602,
+    "cpu_moteur_s": 2.06,
+    "mur_s": 2.08,
+    "rss_moteur_mo": 83.0,
+    "rss_lab_mo": 165.1,
+    "lab_concurrent_pendant_mesure": true,
+    "taille_base_mo": 0.0,
+    "cpus": 4
+  },
+  {
+    "marches": 100,
+    "cycle_s_premier": 0.688,
+    "cycle_s_median": 1.066,
+    "cycle_s_max": 1.179,
+    "cpu_moteur_s": 4.84,
+    "mur_s": 4.98,
+    "rss_moteur_mo": 89.2,
+    "rss_lab_mo": 165.8,
+    "lab_concurrent_pendant_mesure": true,
+    "taille_base_mo": 5.81,
+    "cpus": 4
+  }
+]
