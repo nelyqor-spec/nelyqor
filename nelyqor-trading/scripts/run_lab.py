@@ -87,7 +87,8 @@ def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     counts = d["close"].resample(rule, label="left", closed="left").count()
     expected = pd.Timedelta(rule) / pd.Timedelta(np.median(np.diff(df.index.to_numpy())), unit="ms")
     agg[counts < expected] = np.nan
-    agg.index = (agg.index.astype("int64") // 10**6).astype("int64")
+    # unité explicite : pandas 3 stocke en microsecondes (diviser par 10**6 donnait des SECONDES — défaut corrigé)
+    agg.index = pd.Index(agg.index.as_unit("ms").astype("int64"), dtype="int64")
     agg.attrs = dict(df.attrs)
     return agg
 

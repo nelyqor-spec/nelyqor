@@ -2,14 +2,26 @@
 
 ## Arrêt d'urgence
 PWA › Accueil › « Arrêt d'urgence ». Effet : `PAUSE_NOUVELLES_ENTREES` immédiat (traité même si le réseau
-vers Bitvavo est coupé — testé). Les positions et ordres de protection sont conservés. Pour sortir des
-positions : liquidation manuelle (distincte). Sans téléphone : `docker compose stop engine` (stoppe aussi les sorties).
+vers Bitvavo est coupé — testé). Les positions et les stops natifs chez Bitvavo sont conservés. Pour sortir
+des positions : liquidation manuelle (distincte). Sans téléphone : `scripts/emergency_stop.sh` en SSH
+(même effet). `docker compose stop engine` arrête tout le moteur : les stops NATIFS restent actifs chez Bitvavo,
+mais plus aucun suivi ni relèvement.
+
+## Position « NON protégée »
+PWA › Capital › Protections. Causes : stop en cours de pose, modification ambiguë (panne pendant le PUT),
+stop déclenché mais non exécuté (stopLossLimit dans un gap), quantité couverte insuffisante, position sous les
+minimums. Le moteur retente à chaque cycle ; une alerte « arret_protection » est envoyée pour le réel.
+Rappel : un stop ne garantit AUCUN prix (glissement, gap, suspension de marché).
+
+## Falsification de l'état détectée
+État `INCIDENT` + alerte « securite » : la signature HMAC de l'état ne correspond plus (écriture directe dans la
+base). Vérifier l'audit, l'accès au serveur et `secrets/engine_state_key`, puis reprise manuelle après contrôle.
 
 ## Ordre à statut inconnu
 Symptôme : « Ordres à statut inconnu > 0 », entrées en pause. Le moteur a déjà interrogé Bitvavo par
 `clientOrderId` et les trades. Action : vérifier l'ordre dans l'interface Bitvavo ; s'il existe, attendre la
 réconciliation (refresh) ; sinon passer l'intention en `NOT_PLACED` :
-`docker compose exec engine python -c "import sqlite3;c=sqlite3.connect('/data/nelyqor.db');c.execute(\"update intents set status='NOT_PLACED', reserved_quote='0' where status in ('UNKNOWN','SUBMITTING')\");c.commit()"`
+`docker compose exec engine python -c "import sqlite3;c=sqlite3.connect('/data/nelyqor.db');c.execute(\"update intents set status='NOT_PLACED', reserved_quote='0', reserved_base='0' where status in ('UNKNOWN','SUBMITTING')\");c.commit()"`
 puis « Reprendre ».
 
 ## Apport / retrait manuel

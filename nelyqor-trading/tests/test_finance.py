@@ -234,3 +234,21 @@ def test_data_gap_no_execution_inside_gap():
     r = run_backtest({"X-EUR": df}, AlwaysIn({}), BTConfig(atr_stop_mult=100, cooldown_bars=1000))
     assert len(r.trades) == 1 and r.trades[0].reason == "invalidation"
     assert not np.isnan(r.equity).any()
+
+
+def test_resample_4h_units_and_causality():
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("run_lab", Path(__file__).resolve().parents[1] / "scripts/run_lab.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    h = 3_600_000
+    t0 = 1_700_006_400_000  # aligné sur 4 h
+    df = synthetic_candles(48, seed=1, start_ms=t0)
+    df.iloc[5, :] = np.nan  # trou dans la 2e bougie de 4 h
+    r = mod.resample_ohlc(df, "4h")
+    assert list(r.index[:3]) == [t0, t0 + 4 * h, t0 + 8 * h]  # millisecondes, alignées sur l'original
+    assert r.iloc[0]["open"] == df.iloc[0]["open"] and r.iloc[0]["close"] == df.iloc[3]["close"]
+    assert r.iloc[0]["high"] == df.iloc[0:4]["high"].max()
+    assert np.isnan(r.iloc[1]["close"])  # bougie incomplète : jamais reconstituée

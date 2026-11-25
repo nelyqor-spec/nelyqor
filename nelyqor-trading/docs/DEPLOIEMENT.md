@@ -22,17 +22,23 @@ cp .env.example .env && nano .env                  # NELYQOR_DOMAIN, laisser REA
 mkdir -p secrets && chmod 700 secrets
 python3 scripts/set_password.py secrets/owner_password_hash
 : > secrets/bitvavo_api_key && : > secrets/bitvavo_api_secret   # vides au départ
-openssl rand -base64 32 > secrets/backup_passphrase && chmod 600 secrets/*
+openssl rand -base64 32 > secrets/backup_passphrase
+openssl rand -hex 32 > secrets/engine_state_key     # clé d'intégrité de l'état (lue par le moteur SEUL)
+chmod 600 secrets/*
 docker compose up -d --build
 ```
 Le hash scrypt et le mot de passe ne transitent jamais par le chat.
 
 ## 4. Données et laboratoire
 ```bash
-docker compose run --rm engine python scripts/download_candles.py --markets BTC-EUR,ETH-EUR,SOL-EUR --days 1100
-docker compose --profile lab run --rm lab
+docker compose --profile lab run --rm collector   # téléchargement incrémental (relancer = reprise)
+docker compose --profile lab run --rm lab         # laboratoire isolé (aucune clé, pas d'accès à la base de prod)
 ```
-Le rapport apparaît dans PWA › IA et `reports/lab_report_bitvavo.json`.
+Le rapport apparaît dans PWA › IA (`/lab/reports/lab_report_bitvavo.json`, lecture seule pour l'API).
+**Alternative gratuite hors serveur** : le workflow `.github/workflows/nelyqor-trading.yml` exécute recette,
+téléchargement et laboratoire sur les machines GitHub (déclenchement manuel « Run workflow » ou push sur une
+branche `claude/**`) ; résultats dans le journal du job et l'artefact (7 jours). Le VPS n'a alors pas besoin
+de faire les calculs lourds.
 
 ## 5. Paper trading
 Le moteur tourne en simulation sur les prix réels Bitvavo (sans clé) dès le démarrage.

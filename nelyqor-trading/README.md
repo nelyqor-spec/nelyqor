@@ -5,8 +5,8 @@ Système personnel de trading algorithmique **spot** sur Bitvavo, pilotable depu
 distincte du propriétaire. **Aucune stratégie n'est validée statistiquement à ce jour. Le capital peut être
 intégralement perdu.**
 
-> Rapport de livraison (tests exécutés, résultats financiers, coûts, blocages, état de préparation au réel) :
-> [`reports/RAPPORT_FINAL.md`](reports/RAPPORT_FINAL.md)
+> Rapports : [`reports/RAPPORT_AUDIT_PHASE_2.md`](reports/RAPPORT_AUDIT_PHASE_2.md) (audit, corrections, résultats
+> sur données Bitvavo RÉELLES) et [`reports/RAPPORT_FINAL.md`](reports/RAPPORT_FINAL.md) (phase 1).
 
 ## Sommaire
 - [Architecture](docs/ARCHITECTURE.md) · [Sécurité](docs/SECURITE.md) · [Déploiement VPS + Bitvavo](docs/DEPLOIEMENT.md)
@@ -37,8 +37,9 @@ mkdir -p secrets && chmod 700 secrets
 python3 scripts/set_password.py secrets/owner_password_hash
 : > secrets/bitvavo_api_key; : > secrets/bitvavo_api_secret   # vides = simulation pure (paper trading)
 docker compose up -d --build     # engine + api + caddy (HTTPS)
-docker compose run --rm engine python scripts/download_candles.py --markets BTC-EUR,ETH-EUR,SOL-EUR --days 1100
-docker compose --profile lab run --rm lab      # walk-forward sur données Bitvavo réelles
+openssl rand -hex 32 > secrets/engine_state_key && chmod 600 secrets/*
+docker compose --profile lab run --rm collector  # bougies Bitvavo publiques (incrémental, reprenable)
+docker compose --profile lab run --rm lab        # walk-forward sur données Bitvavo réelles, isolé
 ```
 
 ## Exploitation courante
@@ -67,6 +68,7 @@ backend/research      backtest conservateur, walk-forward purgé, holdout, DSR, 
 backend/api           FastAPI (auth scrypt, cookies sécurisés, CSRF, anti-bruteforce, audit)
 backend/runner.py     service moteur (seul détenteur des clés)
 frontend/             PWA iPhone 5 onglets (sans build, CSP stricte)
-tests/                94 tests : ordres, sécurité, comptabilité, données, résilience, finance, API
+tests/                155 tests : ordres, protections, sécurité, comptabilité, données, résilience, finance,
+                      quant, WebSocket, sources externes, API
 scripts/              lab, téléchargement bougies, mot de passe, backup/restore, bench, recette, e2e PWA
 ```

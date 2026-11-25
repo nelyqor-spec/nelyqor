@@ -51,5 +51,8 @@ paramètres vérifié ; rollback vers la dernière version validée, sinon pause
 - WebSocket carnet implémenté et testé (nonce/resync) mais le moteur V1 utilise le scanner REST agrégé ;
   le WS est à brancher pour les marchés détenus si la latence l'exige.
 - Paires EUR uniquement en comptabilité ; USDC non activé tant que son intérêt net n'est pas démontré.
-- Protections natives Bitvavo (stopLoss hébergé) : la V1 gère les stops côté moteur. Conséquence :
-  **si le serveur tombe, aucun stop ne protège les positions** — voir RAPPORT_FINAL.
+- Protections natives Bitvavo (phase 2) : stop-loss hébergé posé sur toute position, relevé en place
+  (`PUT /order`), jamais abaissé ; « protégé » uniquement après relecture chez l'échange
+  (`backend/execution/protection.py`). Pas d'OCO supposé : prises de bénéfices gérées par le moteur.
+- Deux exécuteurs : simulation (toujours) et réel (si clés) ; les positions réelles restent gérées même
+  après désactivation du réel.
