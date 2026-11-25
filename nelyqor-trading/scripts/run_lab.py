@@ -77,6 +77,21 @@ def load_real(store: CandleStore, markets: list[str], interval: str) -> dict[str
     return out
 
 
+def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Agrégation CAUSALE : une bougie 4 h n'est produite qu'à partir de bougies 1 h toutes antérieures ou égales
+    à sa clôture ; une bougie agrégée incomplète (trou) est laissée NaN plutôt que reconstituée."""
+    idx = pd.to_datetime(df.index, unit="ms", utc=True)
+    d = df.set_axis(idx)
+    agg = d.resample(rule, label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+    counts = d["close"].resample(rule, label="left", closed="left").count()
+    expected = pd.Timedelta(rule) / pd.Timedelta(np.median(np.diff(df.index.to_numpy())), unit="ms")
+    agg[counts < expected] = np.nan
+    agg.index = (agg.index.astype("int64") // 10**6).astype("int64")
+    agg.attrs = dict(df.attrs)
+    return agg
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=["real", "synthetic"], default="real")
@@ -90,6 +105,7 @@ def main() -> None:
     ap.add_argument("--out", default=os.environ.get("NELYQOR_LAB_OUT", str(ROOT / "reports")))
     ap.add_argument("--hosting", type=float, default=float(os.environ.get("NELYQOR_HOSTING_EUR", "7.19")))
     ap.add_argument("--min-bars", type=int, default=3000)
+    ap.add_argument("--resample", default="", help="agrégation causale des bougies (ex. 4h) à partir de --interval")
     a = ap.parse_args()
     db = Database(a.lab_db)
     store = CandleStore(a.root)
@@ -99,8 +115,13 @@ def main() -> None:
         if not data or len(next(iter(data.values()))) < a.min_bars:
             sys.exit(f"Données réelles insuffisantes (< {a.min_bars} bougies). Lancer scripts/download_candles.py.")
         n = len(next(iter(data.values())))
-        source = f"RÉEL — API publique Bitvavo, {a.interval}, {len(data)} marchés, {n} bougies"
         tag = "bitvavo"
+        if a.resample:
+            data = {m: resample_ohlc(df, a.resample) for m, df in data.items()}
+            n = len(next(iter(data.values())))
+            tag = f"bitvavo_{a.resample}"
+        source = (f"RÉEL — API publique Bitvavo, {a.interval}{' agrégé ' + a.resample if a.resample else ''}, "
+                  f"{len(data)} marchés, {n} bougies")
     else:
         data = synthetic_universe(a.markets.split(","), a.bars, seed=a.seed)
         source = SYNTHETIC_LABEL
@@ -130,9 +151,12 @@ def main() -> None:
                "holdout_consultations_anterieures": out["consultations_holdout_anterieures"],
                "fuite_temporelle": out["fuite_temporelle_detectee"],
                "promu": out["promotion"]["promu"], "non_satisfaits": out["promotion"]["non_satisfaits"],
-               "buy_hold": out["benchmark_buy_hold"], "fenetre_holdout": out["fenetre_holdout"]}
-        print(f"{row['strategy']:18s} holdout {row['holdout_net']:+.2%} (éco {row['holdout_economique']:+.2%}) "
-              f"PF {row['pf']:.2f} trades {row['trades']:4d} promu={row['promu']}", flush=True)
+               "buy_hold": out["benchmark_buy_hold"], "fenetre_holdout": out["fenetre_holdout"],
+               "diagnostic_sans_couts": out["diagnostic_sans_couts"]["net_return"],
+               "frais_holdout_eur": out["frais_holdout_eur"], "duree_moyenne_bougies": out["duree_moyenne_bougies"]}
+        print(f"{row['strategy']:22s} holdout {row['holdout_net']:+.2%} (éco {row['holdout_economique']:+.2%}, "
+              f"sans coûts {row['diagnostic_sans_couts']:+.2%}) PF {row['pf']:.2f} trades {row['trades']:4d} "
+              f"promu={row['promu']}", flush=True)
         return row
 
     fam_out = {}
@@ -166,9 +190,12 @@ def main() -> None:
     results.append(summarize(lab.evaluate(data, lambda p: Precomputed("modele_logistique", table), {}, {}, cfg),
                              "modele_predictif"))
     # Benchmark simple de tendance (paramètres fixes, aucune optimisation)
-    trend_bm = lab.evaluate(data, lambda p: S.TrendFollowing({"fast": 50, "mid": 100, "slow": 200, "max_bars": 10_000}),
-                            {}, {}, cfg)
-    trend_bm["strategy"] = "benchmark_tendance_ema"
+    def make_trend_bm(p: dict[str, Any]) -> S.Strategy:
+        st = S.TrendFollowing({"fast": 50, "mid": 100, "slow": 200, "max_bars": 10_000})
+        st.name = "benchmark_tendance_ema"  # nom distinct : registre du holdout séparé de trend_following
+        return st
+
+    trend_bm = lab.evaluate(data, make_trend_bm, {}, {}, cfg)
     results.append(summarize(trend_bm, "benchmark"))
     # Modèles prédictifs : compétence de Brier, IC, stabilité par fenêtre
     ref_mk = "BTC-EUR" if "BTC-EUR" in data else next(iter(data))

@@ -111,8 +111,14 @@ const views = {
   async capital() {
     const [o, f, pf] = await Promise.all([api("/api/orders"), api("/api/flows"), api("/api/portfolio")]);
     const pos = Object.entries(pf.positions || {});
+    const prot = { ...(pf.protections || {}) };
+    const protReal = Object.entries(pf.protections_reelles || {});
+    const protRow = ([m, p]) => `<div class="row"><span>${esc(m)}</span><span class="${p.protege ? "good" : "bad"}">${p.protege ? "protégée" : "NON protégée"} · ${esc(p.etat)}${p.declencheur ? " · stop " + esc(p.declencheur) : ""}</span></div><p class="reason">${esc(p.raison)}</p>`;
     return `<h1>Capital</h1>
-    <div class="card"><b>Positions</b>${pos.length ? pos.map(([m, p]) => `<div class="row"><span>${esc(m)}</span><span class="mute">${esc(p.strategy)} · stop ${esc(Number(p.stop).toPrecision(6))}</span></div>`).join("") : `<p class="mute">Aucune position.</p>`}</div>
+    <div class="card"><b>Positions</b>${pos.length ? pos.map(([m, p]) => `<div class="row"><span>${esc(m)}</span><span class="mute">${esc(p.strategy)} · stop visé ${esc(Number(p.stop).toPrecision(6))}</span></div>`).join("") : `<p class="mute">Aucune position.</p>`}</div>
+    <div class="card"><b>Protections chez l'échange</b>${Object.entries(prot).map(protRow).join("") || `<p class="mute">Aucune position à protéger.</p>`}
+      ${protReal.length ? `<p><b class="bad">Positions RÉELLES</b></p>${protReal.map(protRow).join("")}` : ""}
+      <p class="reason">Une position n'est « protégée » qu'après confirmation par l'échange. Un stop-loss ne garantit pas le prix d'exécution (glissement, gaps).</p></div>
     <div class="card"><b>Ordres</b><div class="scroll"><table><tr><th>Date</th><th>Marché</th><th>Sens</th><th>Statut</th></tr>
       ${o.intentions.slice(0, 40).map((i) => `<tr><td>${paris(i.ts)}</td><td>${esc(i.market)}</td><td>${esc(i.side)}</td><td>${esc(i.status)}${i.mode === "real" ? " · <b class=bad>réel</b>" : ""}</td></tr>`).join("")}</table></div></div>
     <div class="card"><b>Apports / retraits (manuels, détectés)</b>${f.length ? f.map((x) => `<div class="row"><span>${paris(x.ts)} ${esc(x.kind)} ${esc(x.amount)} ${esc(x.symbol)}</span>

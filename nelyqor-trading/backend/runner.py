@@ -11,6 +11,7 @@ existantes (stops natifs, sorties) continue même si le réel est désactivé ou
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 from decimal import Decimal
@@ -243,7 +244,21 @@ class Engine:
     # ------------------------------------------------------------ portefeuille
     def _ledger(self, mode: str) -> Ledger:
         """Rejoue fills et flux externes dans l'ORDRE CHRONOLOGIQUE (un dépôt de crypto suivi d'une vente
-        doit être appliqué avant la vente)."""
+        doit être appliqué avant la vente). Mis en cache tant qu'aucun fill/flux n'a changé (le rejeu complet
+        à chaque appel croissait avec l'historique)."""
+        sig = self.db.one("SELECT (SELECT COUNT(*) FROM fills WHERE mode=?) a, (SELECT COALESCE(MAX(rowid),0) FROM fills "
+                          "WHERE mode=?) b, (SELECT COUNT(*)||'-'||COALESCE(SUM(identified),0)||'-'||"
+                          "COALESCE(GROUP_CONCAT(value_eur),'') FROM external_flows WHERE mode=?) c", (mode, mode, mode))
+        key = (mode, sig["a"], sig["b"], sig["c"]) if sig else None
+        cache = getattr(self, "_ledger_cache", {})
+        if key is not None and cache.get(mode, (None,))[0] == key:
+            return copy.deepcopy(cache[mode][1])
+        led = self._build_ledger(mode)
+        cache[mode] = (key, copy.deepcopy(led))
+        self._ledger_cache = cache
+        return led
+
+    def _build_ledger(self, mode: str) -> Ledger:
         led = Ledger(self.s.initial_capital_eur if mode == "simulation" else ZERO)
         events: list[tuple[int, int, Any]] = []
         for f in self.db.q("SELECT * FROM fills WHERE mode=?", (mode,)):

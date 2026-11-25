@@ -212,6 +212,9 @@ class Lab:
             hm2 = compute_metrics(r2, ppy)
             r3 = _trim(run_backtest(hd, make(final), replace(cfg, spread_extra_bps=30), ts0), ts0)
             hm3 = compute_metrics(r3, ppy)
+            # DIAGNOSTIC uniquement (jamais utilisé pour promouvoir) : existe-t-il un avantage AVANT coûts ?
+            r0 = _trim(run_backtest(hd, make(final), replace(cfg, fee_multiplier=0.0, slippage_bps=0.0), ts0), ts0)
+            hm0 = compute_metrics(r0, ppy)
             regimes = _regime_returns(hd, r, ts0)
             sr_obs = hm.sharpe / np.sqrt(ppy) if ppy else 0.0
             dsr = deflated_sharpe(sr_obs, len(r.equity), max(1, self.n_trials), float(np.var(self.trial_sharpes)))
@@ -223,6 +226,9 @@ class Lab:
                 promo["non_satisfaits"].append("holdout_vierge")
                 promo["promu"] = False
             out.update({"holdout": hm.as_dict(), "holdout_frais_doubles": hm2.as_dict(),
+                        "diagnostic_sans_couts": hm0.as_dict(),
+                        "frais_holdout_eur": float(sum(t.fees_eur for t in r.trades)),
+                        "duree_moyenne_bougies": float(np.mean([t.bars for t in r.trades])) if r.trades else 0.0,
                         "holdout_spread_elargi": hm3.as_dict(), "rendement_par_regime": regimes,
                         "holdout_economique": self._economic(hm, len(r.equity), ppy, cfg.initial_eur),
                         "deflated_sharpe": dsr, "n_essais": self.n_trials, "benchmark_buy_hold": bh,

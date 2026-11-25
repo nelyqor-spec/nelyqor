@@ -54,7 +54,7 @@ async def run(n_markets: int) -> dict:
     eng = Engine(s, Database(s.db_path), Pub(clock, n_markets), clock)
     eng.start()
     lab = subprocess.Popen(["nice", "-n", "19", sys.executable, str(ROOT / "scripts/run_lab.py"), "--source",  # noqa: S603,S607
-                            "synthetic", "--bars", "6000", "--db", str(tmp / "lab.db")],
+                            "synthetic", "--bars", "6000", "--lab-db", str(tmp / "lab.db"), "--out", str(tmp)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     lat = []
     t_cpu = time.process_time()

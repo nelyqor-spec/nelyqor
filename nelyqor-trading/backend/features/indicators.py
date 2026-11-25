@@ -4,6 +4,8 @@ Toutes les fonctions opèrent sur des tableaux numpy float (analyse statistique,
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -44,7 +46,9 @@ def macd(close: Arr, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[A
 def true_range(high: Arr, low: Arr, close: Arr) -> Arr:
     pc = np.roll(close, 1)
     pc[0] = np.nan
-    tr = np.nanmax(np.vstack([high - low, np.abs(high - pc), np.abs(low - pc)]), axis=0)
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # lignes entièrement NaN (trous, avant listing)
+        tr = np.nanmax(np.vstack([high - low, np.abs(high - pc), np.abs(low - pc)]), axis=0)
     tr[0] = high[0] - low[0]
     return tr
 

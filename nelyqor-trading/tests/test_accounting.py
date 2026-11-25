@@ -106,3 +106,36 @@ def test_decimal_conversion_from_numpy_and_float():
     from backend.core.num import D as conv
     assert conv(np.float64(0.1)) == D("0.1")
     assert conv(0.1) == D("0.1") and conv("1.50") == D("1.50") and conv(3) == D(3)
+
+
+def test_property_pnl_equals_realized_plus_unrealized_random_sequences():
+    """Propriété : P&L (par la valeur) = réalisé + latent, quelles que soient les séquences et devises de frais.
+    La version initiale comptait deux fois les frais prélevés en jetons : ce test l'aurait détecté."""
+    import random
+
+    from backend.core.num import D as conv
+
+    rnd = random.Random(42)
+    for _ in range(300):
+        L = Ledger(D(1000))
+        qty = D(0)
+        price = D(100)
+        for _ in range(rnd.randint(1, 12)):
+            price = (price * conv(rnd.uniform(0.9, 1.1))).quantize(D("0.01"))
+            fee_ccy = rnd.choice(["EUR", "ETH"])
+            if qty > D("0.5") and rnd.random() < 0.5:
+                amt = (qty * conv(rnd.uniform(0.1, 0.9))).quantize(D("0.0001"))
+                fee = (amt * D("0.0025")).quantize(D("0.00000001")) if fee_ccy == "ETH" else (amt * price * D("0.0025"))
+                if fee_ccy == "ETH" and amt + fee > qty:
+                    continue
+                L.apply_fill(Fill(0, "ETH-EUR", "sell", amt, price, fee, fee_ccy), {"ETH": price})
+                qty -= amt + (fee if fee_ccy == "ETH" else 0)
+            else:
+                amt = conv(rnd.uniform(0.1, 2)).quantize(D("0.0001"))
+                fee = (amt * D("0.0025")) if fee_ccy == "ETH" else (amt * price * D("0.0025"))
+                L.apply_fill(Fill(0, "ETH-EUR", "buy", amt, price, fee, fee_ccy), {"ETH": price})
+                qty += amt - (fee if fee_ccy == "ETH" else 0)
+        px = {"ETH": price}
+        assert abs(L.s.positions["ETH"].qty - qty) < D("1e-12")
+        total = L.s.realized_eur + L.unrealized_eur(px)
+        assert abs(L.pnl_trading(px) - total) < D("1e-9"), (L.pnl_trading(px), total)

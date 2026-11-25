@@ -1,13 +1,14 @@
 OK    écran de connexion
 OK    mauvais mot de passe refusé
 OK    état non réel affiché (SIMULATION ou PAUSE)
-OK    bannière données périmées
+OK    bannière cohérente (périmé si moteur absent, sinon rien ou RÉEL)
+OK    état des protections affiché
 OK    onglet marches sans débordement horizontal
 OK    onglet ia sans débordement horizontal
 OK    onglet capital sans débordement horizontal
 OK    onglet reglages sans débordement horizontal
 OK    activation réel : avertissement de perte totale
-OK    arrêt d'urgence transmis (refusé si moteur arrêté = message explicite)
+OK    arrêt d'urgence traité par le moteur (strict)
 OK    mode démo clairement étiqueté
 OK    aucune erreur JavaScript
-RÉSULTAT: OK (12/12)
+RÉSULTAT: OK (13/13)
