@@ -130,3 +130,24 @@ def test_breakout_exit_not_immediate():
     s = Breakout({"channel": 48, "min_rel_volume": 1.3, "max_bars": 96}).signals(df)
     assert s.entry[100]
     assert not s.exit[101:].any()  # tant que le prix reste au-dessus du niveau cassé
+
+
+def test_filtered_strategy_is_causal(planted):
+    from backend.research.walkforward import leakage_check
+    from backend.strategies.base import Filtered, TrendFollowing
+    f = Filtered({"trend_ema": 200, "vol_pct": 0.8, "liq_pct": 0.2, "mtf_mult": 4, "min_move_cost": 1.0},
+                 TrendFollowing({"fast": 12, "mid": 50, "slow": 200, "max_bars": 100}))
+    assert not leakage_check(f, planted)
+    assert f.signals(planted).entry.sum() <= TrendFollowing({"fast": 12, "mid": 50, "slow": 200, "max_bars": 100}).signals(planted).entry.sum()
+
+
+def test_max_universe_is_point_in_time():
+    from backend.research.synthetic import synthetic_universe
+    from backend.research.xsection import XSConfig, build_panel, eligible
+    d = synthetic_universe([f"C{i}-EUR" for i in range(6)], 600, seed=2)
+    cfg = XSConfig(min_liquidity_quote=0, min_age_bars=50, max_universe=2, liq_lookback=50, mom_lookback=24,
+                   trend_slow=50, vol_lookback=24)
+    P = build_panel(d, cfg)
+    ok = eligible(P, cfg, 400)
+    assert ok.sum() == 2
+    assert set(ok[ok].index) == set(P["liq"].iloc[400].nlargest(2).index)

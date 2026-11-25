@@ -29,6 +29,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from backend.core.config import ROOT, load_strategy_params  # noqa: E402
+from backend.data.resample import resample_ohlc  # noqa: E402,F401
 from backend.data.store import CandleStore  # noqa: E402
 from backend.models.predict import fit_and_evaluate, walk_forward_brier  # noqa: E402
 from backend.research.backtest import BTConfig  # noqa: E402
@@ -75,22 +76,6 @@ def load_real(store: CandleStore, markets: list[str], interval: str) -> dict[str
         g.attrs["provenance"] = "real/bitvavo"
         out[m] = g
     return out
-
-
-def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """Agrégation CAUSALE : une bougie 4 h n'est produite qu'à partir de bougies 1 h toutes antérieures ou égales
-    à sa clôture ; une bougie agrégée incomplète (trou) est laissée NaN plutôt que reconstituée."""
-    idx = pd.to_datetime(df.index, unit="ms", utc=True)
-    d = df.set_axis(idx)
-    agg = d.resample(rule, label="left", closed="left").agg(
-        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-    counts = d["close"].resample(rule, label="left", closed="left").count()
-    expected = pd.Timedelta(rule) / pd.Timedelta(np.median(np.diff(df.index.to_numpy())), unit="ms")
-    agg[counts < expected] = np.nan
-    # unité explicite : pandas 3 stocke en microsecondes (diviser par 10**6 donnait des SECONDES — défaut corrigé)
-    agg.index = pd.Index(agg.index.as_unit("ms").astype("int64"), dtype="int64")
-    agg.attrs = dict(df.attrs)
-    return agg
 
 
 def main() -> None:

@@ -43,7 +43,8 @@ def _rows_to_df(rows: list[list[Any]]) -> pd.DataFrame:
 
 
 async def download_market(rest: Any, store: CandleStore, market: str, interval: str, days: int,
-                          now_ms: int | None = None, limit: int = 1440, base_url: str = "") -> DownloadResult:
+                          now_ms: int | None = None, limit: int = 1440, base_url: str = "",
+                          pause_s: float = 0.0) -> DownloadResult:
     step = STEP_MS[interval]
     now = now_ms or int(time.time() * 1000)
     man = store.read_manifest(REAL, "bitvavo", market, interval)
@@ -63,6 +64,10 @@ async def download_market(rest: Any, store: CandleStore, market: str, interval: 
         end = nxt - 1
         rows = await rest.candles(market, interval, limit=limit, start=cursor, end=end)
         requests += 1
+        if pause_s:
+            import asyncio
+
+            await asyncio.sleep(pause_s)  # politesse envers l'API, en plus du budget de poids
         chunk = _rows_to_df(rows)
         chunk = chunk[(chunk["ts"] >= cursor) & (chunk["ts"] < nxt)]
         if len(rows) >= limit and len(chunk) and int(chunk["ts"].min()) > cursor:

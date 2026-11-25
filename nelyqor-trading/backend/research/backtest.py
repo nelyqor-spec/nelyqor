@@ -39,6 +39,8 @@ class BTConfig:
     fee_multiplier: float = 1.0
     spread_extra_bps: float = 0.0
     delisting_haircut: float = 0.5  # perte supposée si un marché disparaît avec une position ouverte
+    breakeven_r: float = 0.0  # protection du bénéfice : stop remonté au prix d'entrée + frais après N x R
+    hosting_eur_month: float = 0.0  # information : déduit seulement dans le résultat « économique »
 
 
 @dataclass
@@ -198,6 +200,8 @@ def run_backtest(data: dict[str, pd.DataFrame], strategy: Strategy, cfg: BTConfi
                 p = pos[m]
                 p.peak_close = max(p.peak_close, c)
                 p.stop = max(p.stop, p.peak_close - cfg.atr_trail_mult * atrs[m][i])
+                if cfg.breakeven_r > 0 and p.peak_close >= p.entry_px + cfg.breakeven_r * p.r_unit:
+                    p.stop = max(p.stop, p.entry_px * (1 + 2 * fee + 2 * slip))  # bénéfice protégé (hors gap)
                 held = i - p.entry_i
                 if held >= cfg.min_hold_bars and sig[m].exit[i]:
                     pending_exits.setdefault(i + L, []).append((m, "invalidation"))

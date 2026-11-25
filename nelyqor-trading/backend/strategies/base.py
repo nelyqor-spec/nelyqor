@@ -212,6 +212,44 @@ class ModelStrategy(Strategy):
         return Signals(entry, z, _clip01(np.nan_to_num(p - base) * 5), h)
 
 
+class Filtered(Strategy):
+    """Enveloppe de réduction des transactions inutiles autour d'une famille :
+    - `trend_ema` : entrée seulement au-dessus de la moyenne longue du marché (tendance générale) ;
+    - `vol_pct` : entrée seulement si la volatilité réalisée est sous son quantile glissant (marché « calme ») ;
+    - `liq_pct` : entrée seulement si le volume en devise dépasse son quantile glissant (liquidité) ;
+    - `mtf_mult` : confirmation sur un horizon plus long (pente d'une moyenne `mtf_mult` fois plus lente > 0) ;
+    - `min_move_cost` : le mouvement récent doit dépasser k x coût aller-retour (seuil après frais).
+    Tous les filtres sont CAUSAUX (fenêtres sur le passé uniquement)."""
+
+    def __init__(self, params: dict[str, Any], inner: Strategy) -> None:
+        super().__init__(params)
+        self.inner = inner
+        self.name = params.get("name", f"{inner.name}_filtre")
+
+    def signals(self, df: pd.DataFrame) -> Signals:
+        s = self.inner.signals(df)
+        c, h, lo, v = self._arr(df)
+        ok = np.ones(len(df), dtype=bool)
+        p = self.p
+        if p.get("trend_ema"):
+            ok &= np.nan_to_num(c > ind.ema(c, int(p["trend_ema"])), nan=0).astype(bool)
+        if p.get("vol_pct"):
+            rv = pd.Series(ind.realized_vol(c, 48))
+            q = rv.shift(1).rolling(1000, min_periods=200).quantile(float(p["vol_pct"]))
+            ok &= np.nan_to_num((rv < q).to_numpy(), nan=0).astype(bool)
+        if p.get("liq_pct"):
+            qv = pd.Series(v * c)
+            q = qv.shift(1).rolling(1000, min_periods=200).quantile(float(p["liq_pct"]))
+            ok &= np.nan_to_num((qv.rolling(24, min_periods=6).mean() > q).to_numpy(), nan=0).astype(bool)
+        if p.get("mtf_mult"):
+            slow = ind.ema(c, int(50 * float(p["mtf_mult"])))
+            ok &= np.nan_to_num(pd.Series(slow).diff(int(p["mtf_mult"])).to_numpy() > 0, nan=0).astype(bool)
+        if p.get("min_move_cost"):
+            move = pd.Series(np.log(c)).diff(int(p.get("move_lookback", 12))).abs().to_numpy()
+            ok &= np.nan_to_num(move > float(p["min_move_cost"]) * float(p.get("rt_cost", 0.006)), nan=0).astype(bool)
+        return Signals(s.entry & ok, s.exit, s.strength, s.max_bars)
+
+
 def build_strategies(cfg: dict[str, Any]) -> list[Strategy]:
     out: list[Strategy] = [Momentum(cfg["momentum"]), Breakout(cfg["breakout"]), MeanReversion(cfg["mean_reversion"]),
                            TrendFollowing(cfg["trend_following"]), Swing(cfg["swing"]), Rebound(cfg["rebound"])]

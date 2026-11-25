@@ -237,12 +237,7 @@ def test_data_gap_no_execution_inside_gap():
 
 
 def test_resample_4h_units_and_causality():
-    import importlib.util
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location("run_lab", Path(__file__).resolve().parents[1] / "scripts/run_lab.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    from backend.data import resample as mod
     h = 3_600_000
     t0 = 1_700_006_400_000  # aligné sur 4 h
     df = synthetic_candles(48, seed=1, start_ms=t0)
