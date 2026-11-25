@@ -1,10 +1,10 @@
 # Nelyqor Trading — Rapport d'audit, phase 2 (25/11/2026)
 
-**Synthèse.** L'audit a relevé **45 points** (dont **9 critiques**) que les 94 tests de la phase 1 ne détectaient
+**Synthèse.** L'audit a relevé **47 points** (dont **9 critiques**) que les 94 tests de la phase 1 ne détectaient
 pas : état réel falsifiable, laboratoire pouvant écrire dans la base de production, positions réelles
 invendables après désactivation, ventes dupliquées, aucun stop hébergé, ordre déclaré « non placé » trop tôt,
 double comptage des frais, solde réel d'ouverture compté deux fois, module de données absent du dépôt. Tous sont corrigés ; la colonne « Preuve » indique le test
-associé (« revue » = vérifié par relecture seulement, sans test dédié). Le projet compte désormais **155 tests automatisés, tous réussis localement ET sur
+associé (« revue » = vérifié par relecture seulement, sans test dédié). Le projet compte désormais **156 tests automatisés, tous réussis localement ET sur
 GitHub Actions**. Pour la première fois, le laboratoire a tourné sur **de vraies données Bitvavo** (API publique,
 via GitHub Actions) : **aucune stratégie n'est validée ; ne pas passer en réel.** Aucun ordre réel n'a été envoyé.
 
@@ -77,6 +77,8 @@ Les numéros de ligne renvoient au code CORRIGÉ (commit de cette phase).
 | D12 | m | `backend/portfolio/risk.py:68` | CVaR : 1000 × 0,05 = 50,000000000000004 → 51 observations. | Arrondi avant `ceil`. | `test_cvar_prudent_small_samples` |
 | D13 | m | `backend/features/indicators.py:136` | Valeurs `inf` (division par un volume nul) passaient le filtre NaN jusqu'aux modèles. | `inf` → NaN. | revue |
 | D14 | m | `scripts/bench.py` | Benchmark « sous charge » : le LAB concurrent échouait au lancement (option renommée), donc la mesure était invalide. | Corrigé ; vérification `lab_concurrent_pendant_mesure: true`. | `reports/bench_output.json` |
+| D16 | M | `scripts/run_lab.py` (`resample_ohlc`) | Agrégation 4 h : index converti en **secondes** (pandas 3 stocke en µs, divisé par 10⁶) → annualisation et coût d'hébergement faux (rendement net/PF/trades non affectés). Détecté en lisant le 1er rapport 4 h réel. | Unité explicite `as_unit("ms")`. | `test_resample_4h_units_and_causality` (échoue sur l'ancien code) |
+| D17 | M | `.github/workflows/nelyqor-trading.yml` | Le registre des consultations du holdout n'est pas conservé entre exécutions CI (base éphémère) ; les runs 1 h et 4 h utilisaient deux bases distinctes. | Base commune aux deux runs d'une exécution ; **limite documentée** : la période de holdout réelle est considérée comme consultée (voir §3). | revue |
 | D15 | m | `backend/core/num.py:17` | `np.float64` → `Decimal` impossible (NumPy 2) : corrigé en phase 1, test ajouté. | — | `test_decimal_conversion_from_numpy_and_float` |
 
 ### 1.5 Interface et tests trompeurs
@@ -95,9 +97,11 @@ Les numéros de ligne renvoient au code CORRIGÉ (commit de cette phase).
 | Suite | Résultat | Lieu |
 |---|---|---|
 | ruff + mypy (52 fichiers) | OK | local + GitHub Actions |
-| pytest : **155 tests** (ordres 16, protections 20, Guardian/sécurité 27, comptabilité 12, données marché 9, pipeline 8, résilience 14, finance 21, quant 10, WebSocket 2, sources externes 7, API 9) | **155/155** | local + GitHub Actions (run 3) |
+| pytest : **156 tests** (ordres 16, protections 20, Guardian/sécurité 27, comptabilité 12, données marché 9, pipeline 8, résilience 14, finance 22, quant 10, WebSocket 2, sources externes 7, API 9) | **156/156** | local + GitHub Actions (runs 3 et 4) |
 | Parcours iPhone (Playwright, iPhone 13), API + moteur réels sur faux Bitvavo | **13/13** | local |
 | Benchmark sous charge (moteur + LAB simultanés) | voir §6 | local |
+| Image Docker phase 2 (dépendances figées) | construite ; tous les modules importés dans le conteneur | local (miroir Docker, sans apt) |
+| Pipeline de données réelles (5 marchés × 1 100 jours, 1 h) | 19 requêtes/marché, validation OK, 77 à 81 bougies manquantes par marché (signalées, non inventées) | GitHub Actions |
 
 ---
 
@@ -108,17 +112,23 @@ téléchargées et validées par le pipeline (run GitHub Actions n° 2). Coûts 
 10 pb, latence d'une bougie, minimum de 5 €. Holdout = 20 % final (environ 7,2 mois, d'avril à novembre 2026),
 jamais vu auparavant.
 
-| Stratégie | Walk-forward OOS | Holdout net | Holdout frais ×2 | PF | Trades | Holdout **économique** (hébergement 7,19 €/mois) | Promue |
-|---|---|---|---|---|---|---|---|
-| momentum | −37,8 % | −10,3 % | −16,5 % | 0,43 | 133 | −62,1 % | non |
-| breakout | −38,2 % | −12,3 % | −19,3 % | 0,43 | 159 | −64,1 % | non |
-| mean_reversion | −27,3 % | −7,4 % | −12,2 % | 0,38 | 74 | −59,2 % | non |
-| trend_following | −29,9 % | −2,3 % | −7,6 % | 0,84 | 141 | −54,2 % | non |
-| swing | −11,8 % | **+1,6 %** | −0,4 % | 1,50 | 36 | −50,2 % | non (36 trades < 100 ; IC 95 % inclut 0 ; négatif à frais ×2) |
-| rebound | +0,1 % | 0 % (aucun trade) | 0 % | — | 0 | −51,8 % | non |
-| hybride (poids issus de l'entraînement) | −23,8 % | 0 % (aucun poids positif) | 0 % | — | 0 | −51,8 % | non |
-| modèle logistique (stratégie) | −72,5 % | −32,9 % | −49,7 % | 0,40 | 517 | −84,7 % | non |
-| benchmark tendance EMA 50/100/200 | −29,2 % | −1,2 % | −6,5 % | 0,91 | 131 | −53,0 % | non |
+| Stratégie | Walk-forward OOS | Holdout net | Holdout frais ×2 | **Diagnostic sans coûts** | PF | Trades | Holdout **économique** (hébergement 7,19 €/mois) | Promue |
+|---|---|---|---|---|---|---|---|---|
+| momentum | −37,8 % | −10,3 % | −16,5 % | −0,7 % | 0,43 | 133 | −62,1 % | non |
+| breakout | −38,2 % | −12,3 % | −19,3 % | −1,6 % | 0,43 | 159 | −64,1 % | non |
+| mean_reversion | −27,3 % | −7,4 % | −12,2 % | −0,4 % | 0,38 | 74 | −59,2 % | non |
+| trend_following | −29,9 % | −2,3 % | −7,6 % | **+5,7 %** | 0,84 | 141 | −54,2 % | non |
+| swing | −11,8 % | **+1,6 %** | −0,4 % | +4,5 % | 1,50 | 36 | −50,2 % | non (36 trades < 100 ; IC 95 % inclut 0 ; négatif à frais ×2) |
+| rebound | +0,1 % | 0 % (aucun trade) | 0 % | 0 % | — | 0 | −51,8 % | non |
+| hybride (poids issus de l'entraînement) | −23,8 % | 0 % (aucun poids positif) | 0 % | 0 % | — | 0 | −51,8 % | non |
+| modèle logistique (stratégie) | −72,5 % | −32,9 % | −49,7 % | +0,5 % | 0,40 | 517 | −84,7 % | non |
+| benchmark tendance EMA 50/100/200 | −29,2 % | −1,2 % | −6,5 % | **+6,9 %** | 0,91 | 131 | −53,0 % | non |
+
+Le diagnostic « sans coûts » (frais et glissement à zéro, **jamais utilisé pour la promotion**) montre que les
+règles de tendance avaient un **avantage brut** sur ce holdout (+5,7 % à +6,9 %), entièrement absorbé par les
+coûts de transaction en 1 h. Momentum, breakout et mean reversion n'ont **aucun** avantage, même sans coûts.
+Le modèle logistique a un avantage brut quasi nul (+0,5 %) pour 517 trades : il tourne trop pour un signal aussi
+faible.
 | **100 € conservés en euros** | — | **0 %** | — | — | — | 0 % (sans serveur) | référence |
 | **achat passif BTC** (même holdout, frais inclus) | — | **−16,6 %** | — | — | — | — | référence |
 
@@ -130,17 +140,52 @@ La stabilité par fenêtre montre une compétence non significative sur la premi
 construite sur ce modèle perd 33 % : **un léger pouvoir prédictif ne couvre pas 0,5 % de coûts aller-retour**
 sur des trades de quelques heures.
 
-RÉSULTATS_4H_PLACEHOLDER
+**Mêmes données agrégées en 4 h** (agrégation causale, 6 601 bougies, holdout sur la même période, run n° 4,
+après correction de l'unité de temps D16) :
+
+| Stratégie | Walk-forward OOS | Holdout net | Holdout frais ×2 | Diagnostic sans coûts | PF | Trades | Holdout économique | Promue |
+|---|---|---|---|---|---|---|---|---|
+| momentum | +7,6 % | −2,4 % | −3,7 % | −0,7 % | 0,32 | 23 | −54,4 % | non |
+| breakout | −1,3 % | +1,4 % | +0,7 % | +2,4 % | 1,55 | 13 | −50,6 % | non |
+| mean_reversion | +0,5 % | −1,7 % | −2,6 % | −0,5 % | 0,39 | 12 | −53,7 % | non |
+| **trend_following** | **+13,7 %** | **+3,2 %** | +0,5 % | +6,8 % | 1,32 | 48 | −48,8 % | non (48 trades < 100 ; IC 95 % du trade moyen [−1,9 % ; +1,9 %] ; DSR 0,09) |
+| swing | −7,2 % | −0,5 % | −0,9 % | −0,1 % | 0,66 | 7 | −52,5 % | non |
+| rebound | +5,1 % | +2,2 % | +2,1 % | +2,3 % | — | 1 | −49,8 % | non (1 trade) |
+| hybride | −12,3 % | +3,1 % | +1,6 % | +5,1 % | 1,51 | 28 | −48,9 % | non |
+| modèle logistique | +1,0 % | −6,0 % | −8,9 % | −1,9 % | 0,57 | 60 | −58,0 % | non |
+| benchmark tendance EMA | +18,2 % | +0,6 % | −1,5 % | +3,5 % | 1,06 | 41 | −51,4 % | non |
+| achat passif BTC | — | −17,4 % | — | — | — | — | — | référence |
+
+Le passage en 4 h divise le nombre d'allers-retours par 3 à 10 ; plusieurs règles deviennent positives après frais
+sur le holdout (trend_following +3,2 %, hybride +3,1 %, breakout +1,4 %) et toutes battent largement l'achat
+passif (−17 % à −40 %) dans cette période baissière. **Aucune ne satisfait les critères** : trop peu de trades
+(< 100), intervalle de confiance incluant 0, et la période de holdout a déjà été consultée (voir l'avertissement
+ci-dessous). Ce sont des **pistes à valider sur des données futures**, pas des résultats exploitables.
+
+Compétence des modèles en 4 h : significative à 1 bougie (4 h) seulement (logistique +2,4 % IC [0,9 ; 4,1] ;
+LightGBM +2,5 % IC [0,6 ; 4,8]), nulle à 24 h et 4 jours.
+
+**Reproductibilité vérifiée** : les résultats 1 h sont identiques au chiffre près entre les exécutions CI n° 2, 3
+et 4 (mêmes données, même code de stratégie).
+
+**Avertissement méthodologique (holdout).** Cette période de holdout réelle (avril–novembre 2026) a été évaluée
+par plusieurs exécutions CI successives (runs 2, 3 et 4 : même protocole, corrections de code entre elles, aucun
+paramètre réglé sur ses résultats) et par les runs 1 h et 4 h. Le registre de consultation n'étant pas
+persistant en CI, **cette période doit être considérée comme consultée** : elle ne peut plus servir à promouvoir
+une stratégie. La validation devra se faire sur des données **postérieures au 25/11/2026** (paper trading).
 
 ### Analyse des pertes (sans extrapolation)
-1. **Coûts** : la plupart des familles font plus de 100 allers-retours en 7 mois à environ 0,6 % de coût
-   chacun ; le diagnostic sans coûts (rapport CI) indique si un avantage brut existe avant frais.
-2. **Régime** : le holdout est baissier sur tous les actifs (BTC −16,6 %) ; les règles long-only y sont
-   défavorisées, même si plusieurs ont mieux résisté que l'achat passif.
-3. **Hébergement** : 7,19 €/mois rapportés à 100 € coûtent environ 52 points sur 7,2 mois, soit plus que toute perte ou
+1. **Coûts** : en 1 h, les familles font plus de 100 allers-retours en 7 mois, à environ 0,6 % de coût chacun.
+   Le diagnostic sans coûts le confirme : les règles de tendance étaient positives avant frais et négatives après.
+2. **Fréquence** : en 4 h, les mêmes familles de tendance deviennent positives après frais. La fréquence de
+   trading, plus que la logique du signal, explique une grande partie des pertes en 1 h.
+3. **Régime** : le holdout est baissier sur tous les actifs (BTC −16,6 %) ; les règles long-only y sont
+   défavorisées, même si plusieurs ont mieux résisté que l'achat passif. Momentum, breakout (1 h) et
+   mean reversion n'ont pas d'avantage brut mesurable.
+4. **Hébergement** : 7,19 €/mois rapportés à 100 € coûtent environ 52 points sur 7,2 mois, soit plus que toute perte ou
    tout gain de trading mesuré. **Avec 100 € de capital, le résultat économique est négatif dans tous les cas
    mesurés.**
-4. Un seul jeu de 5 marchés et un seul holdout : intervalles larges ; un résultat positif isolé (swing) n'est pas
+5. Un seul jeu de 5 marchés et un seul holdout : intervalles larges ; un résultat positif isolé (swing) n'est pas
    une preuve (DSR = 0,026).
 
 ---
@@ -180,10 +225,13 @@ laboratoire (environ 3 min par exécution) ; le VPS ne garde que le moteur et l'
 1. **Ne pas activer le réel.** Aucun critère de validation n'est satisfait sur données réelles.
 2. Le résultat économique impose d'augmenter le capital ou de réduire l'hébergement (déploiement local, offre
    moins chère) : avec 100 €, l'hébergement à lui seul coûte environ 86 % du capital par an.
-3. Explorer les horizons plus longs (4 h, 1 j), moins coûteux en frais, et des règles qui restent en euros en
-   régime baissier ; toujours avec le même protocole (holdout vierge, frais doublés, ≥ 100 trades).
-4. Déployer en **paper trading sur flux réels** pour vérifier l'intégration Bitvavo (§4) sans argent.
-5. Calibrer λ/γ et le score de risque sur l'entraînement, puis mesurer leur effet hors échantillon.
+3. Poursuivre la piste 4 h / tendance (meilleurs résultats mesurés, avantage brut présent) et tester le 1 j ; ne pas
+   ajuster les paramètres sur la période déjà consultée. Valider en avant (forward) : paper trading à partir du
+   26/11/2026, puis nouveau holdout sur des données postérieures.
+4. Élargir l'univers (`--all-eur`) pour réduire le biais de survivance, et porter le nombre de trades au-dessus
+   de 100 sans augmenter la fréquence (plus de marchés plutôt que plus de transactions).
+5. Déployer en **paper trading sur flux réels** pour vérifier l'intégration Bitvavo (§4) sans argent.
+6. Calibrer λ/γ et le score de risque sur l'entraînement, puis mesurer leur effet hors échantillon.
 
 ## 8. Conditions nécessaires avant tout déploiement réel
 Toutes doivent être vraies : (1) une stratégie promue par le laboratoire sur un holdout **vierge** réel, avec

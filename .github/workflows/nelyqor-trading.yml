@@ -55,7 +55,7 @@ jobs:
       - name: Laboratoire sur données réelles
         run: |
           python scripts/run_lab.py --source real --markets BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR --lab-db data/lab/lab.db --out reports-ci
-          python scripts/run_lab.py --source real --resample 4h --min-bars 1500 --markets BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR --lab-db data/lab/lab4h.db --out reports-ci
+          python scripts/run_lab.py --source real --resample 4h --min-bars 1500 --markets BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR --lab-db data/lab/lab.db --out reports-ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:
