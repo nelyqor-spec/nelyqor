@@ -1,0 +1,6 @@
+{"4h_base_egal": {"rendement_net": -0.03896748266711769, "max_drawdown": -0.6942398125036071, "trades": 243},
+ "4h_base_volatilite": {"rendement_net": 0.035004486161775095, "max_drawdown": -0.5958902752932095, "trades": 229},
+ "4h_base_kelly": {"rendement_net": 1.1473377546850685, "max_drawdown": -0.5133239368099162, "trades": 211},
+ "4h_base_cvar": {"rendement_net": 0.10285805776419243, "max_drawdown": -0.6162415243022649, "trades": 241},
+ "4h_base_robuste": {"rendement_net": -0.06749360273813987, "max_drawdown": -0.5361124242723364, "trades": 220},
+ "_source": "job 139527955757 (run 45703177400), extrait du JSON PHASE4"}
