@@ -56,7 +56,7 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"; echo "évaluation récente : rien à faire (quota économisé)"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            [ "$age_h" -gt 30 ] && [ "$last" -gt 0 ] && echo "::warning::RATTRAPAGE : dernière évaluation il y a ${age_h} h (créneaux de prédiction manqués comptés, jamais reconstitués)"
+            [ "$age_h" -gt 30 ] && [ "$last" -gt 0 ] && echo "::warning::RATTRAPAGE : dernière évaluation il y a ${age_h} h (créneaux de prédiction manqués comptés, jamais reconstitués)" || true
           fi
       - uses: actions/setup-python@v5
         if: steps.garde.outputs.skip != 'true'
@@ -82,7 +82,7 @@ jobs:
       - name: Horodatage de réussite + consommation
         if: steps.garde.outputs.skip != 'true'
         run: |
-          date +%s > data/prospective/derniere_evaluation_ok
+          mkdir -p data/prospective && date +%s > data/prospective/derniere_evaluation_ok
           du -sh data/market data/prospective || true
           echo "durée du job : voir l'en-tête GitHub ; dépôt public : minutes des runners standards non décomptées"
       - uses: actions/cache/save@v4
