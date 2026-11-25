@@ -139,12 +139,17 @@ def build(c: dict[str, Any], data: dict[str, pd.DataFrame]) -> tuple[Any, ...]:
     if c.get("score", "base") != "base":
         score = R4.custom_scores(P, cfg, interval)[c["score"]]
     expo_name = c.get("exposure", "btc")
+    btc_mk = f"BTC-{c.get('quote', 'EUR')}"
     if expo_name == "btc":
-        expo = btc_regime(P, cfg, f"BTC-{c.get('quote', 'EUR')}")
+        expo = btc_regime(P, cfg, btc_mk)
     elif expo_name == "aucun":
         expo = np.ones(len(P["close"]))
+    elif expo_name == "reserve_dynamique":  # H7 (même définition que research_phase4.part_rotation)
+        gv = P["rv"].median(axis=1).to_numpy(float) * np.sqrt(R3.bars_per_day(interval))
+        expo = np.nan_to_num(btc_regime(P, cfg, btc_mk) * np.clip(0.03 / np.where(gv > 0, gv, np.nan), 0.25, 1.0))
     else:
-        expo = regime_exposures(P, cfg, f"BTC-{c.get('quote', 'EUR')}")[expo_name]
+        ex = regime_exposures(P, cfg, btc_mk)
+        expo = ex["btc"] * ex[expo_name[len("btc_et_"):]] if expo_name.startswith("btc_et_") else ex[expo_name]
     opt = XS2Options(**c.get("options", {}), record_orders=False)
     return cfg, P, score, expo, opt
 
