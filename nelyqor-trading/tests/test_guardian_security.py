@@ -253,5 +253,6 @@ def test_compose_isolates_lab_from_production_and_secrets():
         assert "data:" not in vols and "docker.sock" not in vols, name  # pas de base de production
     assert any(v.startswith("market:/market:ro") for v in sv["lab"]["volumes"])
     assert set(sv["engine"]["secrets"]) >= {"bitvavo_api_key", "bitvavo_api_secret", "engine_state_key"}
-    assert "secrets" in sv["api"] and set(sv["api"]["secrets"]) == {"owner_password_hash"}
+    assert "secrets" in sv["api"] and set(sv["api"]["secrets"]) == {"owner_password_hash", "owner_command_salt"}
+    assert "owner_command_key" in sv["engine"]["secrets"]  # clé de vérification : moteur seul, jamais l'API
     assert "ports" not in sv["engine"] and "ports" not in sv["api"]

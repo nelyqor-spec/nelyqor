@@ -63,6 +63,7 @@ class SimOrder:
             "updated": self.updated or self.created, "postOnly": self.post_only,
             "onHold": fmt(self.reserved_quote if self.side == "buy" else self.reserved_base),
             "onHoldCurrency": "EUR" if self.side == "buy" else self.market.split("-")[0],
+            "selfTradePrevention": "decrementAndCancel", "visible": True, "timeInForce": "GTC",
         }
         if self.client_order_id:
             d["clientOrderId"] = self.client_order_id

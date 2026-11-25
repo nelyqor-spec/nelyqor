@@ -38,14 +38,21 @@ class ReauthBody(BaseModel):
     confirmation: str = Field(default="", max_length=200)
 
 
-class RealBody(ReauthBody):
+class SignedFields(BaseModel):
+    signature: str = Field(default="", max_length=128)
+    sig_ts: int = 0
+    sig_nonce: str = Field(default="", max_length=64)
+    sig_fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class RealBody(ReauthBody, SignedFields):
     declare_retrait_desactive: bool = False
     declare_ip_fixe: bool = False
     declare_2fa: bool = False
     accepte_risque_perte_totale: bool = False
 
 
-class LiquidationBody(ReauthBody):
+class LiquidationBody(ReauthBody, SignedFields):
     estimate_id: str = Field(max_length=64)
 
 
@@ -303,6 +310,14 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
         return command("activate_real", {"password_ok": True, "confirmation": body.confirmation,
                                          **body.model_dump(exclude={"password", "confirmation"})}, request)
 
+    @app.get("/api/command_salt")
+    def command_salt(_: Any = Depends(require_session)) -> dict[str, Any]:
+        """Sel PUBLIC de dérivation de la clé de signature (la clé elle-même n'existe que côté moteur)."""
+        from ..core.command_sig import ITER
+
+        p = s.secrets_dir / "owner_command_salt"
+        return {"salt": p.read_text().strip() if p.exists() else None, "iterations": ITER}
+
     @app.post("/api/control/liquidation_estimate")
     def liq_est(request: Request, _: Any = Depends(require_session)) -> dict[str, Any]:
         return command("liquidation_estimate", {}, request)
@@ -313,7 +328,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
         if not ok:
             raise HTTPException(401, "ré-authentification échouée")
         return command("liquidation_confirm", {"password_ok": True, "confirmation": body.confirmation,
-                                               "estimate_id": body.estimate_id}, request)
+                                               "estimate_id": body.estimate_id,
+                                               **body.model_dump(include={"signature", "sig_ts", "sig_nonce", "sig_fields"})},
+                       request)
 
     @app.post("/api/control/ack_flow")
     def ack_flow(body: AckFlowBody, request: Request, _: Any = Depends(require_session)) -> dict[str, Any]:

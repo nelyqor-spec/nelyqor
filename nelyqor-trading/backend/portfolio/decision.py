@@ -19,6 +19,7 @@ from ..market_data.models import MarketInfo
 from ..market_data.universe import MarketState, spread_bps
 from ..models.regime import Regime, classify_regime
 from ..strategies.base import Strategy
+from .actions import best_action, compare_entry
 from .risk import (
     RiskInputs,
     breakeven_move,
@@ -216,11 +217,21 @@ class DecisionEngine:
             if sz.amount_quote <= 0:
                 out.append(p)
                 continue
+            # Comparaison systématique : marché / limité / attendre / rester en euros (espérances nettes historiques)
+            acts = compare_entry(df, sig.entry, horizon, float(self.fee_taker), float(self.fee_maker),
+                                 half_spread=float(spread_frac) / 2, slip=0.001, limit_offset=0.001, ttl=2)
+            choice = best_action([a for a in acts if a.action != "acheter_limite" or m.supports("limit")])
+            p.details["comparaison_actions"] = {a.action: {"esperance": a.esperance, "borne_basse": a.borne_basse,
+                                                           **a.details} for a in acts}
+            if choice.action.startswith("attendre"):
+                p.reasons.append(f"comparateur : {choice.action} (meilleure borne basse)")
+                out.append(p)
+                continue
             p.action, p.amount_quote = "acheter", sz.amount_quote
             p.details["stop"] = float(c[-1] - 2.5 * atr_v)
-            # Spread large relativement aux frais : ordre limite postOnly au meilleur bid (maker), sinon marché.
-            if spread is not None and spread > D(15) and m.supports("limit") and st.best_bid:
-                p.order_type, p.limit_price, p.post_only = "limit", st.best_bid, True
+            if choice.action == "acheter_limite" and st.best_bid:
+                lim = min(st.best_bid, D(str(c[-1] * 0.999)))
+                p.order_type, p.limit_price, p.post_only = "limit", m.round_price(lim), True
             out.append(p)
         if not out:
             out.append(Proposal(m.market, "attendre", "-", reasons=["aucun signal d'entrée"]))

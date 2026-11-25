@@ -1,5 +1,6 @@
 // Nelyqor Trading — PWA de contrôle. Aucune clé d'échange ici : uniquement l'API authentifiée du serveur.
 import { DEMO } from "./demo.js";
+import { signCommand } from "./sig.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -26,6 +27,13 @@ async function api(path, opts = {}) {
   return body;
 }
 const post = (p, b = {}) => api(p, { method: "POST", body: JSON.stringify(b) });
+
+async function signed(command, fields, password) {
+  if (demo) return {};
+  const { salt, iterations } = await api("/api/command_salt");
+  if (!salt) return {}; // le moteur refusera alors les commandes sensibles réelles
+  return signCommand(command, fields, password, salt, iterations);
+}
 
 async function waitCommand(id) {
   for (let i = 0; i < 30; i++) {
@@ -179,7 +187,11 @@ function bind() {
       <div class="row"><span>Total estimé</span><b>${eur(est?.net_total_eur)}</b></div><p class="reason">${esc(est?.avertissement)}</p>
       <input id="liq-pw" type="password" placeholder="Mot de passe" autocomplete="current-password"><input id="liq-cf" placeholder="Tapez LIQUIDER">
       <button class="btn danger" id="liq-go">Confirmer la liquidation</button>`);
-    $("#liq-go").onclick = () => run(() => cmd("/api/control/liquidation_confirm", { password: $("#liq-pw").value, confirmation: $("#liq-cf").value, estimate_id: est?.id || "" }));
+    $("#liq-go").onclick = () => run(async () => {
+      const fields = { confirmation: $("#liq-cf").value, estimate_id: est?.id || "" };
+      const sig = await signed("liquidation_confirm", fields, $("#liq-pw").value);
+      await cmd("/api/control/liquidation_confirm", { password: $("#liq-pw").value, ...fields, ...sig });
+    });
   });
   on("btn-real", async () => {
     const st = lastStatus || {};
@@ -192,7 +204,11 @@ function bind() {
       <input id="r-pw" type="password" placeholder="Mot de passe" autocomplete="current-password">
       <p class="mute">Recopiez exactement : <b>${esc(st.phrase_activation_reel)}</b></p><input id="r-cf" autocomplete="off">
       <button class="btn danger" id="r-go">Activer le réel</button>`);
-    $("#r-go").onclick = () => run(() => cmd("/api/control/activate_real", { password: $("#r-pw").value, confirmation: $("#r-cf").value, declare_retrait_desactive: $("#r1").checked, declare_ip_fixe: $("#r2").checked, declare_2fa: $("#r3").checked, accepte_risque_perte_totale: $("#r4").checked }));
+    $("#r-go").onclick = () => run(async () => {
+      const fields = { confirmation: $("#r-cf").value, declare_retrait_desactive: $("#r1").checked, declare_ip_fixe: $("#r2").checked, declare_2fa: $("#r3").checked, accepte_risque_perte_totale: $("#r4").checked };
+      const sig = await signed("activate_real", fields, $("#r-pw").value);
+      await cmd("/api/control/activate_real", { password: $("#r-pw").value, ...fields, ...sig });
+    });
   });
 }
 

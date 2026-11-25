@@ -34,6 +34,8 @@ services:
       - bitvavo_api_key
       - bitvavo_api_secret
       - engine_state_key
+      - owner_command_key
+      - owner_command_salt
     deploy:
       resources:
         limits: {cpus: "1.5", memory: 1200M}
@@ -59,6 +61,7 @@ services:
       - lab:/lab:ro  # rapport du laboratoire, lecture seule
     secrets:
       - owner_password_hash
+      - owner_command_salt
     expose: ["8000"]
     deploy:
       resources:
@@ -128,3 +131,7 @@ secrets:
     file: ./secrets/owner_password_hash
   engine_state_key:
     file: ./secrets/engine_state_key
+  owner_command_key:
+    file: ./secrets/owner_command_key
+  owner_command_salt:
+    file: ./secrets/owner_command_salt

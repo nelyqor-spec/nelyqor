@@ -20,11 +20,13 @@ from backend.storage.db import Database
 from tests.conftest import BTC_RAW, STATE_KEY
 from tests.fake_bitvavo import FakePublic
 
+CMD_KEY = bytes(range(32))
 
-def make_engine(tmp_path, clock, flag=False):
+
+def make_engine(tmp_path, clock, flag=False, command_key=None):
     s = Settings(db_path=tmp_path / "e.db", role="engine", real_trading_server_flag=flag, secrets_dir=tmp_path)
     db = Database(s.db_path)
-    eng = Engine(s, db, FakePublic(clock), clock, state_key=STATE_KEY)
+    eng = Engine(s, db, FakePublic(clock), clock, state_key=STATE_KEY, command_key=command_key)
     eng.start()
     return eng, db
 
@@ -183,24 +185,60 @@ async def test_unidentified_manual_flow_pauses_entries(tmp_path):
     assert await eng._reconcile_real()
 
 
+def signed_payload(command, fields, ts, nonce):
+    from backend.core.command_sig import sign
+    return {"password_ok": True, "signature": sign(CMD_KEY, command, ts, nonce, fields), "sig_ts": ts,
+            "sig_nonce": nonce, "sig_fields": fields}
+
+
 async def test_activate_real_end_to_end_requires_everything(tmp_path):
     clock = FakeClock(1_770_000_000_000)
-    eng, db = make_engine(tmp_path, clock, flag=True)
+    eng, db = make_engine(tmp_path, clock, flag=True, command_key=CMD_KEY)
     real = RealSim([MarketInfo.from_bitvavo(BTC_RAW)], {"EUR": D(0)}, now_ms=clock.now_ms)
     eng.attach_real_exchange(real)
     await eng.step()
-    payload = {"password_ok": True, "confirmation": REAL_CONFIRMATION_PHRASE, "declare_retrait_desactive": True,
-               "declare_ip_fixe": True, "declare_2fa": True, "accepte_risque_perte_totale": True}
-    db.exec("INSERT INTO control_commands VALUES('a1',?,'activate_real',?,'pending',NULL,NULL)", (clock.now_ms(), json.dumps(payload)))
+    fields = {"confirmation": REAL_CONFIRMATION_PHRASE, "declare_retrait_desactive": True, "declare_ip_fixe": True,
+              "declare_2fa": True, "accepte_risque_perte_totale": True}
+    # 1) API compromise : password_ok + toutes les déclarations EN CLAIR, mais aucune signature du propriétaire
+    forged = {"password_ok": True, **fields}
+    db.exec("INSERT INTO control_commands VALUES('f1',?,'activate_real',?,'pending',NULL,NULL)",
+            (clock.now_ms(), json.dumps(forged)))
+    await eng.process_commands()
+    res = json.loads(db.one("SELECT result FROM control_commands WHERE id='f1'")["result"])
+    assert not res["ok"] and any("non signée" in r for r in res["reasons"])
+    assert eng.guardian.state != State.REAL
+    # 2) signée mais recette non enregistrée -> refus
+    db.exec("INSERT INTO control_commands VALUES('a1',?,'activate_real',?,'pending',NULL,NULL)",
+            (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1"))))
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a1'")["result"])
     assert not res["ok"] and any("tests_acceptation_ok" in r for r in res["reasons"])
+    # 3) rejeu de la même signature -> refus
     db.kv_set("acceptance_tests_ok", True)
-    db.exec("INSERT INTO control_commands VALUES('a2',?,'activate_real',?,'pending',NULL,NULL)", (clock.now_ms(), json.dumps(payload)))
+    db.exec("INSERT INTO control_commands VALUES('a2',?,'activate_real',?,'pending',NULL,NULL)",
+            (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1"))))
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a2'")["result"])
+    assert not res["ok"] and any("rejeu" in r for r in res["reasons"])
+    # 4) tout est réuni : signature fraîche
+    db.exec("INSERT INTO control_commands VALUES('a3',?,'activate_real',?,'pending',NULL,NULL)",
+            (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n2"))))
+    await eng.process_commands()
+    res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a3'")["result"])
     assert res["ok"], res
-    assert eng.exec.mode == "real" and eng.guardian.state == State.REAL
+    assert eng.exec is eng.real_exec and eng.guardian.state == State.REAL
+
+
+async def test_real_liquidation_requires_owner_signature(tmp_path):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = make_engine(tmp_path, clock, command_key=CMD_KEY)
+    await eng.step()
+    est = eng.liquidation_estimate()
+    r = await eng.liquidate({"estimate_id": est["id"], "password_ok": True, "confirmation": "LIQUIDER"})
+    assert not r["ok"]  # clé configurée : la confirmation en clair ne suffit plus
+    f = {"confirmation": "LIQUIDER", "estimate_id": est["id"]}
+    r = await eng.liquidate({**signed_payload("liquidation_confirm", f, clock.now_ms(), "L1"), "estimate_id": est["id"]})
+    assert r["ok"]
 
 
 def test_disk_full_write_fails_cleanly(tmp_path):

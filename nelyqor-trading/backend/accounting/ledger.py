@@ -25,6 +25,7 @@ class Fill:
     fee_currency: str
     fee_eur: Decimal | None = None
     id: str = ""
+    quote_eur_rate: Decimal | None = None  # EUR par unité de devise de cotation au moment du fill (USDC...)
 
 
 @dataclass
@@ -64,32 +65,37 @@ class Ledger:
         self.s = LedgerState(cash={"EUR": initial_cash_eur}, initial_value_eur=initial_cash_eur)
 
     def apply_fill(self, f: Fill, fee_rates_eur: dict[str, Decimal] | None = None) -> None:
+        """Paires EUR ET autres devises de cotation (USDC) : la trésorerie est suivie dans la devise de cotation,
+        coûts et produits en EUR au taux du moment du fill (`quote_eur_rate`, obligatoire hors EUR).
+        Les gains/pertes de change sur la trésorerie USDC apparaissent dans la valeur (P&L), pas dans le réalisé."""
         base, quote = f.market.split("-")
-        if quote != "EUR":
-            raise NotImplementedError("comptabilité V1 : paires en EUR uniquement (USDC non activé)")
-        rates = {"EUR": D(1), **(fee_rates_eur or {})}
+        if quote == "EUR":
+            rate = D(1)
+        elif f.quote_eur_rate is not None and f.quote_eur_rate > 0:
+            rate = f.quote_eur_rate
+        else:
+            raise ValueError(f"taux {quote}/EUR requis pour comptabiliser {f.market} (jamais de taux supposé)")
+        rates = {"EUR": D(1), quote: rate, **(fee_rates_eur or {})}
         fee_eur = f.fee_eur if f.fee_eur is not None else (f.fee * rates[f.fee_currency] if f.fee_currency in rates else None)
         pos = self.s.positions.setdefault(base, Position(base))
-        gross = f.amount * f.price
+        gross_q = f.amount * f.price
+        gross = gross_q * rate  # en EUR
         if fee_eur is None:
             self.s.fees_unconverted.append((f.fee_currency, f.fee))
             fee_eur = ZERO
         self.s.fees_eur += fee_eur
         if f.side == "buy":
-            # Frais en EUR : payés en plus du montant ; frais dans la crypto achetée : réduisent la quantité reçue.
-            if f.fee_currency == "EUR":
-                self._cash("EUR", -(gross + f.fee))
+            if f.fee_currency == quote:
+                self._cash(quote, -(gross_q + f.fee))
                 pos.qty += f.amount
                 pos.cost_eur += gross + fee_eur
             elif f.fee_currency == base:
-                # Commission prélevée en jetons : elle est DÉJÀ dans la quantité réduite.
-                # L'ajouter au coût la compterait deux fois (correction phase 2).
+                # Commission prélevée en jetons : elle est DÉJÀ dans la quantité réduite (pas de double comptage).
                 pos.qty += f.amount - f.fee
-                self._cash("EUR", -gross)
+                self._cash(quote, -gross_q)
                 pos.cost_eur += gross
             else:
-                # Commission dans une tierce devise détenue : le coût l'intègre, le solde de cette devise baisse.
-                self._cash("EUR", -gross)
+                self._cash(quote, -gross_q)
                 self._cash(f.fee_currency, -f.fee)
                 pos.qty += f.amount
                 pos.cost_eur += gross + fee_eur
@@ -99,17 +105,17 @@ class Ledger:
                 raise ValueError(f"vente {leaving} {base} > position {pos.qty}")
             # coût sortant = coût moyen x TOUTES les unités qui quittent la position (frais en jetons compris)
             cost_out = pos.avg_cost * leaving
-            if f.fee_currency == "EUR":
-                proceeds = gross - f.fee
-                self._cash("EUR", proceeds)
+            if f.fee_currency == quote:
+                proceeds = gross - fee_eur
+                self._cash(quote, gross_q - f.fee)
                 pos.qty -= f.amount
             elif f.fee_currency == base:
-                proceeds = gross  # la commission est dans cost_out (jetons sortis)
-                self._cash("EUR", gross)
+                proceeds = gross
+                self._cash(quote, gross_q)
                 pos.qty -= leaving
             else:
                 proceeds = gross - fee_eur
-                self._cash("EUR", gross)
+                self._cash(quote, gross_q)
                 self._cash(f.fee_currency, -f.fee)
                 pos.qty -= f.amount
             pos.cost_eur -= cost_out

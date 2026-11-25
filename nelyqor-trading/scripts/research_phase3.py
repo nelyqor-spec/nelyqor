@@ -223,7 +223,9 @@ def part_strat(a: argparse.Namespace, store: CandleStore) -> dict[str, Any]:
     from backend.core.config import load_strategy_params
 
     params = load_strategy_params()
-    raw = load_universe(store, a.base, ["EUR"], min_rows=int(2 * 365 * 24))
+    raw = load_universe(store, a.base, ["EUR"], min_rows=1000 if SMOKE else int(2 * 365 * 24))
+    if not raw:
+        return {"erreur": "aucun marché avec au moins 2 ans de données"}
     # marchés avec >= 2 ans de données (biais de survivance : survivants actuels — documenté)
     lens = sorted(raw, key=lambda m: -raw[m]["close"].notna().sum())[: a.strat_markets]
     raw = {m: raw[m] for m in lens}

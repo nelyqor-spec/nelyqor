@@ -18,4 +18,12 @@ if pw != getpass.getpass("Confirmer : "):
 dest.parent.mkdir(parents=True, exist_ok=True)
 dest.write_text(hash_password(pw) + "\n")
 os.chmod(dest, 0o600)
-print(f"Hash écrit dans {dest} (permissions 600).")
+# clé de signature des commandes sensibles : sel public (API + moteur), clé dérivée (moteur SEUL)
+from backend.core.command_sig import derive_key, new_salt  # noqa: E402
+
+salt = new_salt()
+(dest.parent / "owner_command_salt").write_text(salt + "\n")
+key_file = dest.parent / "owner_command_key"
+key_file.write_text(derive_key(pw, salt).hex() + "\n")
+os.chmod(key_file, 0o600)
+print(f"Hash écrit dans {dest} ; sel de signature et clé moteur écrits (permissions 600).")

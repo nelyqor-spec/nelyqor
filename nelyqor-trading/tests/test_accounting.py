@@ -139,3 +139,24 @@ def test_property_pnl_equals_realized_plus_unrealized_random_sequences():
         assert abs(L.s.positions["ETH"].qty - qty) < D("1e-12")
         total = L.s.realized_eur + L.unrealized_eur(px)
         assert abs(L.pnl_trading(px) - total) < D("1e-9"), (L.pnl_trading(px), total)
+
+
+def test_usdc_pair_accounting_and_fx():
+    L = Ledger(D(0))
+    L.s.cash["USDC"] = D(108)  # 100 EUR convertis à 1,08 USDC/EUR
+    L.apply_fill(Fill(1, "BTC-USDC", "buy", D("0.001"), D(100000), D("0.05"), "USDC", quote_eur_rate=D("0.925")))
+    assert L.s.cash["USDC"] == D("7.95")
+    assert L.s.positions["BTC"].cost_eur == (D(100) + D("0.05")) * D("0.925")
+    L.apply_fill(Fill(2, "BTC-USDC", "sell", D("0.001"), D(110000), D("0.055"), "USDC", quote_eur_rate=D("0.925")))
+    assert L.s.cash["USDC"] == D("7.95") + D("110") - D("0.055")
+    assert L.s.realized_eur == (D("110") - D("0.055") - D("100.05")) * D("0.925")
+    # variation du change : visible dans la valeur, pas dans le réalisé
+    v1, v2 = L.value_eur({"USDC": D("0.925")}), L.value_eur({"USDC": D("0.90")})
+    assert v2 < v1
+
+
+def test_non_eur_fill_without_rate_refused():
+    L = Ledger(D(0))
+    L.s.cash["USDC"] = D(100)
+    with pytest.raises(ValueError):
+        L.apply_fill(Fill(1, "BTC-USDC", "buy", D("0.0001"), D(100000), D(0), "USDC"))

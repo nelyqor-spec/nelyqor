@@ -97,7 +97,7 @@ class Settings:
 
     def read_secret(self, name: str) -> str | None:
         """Lit un secret monté en fichier (Docker secrets). Jamais depuis le dépôt."""
-        if self.role != "engine" and name.startswith(("bitvavo", "engine_", "telegram")):
+        if self.role != "engine" and name.startswith(("bitvavo", "engine_", "telegram", "owner_command_key")):
             # Séparation des permissions : seul le moteur d'exécution peut lire les clés Bitvavo.
             raise PermissionError(f"Le rôle {self.role!r} n'a pas accès aux clés d'échange")
         p = self.secrets_dir / name

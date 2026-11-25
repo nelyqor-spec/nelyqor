@@ -51,7 +51,8 @@ RECON_OVERLAP_MS = 7 * 86_400_000
 
 class Engine:
     def __init__(self, settings: Settings, db: Database, rest: Any, clock: Clock | None = None,
-                 limits: HardLimits | None = None, state_key: bytes | None = None) -> None:
+                 limits: HardLimits | None = None, state_key: bytes | None = None,
+                 command_key: bytes | None = None) -> None:
         self.s, self.db, self.rest = settings, db, rest
         self.clock = clock or Clock()
         self.limits = limits or HardLimits.load()
@@ -80,6 +81,7 @@ class Engine:
         self.last_data_ms = 0
         self.last_snapshot_ms = 0
         self.last_fee_refresh_ms = 0
+        self.command_key = command_key  # vérifie les commandes sensibles signées par le propriétaire
 
     # ------------------------------------------------------------ compat : exécuteur « principal »
     @property
@@ -334,11 +336,16 @@ class Engine:
                     v = self.guardian.resume(actor, await self.preflight(for_real=to_real))
                     res = {"ok": v.allowed, "reasons": v.reasons}
                 elif c == "activate_real":
+                    why = self._verify_signed(c, payload)
+                    signed = payload.get("sig_fields") or {}
                     pf = await self.preflight(for_real=True)
-                    pf.update({k: bool(payload.get(k)) for k in ("declare_retrait_desactive", "declare_ip_fixe",
-                                                                 "declare_2fa", "accepte_risque_perte_totale")})
-                    v = self.guardian.activate_real(actor, payload.get("confirmation", ""), bool(payload.get("password_ok")), pf)
-                    res = {"ok": v.allowed, "reasons": v.reasons}
+                    # seuls les champs SIGNÉS par le propriétaire comptent (pas ceux ajoutés par l'API)
+                    pf.update({k: bool(signed.get(k)) for k in ("declare_retrait_desactive", "declare_ip_fixe",
+                                                                "declare_2fa", "accepte_risque_perte_totale")})
+                    pf["commande_signee_par_le_proprietaire"] = why is None
+                    v = self.guardian.activate_real(actor, str(signed.get("confirmation", "")),
+                                                    bool(payload.get("password_ok")) and why is None, pf)
+                    res = {"ok": v.allowed, "reasons": v.reasons + ([why] if why else [])}
                     if v.allowed:
                         self.notifier.notify("incident", "MODE RÉEL ACTIVÉ par le propriétaire", dedup_key=new_id())
                 elif c == "deactivate_real":
@@ -356,6 +363,16 @@ class Engine:
                 res = {"ok": False, "reasons": [f"{type(e).__name__}: {e}"]}
             self.db.exec("UPDATE control_commands SET status='done', processed_ms=?, result=? WHERE id=?",
                          (self.clock.now_ms(), json.dumps(res, default=str, ensure_ascii=False), cmd["id"]))
+
+    def _verify_signed(self, command: str, payload: dict[str, Any]) -> str | None:
+        from .core.command_sig import verify
+
+        used = self.db.kv_get("used_command_nonces", [])
+        why = verify(self.command_key, command, payload, self.clock.now_ms(), set(used))
+        if why is None:
+            used = (used + [payload["sig_nonce"]])[-2000:]
+            self.db.kv_set("used_command_nonces", used, self.clock.now_ms())
+        return why
 
     def ack_flow(self, flow_id: str, note: str) -> dict[str, Any]:
         r = self.db.one("SELECT * FROM external_flows WHERE id=?", (flow_id,))
@@ -493,6 +510,13 @@ class Engine:
             if st is None:
                 continue
             p = self.decider.evaluate_exit(st.info, st, df, h) if df is not None else None
+            realloc = self.db.kv_get(f"realloc_{mode}", {})
+            if mk in realloc and self.clock.now_ms() - int(realloc[mk].get("ts", 0)) < 3_600_000:
+                from .portfolio.decision import Proposal
+                p = Proposal(mk, "vendre", h.strategy, amount_base=st.info.round_amount(h.qty),
+                             reasons=[f"réallocation au profit de {realloc[mk]['au_profit_de']}"])
+                realloc.pop(mk)
+                self.db.kv_set(f"realloc_{mode}", realloc, self.clock.now_ms())
             if p is not None and p.action == "vendre" and p.amount_base > 0:
                 ok, why = await pm.release_for_exit(mk)
                 if not ok:
@@ -557,6 +581,8 @@ class Engine:
                     if p.action != "acheter":
                         if p.strategy != "-":
                             self._record_decision(mode, p, False, p.reasons, True)
+                            if p.details.get("contrainte_liante") == "disponible_apres_reserve" and held:
+                                self._consider_reallocation(mode, p, held)
                         continue
                     chk = self._check(st, "buy", p.amount_quote, True, equity, cash, exposure + p.amount_quote, mode)
                     chk.reinforcement_of_loser = mk in held and (st.last_price or ZERO) < held[mk].avg_cost
@@ -576,6 +602,36 @@ class Engine:
         self.db.kv_set(f"position_meta_{mode}", meta, now)
         self.db.kv_set("scanner", {"ts": now, "rows": scanner}, now)
         self.last_decision_ms = now
+
+    def _consider_reallocation(self, mode: str, p: Any, held: dict[str, HeldPosition]) -> None:
+        """Opportunité bloquée faute de liquidités : libérer la position la plus faible si le gain net
+        (après frais de changement, hystérésis et incertitude) est positif. La vente se fait au cycle suivant
+        par manage_positions (stop natif annulé et confirmé d'abord)."""
+        from .portfolio.actions import ActionEstimate, pick_reallocation
+        from .portfolio.decision import forward_outcomes
+
+        n = int(p.details.get("n_signaux_independants") or 0)
+        if n < 20 or self.guardian.state not in (State.SIMULATION, State.REAL):
+            return  # en pause/incident : vendre sans pouvoir racheter serait une rotation nuisible
+        cand = ActionEstimate(p.market, float(p.details.get("esperance_nette", 0.0)),
+                              float(p.details.get("ecart_type", 1.0)) / max(1, n) ** 0.5, n)
+        ests = {}
+        for mk, h in held.items():
+            strat = next((s for s in self.strategies if s.name == h.strategy), None)
+            df = self.candles.get(mk)
+            if strat is None or df is None:
+                continue
+            sig = strat.signals(df)
+            rt = float(2 * self.fee_taker)
+            r = forward_outcomes(df, sig.entry, min(24, sig.max_bars)) - rt
+            if len(r) >= 20:
+                ests[mk] = ActionEstimate(mk, float(r.mean()), float(r.std(ddof=1) / len(r) ** 0.5), len(r))
+        victim, gain = pick_reallocation(ests, cand, switch_cost=float(4 * self.fee_taker))
+        if victim:
+            req = self.db.kv_get(f"realloc_{mode}", {})
+            req[victim] = {"au_profit_de": p.market, "gain_borne_basse": gain.borne_basse if gain else None,
+                           "ts": self.clock.now_ms()}
+            self.db.kv_set(f"realloc_{mode}", req, self.clock.now_ms())
 
     def _check(self, st: MarketState, side: str, amount_q: Decimal, entry: bool, equity: Decimal, cash: Decimal,
                exposure_after: Decimal, mode: str) -> IntentCheck:
@@ -623,7 +679,12 @@ class Engine:
         est = self.db.kv_get("liquidation_estimate")
         if not est or est["id"] != payload.get("estimate_id") or self.clock.now_ms() - est["ts"] > 120_000:
             return {"ok": False, "reasons": ["estimation absente, déjà utilisée ou expirée (2 min) : recommencer"]}
-        if not payload.get("password_ok") or payload.get("confirmation") != "LIQUIDER":
+        if est.get("mode") == "real" or self.command_key is not None:
+            why = self._verify_signed("liquidation_confirm", payload)
+            signed = payload.get("sig_fields") or {}
+            if why or signed.get("estimate_id") != est["id"] or signed.get("confirmation") != "LIQUIDER":
+                return {"ok": False, "reasons": [why or "champs signés incohérents"]}
+        elif not payload.get("password_ok") or payload.get("confirmation") != "LIQUIDER":
             return {"ok": False, "reasons": ["confirmation invalide"]}
         self.db.kv_set("liquidation_estimate", None, self.clock.now_ms())  # usage unique
         await self.refresh_tickers()  # jamais de vente sur des prix périmés
@@ -734,7 +795,10 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
     db = Database(s.db_path)
     key, secret = s.read_secret("bitvavo_api_key"), s.read_secret("bitvavo_api_secret")
     public = BitvavoREST(s.bitvavo_rest_url)
-    eng = Engine(s, db, public, state_key=_load_state_key(s))
+    ck = s.read_secret("owner_command_key")
+    if ck:
+        register_secret(ck)
+    eng = Engine(s, db, public, state_key=_load_state_key(s), command_key=bytes.fromhex(ck) if ck else None)
     tg_token, tg_chat = s.read_secret("telegram_bot_token"), os.environ.get("TELEGRAM_CHAT_ID")
     if tg_token and tg_chat:
         register_secret(tg_token)
