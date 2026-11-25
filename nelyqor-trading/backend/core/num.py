@@ -1,7 +1,7 @@
 """Arithmétique monétaire en Decimal. Aucun float pour comptabiliser des fonds."""
 from __future__ import annotations
 
-from decimal import ROUND_DOWN, ROUND_HALF_EVEN, Decimal, getcontext
+from decimal import ROUND_DOWN, ROUND_HALF_EVEN, ROUND_UP, Decimal, getcontext
 
 getcontext().prec = 34
 
@@ -23,6 +23,19 @@ def floor_to_step(value: Decimal, step: Decimal) -> Decimal:
     if step <= 0:
         raise ValueError("step doit être > 0")
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
+
+
+def ceil_to_step(value: Decimal, step: Decimal) -> Decimal:
+    if step <= 0:
+        raise ValueError("step doit être > 0")
+    return (value / step).to_integral_value(rounding=ROUND_UP) * step
+
+
+def ceil_significant(value: Decimal, digits: int) -> Decimal:
+    if value == 0:
+        return value
+    exp = value.adjusted() - digits + 1
+    return value.quantize(Decimal(1).scaleb(exp), rounding=ROUND_UP)
 
 
 def floor_decimals(value: Decimal, decimals: int) -> Decimal:

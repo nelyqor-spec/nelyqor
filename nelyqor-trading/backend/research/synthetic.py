@@ -29,7 +29,9 @@ def synthetic_candles(n: int = 6000, seed: int = 0, start_ms: int = 1_700_000_00
     low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.004, n)))
     vol = (50 + 4000 * np.abs(r)) * rng.lognormal(0, 0.3, n)
     idx = pd.Index(start_ms + step_ms * np.arange(n), name="ts")
-    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
+    df = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": vol}, index=idx)
+    df.attrs["provenance"] = f"synthetic/regimes-markov seed={seed}"
+    return df
 
 
 def synthetic_universe(markets: list[str], n: int = 6000, seed: int = 0) -> dict[str, pd.DataFrame]:

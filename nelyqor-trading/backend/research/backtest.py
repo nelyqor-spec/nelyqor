@@ -38,6 +38,7 @@ class BTConfig:
     cooldown_bars: int = 6
     fee_multiplier: float = 1.0
     spread_extra_bps: float = 0.0
+    delisting_haircut: float = 0.5  # perte supposée si un marché disparaît avec une position ouverte
 
 
 @dataclass
@@ -98,6 +99,11 @@ def run_backtest(data: dict[str, pd.DataFrame], strategy: Strategy, cfg: BTConfi
         if not data[m].index.equals(idx):
             raise ValueError("toutes les séries doivent être alignées sur le même index")
     sig = {m: strategy.signals(data[m]) for m in markets}
+    # Valorisation uniquement (jamais pour trader) : dernier prix connu pendant un trou de données.
+    mark = {m: data[m]["close"].ffill().to_numpy(dtype=float) for m in markets}
+    # Dernière bougie existante : au-delà, le marché a disparu (radiation) -> sortie forcée avec décote.
+    last_valid = {m: int(np.flatnonzero(~np.isnan(data[m]["close"].to_numpy(dtype=float)))[-1])
+                  if data[m]["close"].notna().any() else -1 for m in markets}
     arr = {m: {k: data[m][k].to_numpy(dtype=float) for k in ("open", "high", "low", "close")} for m in markets}
     atrs = {m: atr(arr[m]["high"], arr[m]["low"], arr[m]["close"]) for m in markets}
     cash = cfg.initial_eur
@@ -135,6 +141,10 @@ def run_backtest(data: dict[str, pd.DataFrame], strategy: Strategy, cfg: BTConfi
         # 1) exécutions planifiées à l'ouverture de i
         for m, reason in pending_exits.pop(i, []):
             if m in pos:
+                if np.isnan(arr[m]["open"][i]):
+                    if i + 1 < len(idx):
+                        pending_exits.setdefault(i + 1, []).append((m, reason))  # trou : reportée
+                    continue
                 close_pos(m, i, arr[m]["open"][i] * (1 - slip), reason)
         for m in pending_entries.pop(i, []):
             if m in pos or len(pos) >= cfg.max_positions:
@@ -160,6 +170,12 @@ def run_backtest(data: dict[str, pd.DataFrame], strategy: Strategy, cfg: BTConfi
         # 2) stops / objectifs intrabougie (conservateur)
         for m in list(pos):
             p = pos[m]
+            if i > last_valid[m]:
+                # radiation / fin des données : on suppose une sortie au dernier prix connu avec forte décote
+                close_pos(m, i, mark[m][last_valid[m]] * (1 - cfg.delisting_haircut), "radiation")
+                continue
+            if np.isnan(arr[m]["low"][i]):
+                continue  # trou de données : aucune exécution inventée
             if i == p.entry_i:
                 # bougie d'entrée : on ne sait pas si le plus bas est avant ou après l'entrée -> stop seul, prudence
                 if arr[m]["low"][i] <= p.stop:
@@ -176,6 +192,8 @@ def run_backtest(data: dict[str, pd.DataFrame], strategy: Strategy, cfg: BTConfi
         # 3) fin de bougie : trailing, signaux (exécutés à i+L)
         for m in markets:
             c = arr[m]["close"][i]
+            if np.isnan(c):
+                continue
             if m in pos:
                 p = pos[m]
                 p.peak_close = max(p.peak_close, c)
@@ -189,11 +207,11 @@ def run_backtest(data: dict[str, pd.DataFrame], strategy: Strategy, cfg: BTConfi
                 pending_entries.setdefault(i + L, []).append(m)
         if pos:
             exposed_bars += 1
-        eq[i] = cash + sum(p.qty * arr[k]["close"][i] for k, p in pos.items())
-    # positions ouvertes en fin de test : valorisées à la clôture moins frais et glissement de sortie
+        eq[i] = cash + sum(p.qty * mark[k][i] for k, p in pos.items())
+    # positions ouvertes en fin de test : valorisées au dernier prix connu moins frais et glissement de sortie
     last = len(idx) - 1
     for m in list(pos):
-        close_pos(m, last, arr[m]["close"][last] * (1 - slip), "fin_de_test")
+        close_pos(m, last, mark[m][last] * (1 - slip), "fin_de_test")
     eq[last] = cash
     return BTResult(strategy.name, pd.Series(eq, index=idx), trades, fees_tot, turnover, exposed_bars / len(idx), cfg)
 

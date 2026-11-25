@@ -77,6 +77,7 @@ class BitvavoREST:
         register_secret(api_secret)
         self.window = access_window_ms
         self.budget = RateBudget()
+        self.time_offset_ms = 0  # heure serveur - heure locale (signature)
         self.client = httpx.AsyncClient(timeout=timeout_s, transport=transport)
 
     @property
@@ -115,7 +116,7 @@ class BitvavoREST:
             if private:
                 if not self.has_credentials:
                     raise PermissionError("Aucune clé API configurée")
-                ts = int(time.time() * 1000)
+                ts = int(time.time() * 1000) + self.time_offset_ms
                 headers.update({
                     "Bitvavo-Access-Key": self._key or "",
                     "Bitvavo-Access-Signature": self._sign(ts, method, full_path, body_str),
@@ -143,16 +144,37 @@ class BitvavoREST:
                     raise BitvavoError(resp.status_code, None, resp.text[:200])
                 await asyncio.sleep(min(60.0, 1.0 * 2 ** attempt))
                 continue
-            data = resp.json() if resp.content else None
-            if resp.status_code >= 400:
+            try:
+                data = resp.json() if resp.content else None
+            except ValueError:
+                data = None
+            if resp.status_code >= 400 or (isinstance(data, dict) and "errorCode" in data):
                 code = data.get("errorCode") if isinstance(data, dict) else None
                 msg = data.get("error", "") if isinstance(data, dict) else resp.text[:200]
+                if code == 105:
+                    # bannissement temporaire (« ... at <ms> ») : budget à zéro jusqu'à la date indiquée
+                    self.budget.remaining = 0
+                    try:
+                        self.budget.reset_at_ms = int(str(msg).split(" at ")[1].split(".")[0])
+                    except (IndexError, ValueError):
+                        self.budget.reset_at_ms = int(time.time() * 1000) + 60_000
+                if code in (304, 305) and private and attempt < retries and idempotent:
+                    # horodatage hors fenêtre : resynchroniser l'horloge puis réessayer (GET uniquement)
+                    await self.sync_time()
+                    attempt += 1
+                    continue
                 raise BitvavoError(resp.status_code, code, str(msg))
             return data
 
     # --- public
     async def time(self) -> int:
         return int((await self.request("GET", "/time"))["time"])
+
+    async def sync_time(self) -> int:
+        local = int(time.time() * 1000)
+        server = await self.time()
+        self.time_offset_ms = server - local
+        return self.time_offset_ms
 
     async def markets(self) -> list[dict[str, Any]]:
         res: list[dict[str, Any]] = await self.request("GET", "/markets")
@@ -232,6 +254,11 @@ class BitvavoREST:
     # --- privé (trading) — appelé uniquement par le service d'exécution
     async def create_order(self, body: dict[str, Any]) -> dict[str, Any]:
         res: dict[str, Any] = await self.request("POST", "/order", body=body, private=True)
+        return res
+
+    async def update_order(self, body: dict[str, Any]) -> dict[str, Any]:
+        """PUT /order : modification en place (déclencheur d'un stop non déclenché, prix d'un limité...)."""
+        res: dict[str, Any] = await self.request("PUT", "/order", body=body, private=True)
         return res
 
     async def cancel_order(self, market: str, order_id: str, operator_id: int) -> dict[str, Any]:

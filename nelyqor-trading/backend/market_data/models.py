@@ -5,7 +5,15 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-from ..core.num import ZERO, D, floor_decimals, floor_significant, floor_to_step
+from ..core.num import (
+    ZERO,
+    D,
+    ceil_significant,
+    ceil_to_step,
+    floor_decimals,
+    floor_significant,
+    floor_to_step,
+)
 
 
 @dataclass(frozen=True)
@@ -54,11 +62,12 @@ class MarketInfo:
     def is_trading(self) -> bool:
         return self.status == "trading"
 
-    def round_price(self, p: Decimal) -> Decimal:
+    def round_price(self, p: Decimal, up: bool = False) -> Decimal:
+        """Vers le bas par défaut ; `up=True` pour les déclencheurs de stop de vente (ne jamais élargir un stop)."""
         if self.tick_size:
-            return floor_to_step(p, self.tick_size)
+            return ceil_to_step(p, self.tick_size) if up else floor_to_step(p, self.tick_size)
         if self.price_precision:
-            return floor_significant(p, self.price_precision)
+            return ceil_significant(p, self.price_precision) if up else floor_significant(p, self.price_precision)
         return p
 
     def round_amount(self, a: Decimal) -> Decimal:

@@ -33,6 +33,7 @@ services:
     secrets:
       - bitvavo_api_key
       - bitvavo_api_secret
+      - engine_state_key
     deploy:
       resources:
         limits: {cpus: "1.5", memory: 1200M}
@@ -50,10 +51,12 @@ services:
     environment:
       NELYQOR_ROLE: api
       NELYQOR_COOKIE_SECURE: "true"
+      NELYQOR_LAB_REPORT: /lab/reports/lab_report_bitvavo.json
       NELYQOR_REAL_TRADING_ALLOWED: ${NELYQOR_REAL_TRADING_ALLOWED:-false}
       NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
     volumes:
       - data:/data
+      - lab:/lab:ro  # rapport du laboratoire, lecture seule
     secrets:
       - owner_password_hash
     expose: ["8000"]
@@ -73,22 +76,46 @@ services:
       - caddy_config:/config
     depends_on: [api]
 
+  collector:
+    # Téléchargement incrémental des bougies PUBLIQUES (aucune clé, aucun accès à la base de production).
+    <<: *common
+    profiles: ["lab"]
+    restart: "no"
+    command: ["python", "scripts/download_candles.py", "--markets", "BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR",
+              "--interval", "1h", "--days", "1100"]
+    environment:
+      NELYQOR_ROLE: collector
+      NELYQOR_MARKET_DATA: /market
+    volumes:
+      - market:/market
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 400M}
+
   lab:
     <<: *common
     profiles: ["lab"]
     restart: "no"
-    command: ["nice", "-n", "19", "python", "scripts/run_lab.py", "--source", "db", "--db", "/data/nelyqor.db"]
+    command: ["nice", "-n", "19", "python", "scripts/run_lab.py", "--source", "real",
+              "--markets", "BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR"]
     environment:
       NELYQOR_ROLE: lab
+      NELYQOR_MARKET_DATA: /market
+      NELYQOR_LAB_DB: /lab/lab.db
+      NELYQOR_LAB_OUT: /lab/reports
+      NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
     volumes:
-      - data:/data
-    # aucun secret, aucun socket Docker
+      - market:/market:ro   # données de marché en lecture seule
+      - lab:/lab            # base et rapports du laboratoire, SÉPARÉS de la production
+    # aucun secret, aucun socket Docker, aucun accès au volume « data » (base de production)
     deploy:
       resources:
         limits: {cpus: "1.0", memory: 1500M}
 
 volumes:
   data:
+  market:
+  lab:
   caddy_data:
   caddy_config:
 
@@ -99,3 +126,5 @@ secrets:
     file: ./secrets/bitvavo_api_secret
   owner_password_hash:
     file: ./secrets/owner_password_hash
+  engine_state_key:
+    file: ./secrets/engine_state_key

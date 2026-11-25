@@ -15,6 +15,7 @@ from backend.core.logging import JsonFormatter, register_secret
 from backend.execution.engine import InstanceLock
 from backend.guardian.guardian import REAL_CONFIRMATION_PHRASE, Guardian, IntentCheck, State
 from backend.market_data.bitvavo_rest import BitvavoREST, ForbiddenOperation
+from tests.conftest import STATE_KEY
 
 ROOT = Path(__file__).resolve().parents[1]
 PF_OK = {"tests": True, "reconciliation": True}
@@ -38,7 +39,7 @@ def test_real_requires_server_flag(guardian):
 
 
 def test_real_requires_phrase_password_preflight(db, limits, clock):
-    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms)
+    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms, state_key=STATE_KEY)
     assert not g.activate_real("owner", "oui", True, PF_OK).allowed
     assert not g.activate_real("owner", REAL_CONFIRMATION_PHRASE, False, PF_OK).allowed
     assert not g.activate_real("owner", REAL_CONFIRMATION_PHRASE, True, {"tests": False}).allowed
@@ -55,7 +56,7 @@ def test_transition_cannot_bypass_real_activation(guardian):
 
 
 def test_lab_cannot_activate_real_nor_trade(db, limits, clock):
-    lab = Guardian(db, limits, real_server_flag=True, role="lab", now_ms=clock.now_ms)
+    lab = Guardian(db, limits, real_server_flag=True, role="lab", now_ms=clock.now_ms, state_key=STATE_KEY)
     assert not lab.activate_real("lab", REAL_CONFIRMATION_PHRASE, True, PF_OK).allowed
     with pytest.raises(PermissionError):
         lab.transition(State.PAUSE, "lab", "x")
@@ -172,3 +173,85 @@ def test_instance_lock_exclusive(tmp_path):
     a.release()
     b.acquire()
     b.release()
+
+
+def test_real_refused_without_integrity_key(db, limits, clock):
+    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms)
+    v = g.activate_real("owner", REAL_CONFIRMATION_PHRASE, True, PF_OK)
+    assert not v.allowed and any("intégrité" in r for r in v.reasons)
+
+
+def test_direct_db_write_of_state_is_detected(db, limits, clock):
+    """Un processus tiers (API compromise, LAB) qui écrit l'état dans la base ne peut pas passer en réel."""
+    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms, state_key=STATE_KEY)
+    g.init_state()
+    db.kv_set("guardian_state", {"v": "REEL_AUTORISE", "sig": "0" * 64})
+    assert g.state == State.INCIDENT
+    assert not g.verify_integrity()
+    assert g.state == State.INCIDENT  # ré-signé en INCIDENT par le moteur
+    assert not g.check(entry(mode="real")).allowed
+    db.kv_set("guardian_state", "REEL_AUTORISE")  # format brut
+    assert g.state == State.INCIDENT
+
+
+def test_forged_resume_state_cannot_resume_to_real(db, limits, clock):
+    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms, state_key=STATE_KEY)
+    g.init_state()
+    g.emergency_stop("owner")
+    db.kv_set("resume_state", {"v": "REEL_AUTORISE", "sig": "f" * 64})
+    assert g.resume_state == State.SIMULATION  # valeur falsifiée ignorée
+    assert g.resume("owner", {"ok": True}).allowed and g.state == State.SIMULATION
+
+
+def test_resume_to_real_requires_prior_activation(db, limits, clock):
+    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms, state_key=STATE_KEY)
+    g.init_state()
+    g._put("resume_state", "REEL_AUTORISE")  # même signé, sans activation préalable
+    g.emergency_stop("owner")
+    g.resume("owner", {"ok": True})
+    assert g.state == State.SIMULATION
+
+
+def test_real_protective_sell_allowed_after_deactivation(db, limits, clock):
+    """Après retour en simulation, une position réelle restante doit pouvoir être protégée/vendue."""
+    g = Guardian(db, limits, real_server_flag=True, now_ms=clock.now_ms, state_key=STATE_KEY)
+    g.init_state()
+    assert g.activate_real("owner", REAL_CONFIRMATION_PHRASE, True, PF_OK).allowed
+    g.deactivate_real("owner")
+    assert not g.check(entry(mode="real")).allowed  # pas de nouvelle entrée réelle
+    sell = entry(mode="real", side="sell", is_entry=False, is_protective=True, order_type="stopLoss",
+                 sell_amount_base=D("0.001"), base_free_for_sale=D("0.001"))
+    assert g.check(sell).allowed
+
+
+def test_duplicate_sell_vetoed(guardian):
+    v = guardian.check(entry(side="sell", is_entry=False, is_protective=True, sell_amount_base=D("0.002"),
+                             base_free_for_sale=D("0.001")))
+    assert not v.allowed and any("dupliquée" in r for r in v.reasons)
+
+
+def test_conditional_buy_and_zero_equity_entry_vetoed(guardian):
+    assert not guardian.check(entry(order_type="stopLoss")).allowed
+    assert not guardian.check(entry(equity=D(0))).allowed
+
+
+def test_api_and_lab_roles_cannot_read_engine_state_key(tmp_path):
+    (tmp_path / "engine_state_key").write_text("x" * 40)
+    for role in ("api", "lab"):
+        with pytest.raises(PermissionError):
+            Settings(role=role, secrets_dir=tmp_path).read_secret("engine_state_key")
+
+
+def test_compose_isolates_lab_from_production_and_secrets():
+    import yaml  # type: ignore[import-untyped]
+
+    c = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    sv = c["services"]
+    for name in ("lab", "collector"):
+        assert "secrets" not in sv[name], name
+        vols = " ".join(sv[name].get("volumes", []))
+        assert "data:" not in vols and "docker.sock" not in vols, name  # pas de base de production
+    assert any(v.startswith("market:/market:ro") for v in sv["lab"]["volumes"])
+    assert set(sv["engine"]["secrets"]) >= {"bitvavo_api_key", "bitvavo_api_secret", "engine_state_key"}
+    assert "secrets" in sv["api"] and set(sv["api"]["secrets"]) == {"owner_password_hash"}
+    assert "ports" not in sv["engine"] and "ports" not in sv["api"]

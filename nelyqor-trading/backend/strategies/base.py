@@ -45,6 +45,9 @@ class Momentum(Strategy):
         c, h, lo, v = self._arr(df)
         lb, ex = int(self.p["lookback"]), int(self.p["exit_lookback"])
         ret = pd.Series(np.log(c)).diff(lb).to_numpy()
+        if "bench_close" in df.columns:
+            # rendement RELATIF (cahier des charges) : excès de rendement sur la référence (BTC)
+            ret = ret - pd.Series(np.log(df["bench_close"].to_numpy(dtype=float))).diff(lb).to_numpy()
         rv = ind.rel_volume(v, int(self.p["volume_lookback"]))
         reg = classify_regime(df)
         vol = ind.realized_vol(c, lb) * np.sqrt(lb)
@@ -68,7 +71,10 @@ class Breakout(Strategy):
         low_ch = ind.channel_low(lo, n)
         rv = ind.rel_volume(v, n)
         entry = (c > hi) & (rv > float(self.p["min_rel_volume"]))
-        exit_ = c < hi  # échec : retour dans le canal
+        # Échec de cassure : retour SOUS le niveau cassé, figé au moment du signal (correction phase 2 :
+        # comparer au canal courant, qui inclut la bougie de cassure, faisait sortir presque aussitôt).
+        level = pd.Series(np.where(entry, hi, np.nan)).ffill().to_numpy()
+        exit_ = c < level
         with np.errstate(invalid="ignore", divide="ignore"):
             strength = (c - hi) / (hi - low_ch) * 5
         return Signals(np.nan_to_num(entry).astype(bool), np.nan_to_num(exit_).astype(bool), _clip01(strength),
@@ -164,20 +170,46 @@ class Hybrid(Strategy):
         n = len(df)
         score = np.zeros(n)
         exit_votes = np.zeros(n)
-        total = sum(self.weights.get(m.name, 0.0) for m in self.members) or 1.0
+        total = sum(max(0.0, self.weights.get(m.name, 0.0)) for m in self.members)
+        max_bars = 1
+        if total <= 0:  # aucun membre n'a démontré de fiabilité : l'hybride n'entre jamais
+            z = np.zeros(n, dtype=bool)
+            return Signals(z, z.copy(), np.zeros(n), 1)
         for m in self.members:
-            w = self.weights.get(m.name, 0.0) / total
+            w = max(0.0, self.weights.get(m.name, 0.0)) / total
             if w <= 0:
                 continue
             s = m.signals(df)
+            max_bars = max(max_bars, s.max_bars)
             score += w * s.entry * np.maximum(s.strength, 0.25)
             exit_votes += w * s.exit
         entry = score >= float(self.params_threshold)
-        return Signals(entry, exit_votes >= 0.5, _clip01(score), max(m.signals(df).max_bars for m in self.members))
+        return Signals(entry, exit_votes >= 0.5, _clip01(score), max_bars)
 
     @property
     def params_threshold(self) -> float:
         return float(self.p.get("threshold", 0.15))
+
+
+class ModelStrategy(Strategy):
+    """Stratégie issue d'un modèle prédictif, réentraîné périodiquement sur le PASSÉ uniquement
+    (fenêtre croissante, purge = horizon). Entrée si la probabilité calibrée dépasse le taux de base récent
+    d'une marge ; sortie à l'horizon. Les sorties de ce modèle ne sont JAMAIS présentées comme probabilités
+    validées tant que le laboratoire ne l'a pas promu."""
+
+    name = "modele_logistique"
+
+    def signals(self, df: pd.DataFrame) -> Signals:
+        from ..models.predict import rolling_model_probabilities
+
+        h = int(self.p.get("horizon", 6))
+        p, base = rolling_model_probabilities(df, horizon=h, cost=float(self.p.get("cost", 0.005)),
+                                              retrain_every=int(self.p.get("retrain_every", 500)),
+                                              min_train=int(self.p.get("min_train", 1500)))
+        margin = float(self.p.get("margin", 0.05))
+        entry = np.nan_to_num(p - base, nan=-1.0) > margin
+        z = np.zeros(len(df), dtype=bool)
+        return Signals(entry, z, _clip01(np.nan_to_num(p - base) * 5), h)
 
 
 def build_strategies(cfg: dict[str, Any]) -> list[Strategy]:

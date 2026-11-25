@@ -44,7 +44,9 @@ class AuthManager:
     ttl_s: int = 12 * 3600
     idle_s: int = 2 * 3600
     max_attempts_ip: int = 5
-    max_attempts_global: int = 20
+    # global élevé : un attaquant ne doit pas pouvoir verrouiller durablement le propriétaire
+    # (l'arrêt d'urgence reste aussi possible en SSH : scripts/emergency_stop.sh)
+    max_attempts_global: int = 200
     window_s: int = 900
     sessions: dict[str, Session] = field(default_factory=dict)
     attempts: dict[str, list[float]] = field(default_factory=dict)

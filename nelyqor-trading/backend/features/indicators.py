@@ -128,4 +128,5 @@ def feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     f["relvol_24"] = rel_volume(v, 24)
     f["vwap_gap_24"] = c / rolling_vwap(c, v, 24) - 1
     f["z_48"] = zscore(c, 48)
-    return f
+    # inf (division par un volume/écart nul) -> NaN : sinon `notna()` les laisse passer jusqu'au modèle
+    return f.replace([np.inf, -np.inf], np.nan)

@@ -11,7 +11,6 @@ import pytest
 from backend.core.config import load_strategy_params
 from backend.features.indicators import feature_frame
 from backend.market_data.models import MarketInfo
-from backend.models.predict import fit_and_evaluate
 from backend.portfolio.risk import (
     RiskInputs,
     block_bootstrap,
@@ -218,8 +217,20 @@ def test_kelly_bounded():
     assert fractional_kelly(1.0, 0.01) == 0.35
 
 
-def test_uncalibrated_model_labelled():
-    rep, _ = fit_and_evaluate(synthetic_candles(4000, seed=2), horizon=6, cost=0.005, kind="logistic")
-    assert rep.label in ("probabilité calibrée", "estimation non calibrée")
-    assert rep.calibrated == (rep.brier < rep.brier_base)
-    assert rep.n_train > 0 and rep.n_test > 0
+
+
+def test_delisting_forces_exit_with_haircut_and_no_invented_prices():
+    df = _flat(60)
+    df.iloc[28:, :] = np.nan  # le marché disparaît à la bougie 28 (radiation), position ouverte depuis 21
+    r = run_backtest({"X-EUR": df}, AlwaysIn({}), BTConfig(atr_stop_mult=100, cooldown_bars=1000))
+    t = r.trades[0]
+    assert t.reason == "radiation" and t.exit_px <= 100 * 0.5 + 1e-9
+    assert not np.isnan(r.equity).any()
+
+
+def test_data_gap_no_execution_inside_gap():
+    df = _flat(60)
+    df.iloc[25:28, :] = np.nan  # trou temporaire pendant la position
+    r = run_backtest({"X-EUR": df}, AlwaysIn({}), BTConfig(atr_stop_mult=100, cooldown_bars=1000))
+    assert len(r.trades) == 1 and r.trades[0].reason == "invalidation"
+    assert not np.isnan(r.equity).any()

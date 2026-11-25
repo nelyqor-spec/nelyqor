@@ -77,6 +77,18 @@ MIGRATIONS: list[str] = [
     CREATE INDEX idx_fills_ts ON fills(ts);
     CREATE INDEX idx_decisions_ts ON decisions(ts);
     """,
+    # v2 — phase 2 : consultations du holdout, informations externes, index de vente
+    """
+    CREATE TABLE holdout_views (
+        id TEXT PRIMARY KEY, ts INTEGER, data_fingerprint TEXT, window TEXT, strategy TEXT, params_hash TEXT
+    );
+    CREATE TABLE external_items (
+        id TEXT PRIMARY KEY, source TEXT, kind TEXT, published_ms INTEGER, available_ms INTEGER, fetched_ms INTEGER,
+        content_hash TEXT UNIQUE, value TEXT, credibility REAL, flags TEXT
+    );
+    CREATE INDEX idx_intents_market_side ON intents(mode, market, side, status);
+    CREATE INDEX idx_equity_mode_ts ON equity_snapshots(mode, ts);
+    """,
 ]
 
 

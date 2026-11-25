@@ -80,26 +80,33 @@ class Ledger:
             if f.fee_currency == "EUR":
                 self._cash("EUR", -(gross + f.fee))
                 pos.qty += f.amount
+                pos.cost_eur += gross + fee_eur
             elif f.fee_currency == base:
+                # Commission prélevée en jetons : elle est DÉJÀ dans la quantité réduite.
+                # L'ajouter au coût la compterait deux fois (correction phase 2).
                 pos.qty += f.amount - f.fee
                 self._cash("EUR", -gross)
+                pos.cost_eur += gross
             else:
+                # Commission dans une tierce devise détenue : le coût l'intègre, le solde de cette devise baisse.
                 self._cash("EUR", -gross)
                 self._cash(f.fee_currency, -f.fee)
                 pos.qty += f.amount
-            pos.cost_eur += gross + fee_eur
+                pos.cost_eur += gross + fee_eur
         else:
-            if pos.qty < f.amount - D("1e-12"):
-                raise ValueError(f"vente {f.amount} {base} > position {pos.qty}")
-            cost_out = pos.avg_cost * f.amount
+            leaving = f.amount + (f.fee if f.fee_currency == base else ZERO)
+            if pos.qty < leaving - D("1e-12"):
+                raise ValueError(f"vente {leaving} {base} > position {pos.qty}")
+            # coût sortant = coût moyen x TOUTES les unités qui quittent la position (frais en jetons compris)
+            cost_out = pos.avg_cost * leaving
             if f.fee_currency == "EUR":
                 proceeds = gross - f.fee
                 self._cash("EUR", proceeds)
                 pos.qty -= f.amount
             elif f.fee_currency == base:
-                proceeds = gross - fee_eur
+                proceeds = gross  # la commission est dans cost_out (jetons sortis)
                 self._cash("EUR", gross)
-                pos.qty -= f.amount + f.fee
+                pos.qty -= leaving
             else:
                 proceeds = gross - fee_eur
                 self._cash("EUR", gross)
@@ -107,8 +114,8 @@ class Ledger:
                 pos.qty -= f.amount
             pos.cost_eur -= cost_out
             self.s.realized_eur += proceeds - cost_out
-            if pos.qty <= D("1e-12"):
-                pos.qty, pos.cost_eur = max(pos.qty, ZERO), ZERO if pos.qty <= 0 else pos.cost_eur
+            if pos.qty <= 0:
+                pos.qty, pos.cost_eur = ZERO, ZERO
 
     def apply_flow(self, fl: ExternalFlow) -> None:
         sign = D(1) if fl.kind == "deposit" else D(-1)

@@ -16,6 +16,8 @@ from backend.guardian.guardian import Guardian  # noqa: E402
 from backend.market_data.models import MarketInfo  # noqa: E402
 from backend.storage.db import Database  # noqa: E402
 
+STATE_KEY = b"cle-de-test-integrite-etat-0123456789"
+
 BTC_RAW = {"market": "BTC-EUR", "status": "trading", "base": "BTC", "quote": "EUR", "pricePrecision": 5,
            "minOrderInBaseAsset": "0.0001", "minOrderInQuoteAsset": "5", "maxOrderInQuoteAsset": "1000000",
            "quantityDecimals": 8, "notionalDecimals": 2, "orderTypes": ["market", "limit", "stopLoss", "stopLossLimit"]}
@@ -51,7 +53,7 @@ def sim(btc: MarketInfo, clock: FakeClock) -> SimulatedExchange:
 
 @pytest.fixture
 def guardian(db: Database, limits: HardLimits, clock: FakeClock) -> Guardian:
-    return Guardian(db, limits, real_server_flag=False, role="engine", now_ms=clock.now_ms)
+    return Guardian(db, limits, real_server_flag=False, role="engine", now_ms=clock.now_ms, state_key=STATE_KEY)
 
 
 @pytest.fixture

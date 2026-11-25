@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import time
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from ..accounting.fiscal import Acquisition, Cession, compute_2086, rows_to_csv
 from ..accounting.ledger import twr
-from ..core.clock import new_id, paris_str, utc_iso
+from ..core.clock import PARIS, new_id, paris_str, utc_iso
 from ..core.config import ROOT, Settings
 from ..core.num import D
 from ..guardian.guardian import REAL_CONFIRMATION_PHRASE
@@ -138,7 +139,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
         hb = database.kv_get("engine_heartbeat")
         du = shutil.disk_usage(Path(s.db_path).parent)
         return {
-            "etat": database.kv_get("guardian_state", "SIMULATION"),
+            "etat": _state_value(database.kv_get("guardian_state")),
+            "etat_note": "affichage ; la signature de l'état est vérifiée par le moteur (rôle api sans clé)",
             "raison": database.kv_get("guardian_reason", ""),
             "mode": (hb or {}).get("mode", "simulation"),
             "reel_autorise_serveur": s.real_trading_server_flag,
@@ -179,6 +181,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
                 "resultat_economique_eur": str((pnl - hosting).quantize(D("0.01"))),
                 "historique": [{"t": r["ts"], "v": r["equity_eur"]} for r in snaps[:: max(1, len(snaps) // 300)]],
                 "positions": database.kv_get(f"position_meta_{mode}", {}),
+                "protections": database.kv_get(f"protections_{mode}", {}),
+                "protections_reelles": database.kv_get("protections_real", {}),
                 "donnees": "réelles" if mode == "real" else "simulation · paper trading"}
 
     @app.get("/api/markets")
@@ -195,7 +199,13 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
             "WHERE kind IN ('holdout','oos') ORDER BY ts DESC LIMIT 100")]
         for e in exps:
             e["metrics"] = json.loads(e["metrics"])
-        report = database.kv_get("lab_report")
+        report = None
+        lab_file = os.environ.get("NELYQOR_LAB_REPORT")
+        if lab_file and Path(lab_file).exists():
+            try:
+                report = json.loads(Path(lab_file).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                report = None
         return {"registre": reg, "experiences": exps, "rapport_lab": report}
 
     @app.get("/api/orders")
@@ -245,8 +255,11 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
 
     @app.get("/api/export/fiscal")
     def export_fiscal(year: int, _: Any = Depends(require_session)) -> dict[str, Any]:
-        a = int(time.mktime((year, 1, 1, 0, 0, 0, 0, 0, 0)) * 1000)
-        b = int(time.mktime((year + 1, 1, 1, 0, 0, 0, 0, 0, 0)) * 1000)
+        if not 2020 <= year <= 2100:
+            raise HTTPException(422, "année invalide")
+        # année civile en heure de Paris (indépendant du fuseau du serveur)
+        a = int(datetime(year, 1, 1, tzinfo=PARIS).timestamp() * 1000)
+        b = int(datetime(year + 1, 1, 1, tzinfo=PARIS).timestamp() * 1000)
         fills = database.q("SELECT * FROM fills WHERE mode='real' AND ts<? ORDER BY ts", (b,))
         acqs, cess = [], []
         for f in fills:
@@ -318,6 +331,12 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
 
         app.mount("/", StaticFiles(directory=FRONTEND), name="static")
     return app
+
+
+def _state_value(raw: Any) -> str:
+    if isinstance(raw, dict) and "v" in raw:
+        return str(raw["v"])
+    return "SIMULATION" if raw is None else "INCIDENT"
 
 
 def _ct_eq(a: str, b: str) -> bool:

@@ -95,12 +95,17 @@ async def test_timeout_after_accept_no_blind_resubmit(engine, sim, db):
     assert len(db.q("SELECT * FROM fills")) >= 1
 
 
-async def test_timeout_before_accept_pauses_and_never_resubmits(engine, sim, db, guardian):
+async def test_timeout_before_accept_pauses_and_never_resubmits(engine, sim, db, guardian, clock):
     sim.fail_next = "timeout_before_accept"
     r = await engine.submit(OrderRequest("BTC-EUR", "buy", "market", amount_quote=D("20"), check=chk("20")), D(100))
-    assert r.status == "NOT_PLACED" and not r.accepted
+    # Fenêtre d'accès non expirée : l'ordre pourrait encore apparaître -> UNKNOWN, rien n'est libéré
+    assert r.status == "UNKNOWN" and not r.accepted
     assert sim.create_calls == 1
     assert guardian.state == State.PAUSE  # vérification requise avant reprise
+    assert engine.reserved_quote() > 0
+    clock.advance(16_000)  # fenêtre d'accès (10 s) + marge expirée
+    assert await engine.recover() == ["NOT_PLACED"]
+    assert engine.reserved_quote() == 0
     r2 = await engine.submit(OrderRequest("BTC-EUR", "buy", "market", amount_quote=D("20"), check=chk("20")), D(100))
     assert not r2.accepted and sim.create_calls == 1
 
