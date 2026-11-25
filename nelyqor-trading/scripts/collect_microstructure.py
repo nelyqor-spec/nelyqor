@@ -31,6 +31,7 @@ import pandas as pd  # noqa: E402
 from backend.core.config import ROOT  # noqa: E402
 from backend.market_data.bitvavo_rest import BitvavoREST  # noqa: E402
 
+DAY_MS = 86_400_000
 DEFAULT_MARKETS = "BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR,DOGE-EUR,LINK-EUR,AVAX-EUR,SUI-EUR,PEPE-EUR"
 
 
@@ -67,34 +68,56 @@ def load_books(root: Path, m: str) -> list[dict[str, Any]]:
 
 
 async def history(rest: BitvavoREST, root: Path, markets: list[str], days: int, budget_s: float) -> dict[str, Any]:
+    """Pagination par fenêtres de 24 h au plus (limite de l'endpoint public : end - start <= 24 h), du plus
+    récent au plus ancien ; les fenêtres déjà couvertes sont sautées ; doublons éliminés par id."""
     t0 = time.time()
     now = int(time.time() * 1000)
-    since = now - days * 86_400_000
+    since = now - days * DAY_MS
     cov: dict[str, Any] = {}
     for m in markets:
         have = load_trades(root, m)
-        oldest_have = min((int(r["timestamp"]) for r in have), default=None)
-        newest_have = max((int(r["timestamp"]) for r in have), default=None)
+        ts_have = sorted(int(r["timestamp"]) for r in have)
         rows: list[dict[str, Any]] = []
-        # 1) partie récente (depuis la dernière transaction connue), 2) partie ancienne jusqu'à `since`
-        for lo, hi in ((newest_have or since, now), (since, oldest_have) if oldest_have and oldest_have > since else (None, None)):
-            if lo is None or hi is None:
+        errors = 0
+        w_end = now
+        while w_end > since and time.time() - t0 < budget_s:
+            w_start = max(since, w_end - DAY_MS + 1)
+            if ts_have and ts_have[0] <= w_start + 3_600_000 and w_end <= ts_have[-1]:
+                w_end = w_start - 1  # fenêtre déjà couverte (tolérance d'1 h au bord le plus ancien)
                 continue
-            end = hi
+            lo = ts_have[-1] + 1 if ts_have and w_start <= ts_have[-1] < w_end else w_start  # reprise incrémentale
+            end = w_end
             while time.time() - t0 < budget_s:
-                page = await rest.public_trades(m, limit=1000, start=lo, end=end)
+                try:
+                    page = await rest.public_trades(m, limit=1000, start=lo, end=end)
+                except Exception as e:  # noqa: BLE001
+                    errors += 1
+                    print(f"{m} [{w_start},{end}] : {type(e).__name__} {str(e)[:160]}", flush=True)
+                    page = []
+                    if errors > 5:
+                        break
                 if not page:
                     break
                 rows.extend(page)
                 oldest = min(int(t["timestamp"]) for t in page)
                 if len(page) < 1000 or oldest <= lo:
                     break
-                end = oldest  # pagination vers le passé (doublons éliminés par id)
+                end = oldest
+            if errors > 5:
+                break
+            if lo > w_start and ts_have and ts_have[0] <= w_start + 3_600_000:
+                w_end = ts_have[0] - 1 if ts_have[0] < w_start else w_start - 1
+                ts_have = [ts_have[0], ts_have[-1]]
+                if w_end <= since:
+                    break
+                continue
+            w_end = w_start - 1
         n = save_trades(root, m, rows)
         allr = load_trades(root, m)
-        cov[m] = {"transactions": n, "debut": min((int(r["timestamp"]) for r in allr), default=None),
+        cov[m] = {"transactions": n, "nouvelles": len(rows), "erreurs": errors,
+                  "debut": min((int(r["timestamp"]) for r in allr), default=None),
                   "fin": max((int(r["timestamp"]) for r in allr), default=None)}
-        print(f"historique {m}: {n} transactions", flush=True)
+        print(f"historique {m}: {n} transactions ({len(rows)} nouvelles, {errors} erreurs)", flush=True)
         if time.time() - t0 >= budget_s:
             print("budget de temps atteint", flush=True)
             break

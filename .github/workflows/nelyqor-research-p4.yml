@@ -8,6 +8,7 @@ on:
   push:
     branches: ["claude/**"]
     paths: ["nelyqor-trading/scripts/research_phase4.py", "nelyqor-trading/backend/research/lob_sim.py",
+            "nelyqor-trading/scripts/collect_microstructure.py",
             "nelyqor-trading/backend/research/xsection_v2.py", ".github/workflows/nelyqor-research-p4.yml"]
 
 permissions:
