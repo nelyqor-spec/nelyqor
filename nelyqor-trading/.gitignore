@@ -1,7 +1,8 @@
 .env
 secrets/
-data/
-backups/
+/data/
+/reports-ci/
+/backups/
 __pycache__/
 *.pyc
 .mypy_cache/
