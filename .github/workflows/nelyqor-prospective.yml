@@ -79,6 +79,9 @@ jobs:
         if: steps.garde.outputs.skip != 'true'
         run: |
           if [ -f reports/prospective/v2/candidats_figes_v2.json ]; then python scripts/prospective_v2.py run; else echo "aucun candidat v2 figé"; fi
+      - name: Diagnostic HORS GEL (correction de fin d'échantillon, n'affecte pas les évaluations officielles)
+        if: steps.garde.outputs.skip != 'true'
+        run: python scripts/prospective_corrige.py || echo "diagnostic indisponible"
       - name: Horodatage de réussite + consommation
         if: steps.garde.outputs.skip != 'true'
         run: |

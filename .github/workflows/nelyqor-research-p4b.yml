@@ -1,0 +1,45 @@
+# Nelyqor Trading — PHASE 4b : contrôle des biais relevés par la contre-expertise (toutes phases de
+# rééquilibrage, fin d'échantillon corrigée, agrégation stricte/tolérante). API publique uniquement, aucune clé.
+name: nelyqor-research-p4b
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: ["nelyqor-trading/scripts/research_phase4b.py", "nelyqor-trading/backend/research/xsection_v3.py",
+            ".github/workflows/nelyqor-research-p4b.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-research-p4b-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+env:
+  NELYQOR_MARKET_DATA: data/market
+
+jobs:
+  controle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        intervals: ["1h", "2h,4h", "8h,12h,1d"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - uses: actions/cache/restore@v4
+        with: {path: nelyqor-trading/data/market, key: "bitvavo-market-v1-${{ github.run_id }}", restore-keys: bitvavo-market-v1-}
+      - name: Contrôle des biais (${{ matrix.intervals }})
+        run: python scripts/research_phase4b.py --intervals ${{ matrix.intervals }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "phase4b-${{ strategy.job-index }}", path: nelyqor-trading/reports-ci, retention-days: 30}
