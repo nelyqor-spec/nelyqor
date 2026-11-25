@@ -1,0 +1,89 @@
+{
+  "fige_le_utc": "2026-11-25T20:07:04+00:00",
+  "commit_parent": "9f4e4c256186efd8e9e94923990dc10cf69979b9",
+  "cutoff_ms": 1795651200000,
+  "cutoff_utc": "2026-11-26T00:00:00Z",
+  "empreinte_code": {
+    "backend/research/xsection.py": "354e47b1d5fb6640b773a659b2dd235fa1aa52655cba794aee79aadca22bde4f",
+    "backend/research/backtest.py": "39d0c67a4935d1621c585ebc3effb072b3555311f1dce216ac803e04d1f8f206",
+    "backend/strategies/base.py": "f7cdc512ee3d91fa6f7e0fd9b6433d004e53331776d7610f878eabf64595137d",
+    "backend/data/resample.py": "f1993f311e18b6777dc99dc49ec2975555398dd888044421fc3cc3393372c9b7",
+    "backend/features/indicators.py": "ca7b183fff61bde583fc966436fdd69b2574012f72361e657a852d1ba4094961",
+    "backend/models/regime.py": "594471d18b080660b4257a1302231ded1191acd4b69de29e25ae4a8a3396a244",
+    "scripts/research_phase3.py": "2544d89c464042ebfd558feb270e5c20a1b74e5f4f8bed7c1bf5c3b87df9d776",
+    "scripts/prospective.py": "1477d447e8efe4afc6d9ee88d99bd6851a4696f81fcd4565824565ae136494da"
+  },
+  "regles": "aucune modification des candidats ; évaluation uniquement sur bougies >= cutoff",
+  "candidats": [
+    {
+      "id": "xs_eur_4h_detention3j_hybride",
+      "type": "xs",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "detention_min_3j",
+      "overrides": {
+        "execution": "hybrid"
+      },
+      "justification": "meilleur Sharpe transversal en recherche (0,69, DSR 0,19 non significatif) ; exécution hybride la moins défavorable"
+    },
+    {
+      "id": "xs_eur_4h_base_limite",
+      "type": "xs",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "base",
+      "overrides": {
+        "execution": "limit"
+      },
+      "justification": "comparaison d'exécution : limite +24,1 % vs marché -17,3 % en recherche (modèle de remplissage à vérifier)"
+    },
+    {
+      "id": "xs_eur_4h_base_marche",
+      "type": "xs",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "base",
+      "overrides": {
+        "execution": "market"
+      },
+      "justification": "témoin : même signal, exécution au marché"
+    },
+    {
+      "id": "xs_eur_8h_detention3j_marche",
+      "type": "xs",
+      "quote": "EUR",
+      "interval": "8h",
+      "variant": "detention_min_3j",
+      "justification": "second meilleur intervalle en recherche (+82,1 %), contrôle de robustesse de l'horizon"
+    },
+    {
+      "id": "strat_4h_tendance_protection",
+      "type": "strat",
+      "interval": "4h",
+      "family": "trend_following",
+      "markets": [
+        "ADA-EUR",
+        "AVAX-EUR",
+        "BTC-EUR",
+        "DOGE-EUR",
+        "ETH-EUR",
+        "LINK-EUR",
+        "PEPE-EUR",
+        "SOL-EUR",
+        "SUI-EUR",
+        "XRP-EUR"
+      ],
+      "filters": {
+        "trend_ema": 200,
+        "mtf_mult": 4
+      },
+      "bt": {
+        "latency_bars": 1,
+        "cooldown_bars": 6,
+        "breakeven_r": 1.0,
+        "atr_trail_mult": 2.5
+      },
+      "justification": "meilleur holdout interne (+7,6 %, PF 1,93, 39 trades) mais walk-forward -9,0 % : NON promu, suivi seulement"
+    }
+  ]
+}
