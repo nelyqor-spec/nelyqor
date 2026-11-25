@@ -20,7 +20,9 @@ from tests.fake_bitvavo import FakePublic  # noqa: E402
 
 async def main() -> None:
     s = Settings(role="engine")
-    eng = Engine(s, Database(s.db_path), FakePublic(Clock()), state_key=b"cle-dev-uniquement-0123456789")
+    ck = s.read_secret("owner_command_key")
+    eng = Engine(s, Database(s.db_path), FakePublic(Clock()), state_key=b"cle-dev-uniquement-0123456789",
+                 command_key=bytes.fromhex(ck) if ck else None)
     eng.start()
     while True:
         try:

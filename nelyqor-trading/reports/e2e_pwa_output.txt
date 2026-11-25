@@ -8,7 +8,8 @@ OK    onglet ia sans débordement horizontal
 OK    onglet capital sans débordement horizontal
 OK    onglet reglages sans débordement horizontal
 OK    activation réel : avertissement de perte totale
+OK    activation réel signée : refusée sans erreur de signature
 OK    arrêt d'urgence traité par le moteur (strict)
 OK    mode démo clairement étiqueté
 OK    aucune erreur JavaScript
-RÉSULTAT: OK (13/13)
+RÉSULTAT: OK (14/14)

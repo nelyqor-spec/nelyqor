@@ -20,6 +20,7 @@
 | LAB isolé de la prod | volumes séparés (`market` en lecture seule, `lab`), aucun accès au volume `data` | `test_compose_isolates_lab_from_production_and_secrets` |
 | Anti-vente dupliquée | quantité vendable = position − ventes actives, contrôlée dans la transaction | `test_duplicate_sell_*` |
 | Contenus externes | données jamais exécutées ; injonctions signalées ; DTD/entités XML refusées | `tests/test_external.py` |
+| Commandes sensibles signées | PBKDF2 + HMAC côté iPhone, vérification moteur, anti-rejeu | `tests/test_command_sig.py`, `test_activate_real_end_to_end_requires_everything`, e2e 14/14 |
 | Instance unique | `flock` exclusif sur `nelyqor.lock` | `test_instance_lock_exclusive` |
 
 ## Configuration de la clé API Bitvavo (par le propriétaire, jamais dans le chat)
@@ -36,8 +37,10 @@
 SSH par clé uniquement (`PasswordAuthentication no`).
 
 ## Risques résiduels connus
-- Une API compromise peut déposer de fausses commandes (`password_ok` est vérifié par l'API, pas par le moteur).
-  Atténuations : le réel exige en plus le drapeau serveur (variable d'environnement du moteur) et la clé
-  d'intégrité ; les commandes expirent en 10 min ; tout est audité.
+- (Corrigé en phase 3) Les commandes sensibles (activation du réel, liquidation) sont SIGNÉES dans l'iPhone
+  (PBKDF2-SHA256 600 000 itérations + HMAC-SHA256, WebCrypto) et vérifiées par le moteur avec une clé que l'API
+  ne possède pas (`secrets/owner_command_key`) ; horodatage 5 min et nonce anti-rejeu. Une API compromise peut
+  encore déposer pause / arrêt d'urgence / reprise (actions conservatrices) mais plus aucune commande sensible.
+- Un attaquant ayant le mot de passe ET l'accès à l'API peut tout faire : protéger le mot de passe (12+ caractères).
 - `acceptance_tests_ok` est une valeur non signée en base (positionnée par le script de recette).
 - Le global anti-bruteforce (200 / 15 min) peut être saturé par un attaquant distribué : arrêt d'urgence SSH.

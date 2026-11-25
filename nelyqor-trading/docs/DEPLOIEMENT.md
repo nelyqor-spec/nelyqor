@@ -20,7 +20,8 @@ Un enregistrement DNS A `NELYQOR_DOMAIN` → IPv4 du VPS (domaine du propriétai
 ```bash
 cp .env.example .env && nano .env                  # NELYQOR_DOMAIN, laisser REAL_TRADING_ALLOWED=false
 mkdir -p secrets && chmod 700 secrets
-python3 scripts/set_password.py secrets/owner_password_hash
+python3 scripts/set_password.py secrets/owner_password_hash   # écrit aussi owner_command_salt (public)
+                                                            # et owner_command_key (moteur SEUL)
 : > secrets/bitvavo_api_key && : > secrets/bitvavo_api_secret   # vides au départ
 openssl rand -base64 32 > secrets/backup_passphrase
 openssl rand -hex 32 > secrets/engine_state_key     # clé d'intégrité de l'état (lue par le moteur SEUL)

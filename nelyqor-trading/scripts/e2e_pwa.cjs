@@ -35,7 +35,16 @@ fs.mkdirSync(outDir, { recursive: true });
   }
   await pg.click("#btn-real"); await pg.waitForTimeout(300);
   checks.push(["activation réel : avertissement de perte totale", (await pg.innerText("#sheet")).includes("perdre la totalité")]);
-  await shot("6_activation_reel"); await pg.click("#sheet-close");
+  await shot("6_activation_reel");
+  // envoi réel de la demande : signée dans le navigateur (WebCrypto) ; doit être refusée pour les AUTRES
+  // pré-requis (drapeau serveur absent...), jamais pour un défaut de signature
+  await pg.fill("#r-pw", pw); await pg.fill("#r-cf", "J'ACCEPTE DE PERDRE TOUT LE CAPITAL ENGAGE");
+  for (const id of ["#r1", "#r2", "#r3", "#r4"]) await pg.check(id);
+  await pg.click("#r-go");
+  await pg.waitForFunction(() => /Refusé|Fait/.test(document.querySelector("#sheet").innerText), null, { timeout: 60000 });
+  const rt = await pg.innerText("#sheet");
+  checks.push(["activation réel signée : refusée sans erreur de signature", rt.includes("Refusé") && !/signature|non signée/.test(rt)]);
+  await shot("6b_activation_refusee"); await pg.click("#sheet-close");
   await pg.click("#btn-stop"); await pg.waitForSelector("#sheet:not([hidden])", { timeout: 60000 }); await pg.waitForTimeout(300);
   const t = await pg.innerText("#sheet");
   checks.push(["arrêt d'urgence traité par le moteur (strict)", t.includes("Fait")]);
