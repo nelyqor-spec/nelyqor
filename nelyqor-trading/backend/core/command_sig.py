@@ -1,6 +1,8 @@
 """Signature des commandes sensibles (activation du réel, liquidation) par le PROPRIÉTAIRE, vérifiée par le moteur.
 
-- L'iPhone dérive k = PBKDF2-SHA256(mot de passe, sel_commande, ITER) (WebCrypto) et signe
+- L'iPhone dérive k = PBKDF2-SHA256(PHRASE DE SIGNATURE, sel_commande, ITER) — phrase distincte du mot de passe
+  de connexion et JAMAIS transmise à l'API (le mot de passe, lui, transite par l'API : avant la phase 4 la clé en
+  était dérivée, donc une API compromise pouvait la recalculer) (WebCrypto) et signe
   HMAC-SHA256(k, canonique(commande, ts, nonce, champs)). Le mot de passe ne quitte jamais l'iPhone pour cela.
 - Le moteur détient k (secrets/owner_command_key, lisible par le moteur SEUL) ; l'API ne connaît que le sel
   (public). Une API compromise ne peut donc PAS forger une commande sensible.
@@ -17,6 +19,7 @@ from typing import Any
 
 ITER = 600_000
 VALIDITY_MS = 5 * 60_000
+FUTURE_TOLERANCE_MS = 30_000  # une signature « du futur » survivrait à une révocation
 SENSITIVE = {"activate_real", "liquidation_confirm", "resume_real"}
 
 
@@ -47,7 +50,9 @@ def verify(key: bytes | None, command: str, payload: dict[str, Any], now_ms: int
     ts, nonce, fields = payload.get("sig_ts"), payload.get("sig_nonce"), payload.get("sig_fields")
     if not (isinstance(sig, str) and isinstance(ts, int) and isinstance(nonce, str) and isinstance(fields, dict)):
         return "commande sensible non signée par le propriétaire"
-    if abs(now_ms - ts) > VALIDITY_MS:
+    if ts > now_ms + FUTURE_TOLERANCE_MS:
+        return "signature datée dans le futur (horloge de l'iPhone ?)"
+    if now_ms - ts > VALIDITY_MS:
         return "signature expirée"
     if ts <= not_before_ms:
         return "signature antérieure à une révocation (retour en simulation / arrêt d'urgence)"

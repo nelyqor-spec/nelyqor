@@ -10,6 +10,6 @@ COPY config ./config
 COPY frontend ./frontend
 COPY scripts ./scripts
 COPY pyproject.toml .
-RUN mkdir -p /data && chown nelyqor /data
+RUN mkdir -p /data /state && chown nelyqor /data /state
 USER nelyqor
 ENV NELYQOR_DB=/data/nelyqor.db

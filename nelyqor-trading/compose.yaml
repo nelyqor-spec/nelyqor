@@ -28,8 +28,10 @@ services:
       BITVAVO_OPERATOR_ID: ${BITVAVO_OPERATOR_ID:-1}
       NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
       LOG_LEVEL: INFO
+      NELYQOR_ENGINE_STATE_DIR: /state
     volumes:
       - data:/data
+      - engine_state:/state   # état autoritaire du Guardian, nonces, méta réelles : moteur SEUL (phase 4)
     secrets:
       - bitvavo_api_key
       - bitvavo_api_secret
@@ -75,6 +77,7 @@ services:
       NELYQOR_DOMAIN: ${NELYQOR_DOMAIN:?définir NELYQOR_DOMAIN dans .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend:/srv/frontend:ro   # PWA servie par Caddy, jamais par l'API (phase 4)
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [api]
@@ -116,6 +119,7 @@ services:
         limits: {cpus: "1.0", memory: 1500M}
 
 volumes:
+  engine_state:
   data:
   market:
   lab:

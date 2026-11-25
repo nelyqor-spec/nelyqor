@@ -89,13 +89,16 @@ class Verdict:
 
 class Guardian:
     def __init__(self, db: Database, limits: HardLimits, real_server_flag: bool, role: str = "engine",
-                 now_ms: Any = None, state_key: bytes | None = None) -> None:
+                 now_ms: Any = None, state_key: bytes | None = None, store: Any = None) -> None:
         self.db = db
         self.limits = limits
         self.real_server_flag = real_server_flag
         self.role = role
         self._now = now_ms or (lambda: 0)
         self._key = state_key
+        # magasin réservé au moteur (backend/core/engine_store.py) : autoritaire s'il est fourni ; la base ne
+        # reçoit alors qu'une copie d'affichage, que l'API peut modifier sans aucun effet sur le moteur
+        self.store = store
         self.tamper_detected = False
 
     # --- stockage signé
@@ -109,12 +112,20 @@ class Guardian:
         return self._key is not None
 
     def _put(self, key: str, value: Any) -> None:
+        if self.store is not None:
+            self.store.set(key, value)
+            self.db.kv_set(key, {"v": value, "copie_affichage": True}, self._now())
+            return
         rec: dict[str, Any] = {"v": value}
         if self._key is not None:
             rec["sig"] = self._sig(key, value)
         self.db.kv_set(key, rec, self._now())
 
     def _get(self, key: str, default: Any) -> Any:
+        if self.store is not None:
+            if self.store.tampered:
+                return self._tampered(key, default)
+            return self.store.get(key, default)
         raw = self.db.kv_get(key)
         if raw is None:
             return default
@@ -133,6 +144,11 @@ class Guardian:
     def verify_integrity(self) -> bool:
         """Vérifie toutes les clés signées ; enregistre un incident si une falsification est détectée."""
         self.tamper_detected = False
+        if self.store is not None and not self.store.reload():
+            self.tamper_detected = True
+            reason = self.store.reason
+            self.store.tampered = False  # l'état est réécrit en INCIDENT (conservateur), la cause est conservée
+            self.store.set("falsification", reason)
         for k in SIGNED_KEYS:
             self._get(k, None)
         if self.tamper_detected and self.role == "engine":
@@ -164,6 +180,10 @@ class Guardian:
         return self.state == State.REAL
 
     def init_state(self) -> None:
+        if self.store is not None:
+            if not self.store.has("guardian_state") and not self.store.tampered:
+                self._put("guardian_state", State.SIMULATION.value)  # nouvelle installation : simulation
+            return
         if self.db.kv_get("guardian_state") is None:
             self._put("guardian_state", State.SIMULATION.value)
 
@@ -242,8 +262,11 @@ class Guardian:
         self._set_state(State.PAUSE, "arrêt d'urgence")
         self._audit(actor, "arret_urgence", True, {"from": prev.value})
 
-    def resume(self, actor: str, checks: dict[str, bool]) -> Verdict:
+    def resume(self, actor: str, checks: dict[str, bool], expected_target: State | None = None) -> Verdict:
         self._require_engine()
+        if expected_target is not None and self.resume_state != expected_target:
+            self._audit(actor, "reprise", False, {"raison": "cible de reprise modifiée pendant le contrôle"})
+            return Verdict(False, ["cible de reprise modifiée pendant le contrôle"])
         failed = [k for k, ok in checks.items() if not ok]
         if failed:
             self._audit(actor, "reprise", False, {"failed": failed})
@@ -260,6 +283,7 @@ class Guardian:
             if self.state != State.RECONCILIATION:
                 self._put("resume_state", self.state.value)
             self._require_engine()
+            self._revoke()  # une signature antérieure à la pause ne peut plus servir à reprendre
             self._set_state(State.PAUSE, reason)
             self._audit(actor, "pause", True, {"reason": reason})
 
@@ -279,6 +303,8 @@ class Guardian:
         conditional = it.order_type in CONDITIONAL_TYPES
         if self.role != "engine":
             r.append(f"rôle {self.role} sans droit d'exécution")
+        if it.mode == "real" and it.is_entry and not self.real_server_flag:
+            r.append("drapeau serveur du réel absent : aucune entrée réelle")
         if self.tamper_detected:
             r.append("intégrité de l'état compromise")
         if it.mode == "real" and st != State.REAL and not it.is_protective:

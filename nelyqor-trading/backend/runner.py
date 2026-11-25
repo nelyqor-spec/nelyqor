@@ -52,13 +52,17 @@ RECON_OVERLAP_MS = 7 * 86_400_000
 class Engine:
     def __init__(self, settings: Settings, db: Database, rest: Any, clock: Clock | None = None,
                  limits: HardLimits | None = None, state_key: bytes | None = None,
-                 command_key: bytes | None = None) -> None:
+                 command_key: bytes | None = None, store_path: Path | None = None) -> None:
         self.s, self.db, self.rest = settings, db, rest
         self.clock = clock or Clock()
         self.limits = limits or HardLimits.load()
         self.params = load_strategy_params()
+        from .core.engine_store import EngineStore
+
+        self.store = EngineStore(store_path, state_key) if (store_path is not None and state_key) else None
         self.guardian = Guardian(db, self.limits, settings.real_trading_server_flag, settings.role, self.clock.now_ms,
-                                 state_key=state_key)
+                                 state_key=state_key, store=self.store)
+        self._realloc: dict[str, dict[str, Any]] = {"simulation": {}, "real": {}}  # en mémoire du moteur seulement
         self.registry = Registry(db, self.clock.now_ms, settings.role)
         self.notifier = Notifier(db, self.clock.now_ms)
         self.markets: dict[str, MarketInfo] = {}
@@ -82,6 +86,18 @@ class Engine:
         self.last_snapshot_ms = 0
         self.last_fee_refresh_ms = 0
         self.command_key = command_key  # vérifie les commandes sensibles signées par le propriétaire
+
+    # ------------------------------------------------------------ état réel protégé
+    def _kv_get(self, key: str, default: Any, mode: str) -> Any:
+        """Données qui pilotent des ordres RÉELS (stops, périmètre exclu) : magasin du moteur si disponible."""
+        if mode == "real" and self.store is not None:
+            return self.store.get(key, default)
+        return self.db.kv_get(key, default)
+
+    def _kv_set(self, key: str, value: Any, mode: str) -> None:
+        if mode == "real" and self.store is not None:
+            self.store.set(key, value)
+        self.db.kv_set(key, value, self.clock.now_ms())  # copie d'affichage (PWA)
 
     # ------------------------------------------------------------ compat : exécuteur « principal »
     @property
@@ -292,8 +308,8 @@ class Engine:
 
     def held_positions(self, mode: str) -> dict[str, HeldPosition]:
         led = self._ledger(mode)
-        meta = self.db.kv_get(f"position_meta_{mode}", {})
-        excluded = set(self.db.kv_get("real_excluded_symbols", [])) if mode == "real" else set()
+        meta = self._kv_get(f"position_meta_{mode}", {}, mode)
+        excluded = set(self._kv_get("real_excluded_symbols", [], "real")) if mode == "real" else set()
         out = {}
         for sym, p in led.s.positions.items():
             mk = f"{sym}-EUR"
@@ -345,7 +361,8 @@ class Engine:
                         res = {"ok": False, "needs_signature": "resume_real",
                                "reasons": [f"reprise vers le mode réel : {why}"]}
                     else:
-                        v = self.guardian.resume(actor, await self.preflight(for_real=to_real))
+                        v = self.guardian.resume(actor, await self.preflight(for_real=to_real),
+                                                 expected_target=State.REAL if to_real else self.guardian.resume_state)
                         res = {"ok": v.allowed, "reasons": v.reasons}
                 elif c == "activate_real":
                     why = self._verify_signed(c, payload)
@@ -379,12 +396,15 @@ class Engine:
     def _verify_signed(self, command: str, payload: dict[str, Any]) -> str | None:
         from .core.command_sig import verify
 
-        used = self.db.kv_get("used_command_nonces", [])
+        used = self.store.get("used_command_nonces", []) if self.store else self.db.kv_get("used_command_nonces", [])
         why = verify(self.command_key, command, payload, self.clock.now_ms(), set(used),
                      not_before_ms=self.guardian.revoked_ms)
         if why is None:
             used = (used + [payload["sig_nonce"]])[-2000:]
-            self.db.kv_set("used_command_nonces", used, self.clock.now_ms())
+            if self.store:
+                self.store.set("used_command_nonces", used)
+            else:
+                self.db.kv_set("used_command_nonces", used, self.clock.now_ms())
         return why
 
     def ack_flow(self, flow_id: str, note: str) -> dict[str, Any]:
@@ -440,7 +460,7 @@ class Engine:
         def key(prefix: str, d: dict[str, Any]) -> str:
             return f"{prefix}-{d.get('txId') or d.get('timestamp')}-{d.get('symbol')}-{d.get('amount')}"
 
-        if not self.db.kv_get("real_opening_done", False):
+        if not self._kv_get("real_opening_done", False, "real"):
             # Les mouvements antérieurs sont déjà dans le solde d'ouverture : on les marque comme intégrés.
             with self.db.tx() as c:
                 for prefix, lst in (("dep", deps), ("wd", wds)):
@@ -454,7 +474,7 @@ class Engine:
             self.db.kv_set("recon_since_ms", now, now)
             self.last_recon_ms = now
             return True
-        excluded = set(self.db.kv_get("real_excluded_symbols", []))
+        excluded = set(self._kv_get("real_excluded_symbols", [], "real"))
         led = self._ledger("real")
         expected = {k: v for k, v in led.s.cash.items() if k not in excluded}
         expected.update({s: p.qty for s, p in led.s.positions.items() if s not in excluded})
@@ -501,8 +521,8 @@ class Engine:
                                                                fmt(total), "solde_ouverture", "capital affecté au robot"))
                 else:
                     excluded.append(b["symbol"])
-        self.db.kv_set("real_excluded_symbols", excluded, now)
-        self.db.kv_set("real_opening_done", True, now)
+        self._kv_set("real_excluded_symbols", excluded, "real")
+        self._kv_set("real_opening_done", True, "real")
 
     # ------------------------------------------------------------ décisions
     def _record_decision(self, mode: str, p: Any, accepted: bool, reasons: list[str], hypothetical: bool) -> None:
@@ -520,7 +540,7 @@ class Engine:
         px = self.prices_eur()
         equity = led.value_eur(px)
         cash = led.s.cash.get("EUR", ZERO)
-        meta = self.db.kv_get(f"position_meta_{mode}", {})
+        meta = self._kv_get(f"position_meta_{mode}", {}, mode)
         statuses = {}
         for mk, h in self.held_positions(mode).items():
             st, df = self.states.get(mk), self.candles.get(mk)
@@ -528,13 +548,13 @@ class Engine:
             if st is None:
                 continue
             p = self.decider.evaluate_exit(st.info, st, df, h) if df is not None else None
-            realloc = self.db.kv_get(f"realloc_{mode}", {})
-            if mk in realloc and self.clock.now_ms() - int(realloc[mk].get("ts", 0)) < 3_600_000:
+            realloc = self._realloc[mode]
+            if (mk in realloc and self.clock.now_ms() - int(realloc[mk].get("ts", 0)) < 3_600_000
+                    and self.guardian.state in (State.SIMULATION, State.REAL)):
                 from .portfolio.decision import Proposal
                 p = Proposal(mk, "vendre", h.strategy, amount_base=st.info.round_amount(h.qty),
                              reasons=[f"réallocation au profit de {realloc[mk]['au_profit_de']}"])
                 realloc.pop(mk)
-                self.db.kv_set(f"realloc_{mode}", realloc, self.clock.now_ms())
             if p is not None and p.action == "vendre" and p.amount_base > 0:
                 ok, why = await pm.release_for_exit(mk)
                 if not ok:
@@ -558,7 +578,7 @@ class Engine:
                 ps = await pm.ensure(mk, h.qty, h.stop)
                 statuses[mk] = {"protege": ps.protected, "etat": ps.state, "declencheur": fmt(ps.trigger) if ps.trigger
                                 else None, "quantite_couverte": fmt(ps.covered_qty), "raison": ps.reason}
-        self.db.kv_set(f"position_meta_{mode}", meta, self.clock.now_ms())
+        self._kv_set(f"position_meta_{mode}", meta, mode)
         self.db.kv_set(f"protections_{mode}", statuses, self.clock.now_ms())
         unprotected = [m for m, s in statuses.items() if not s["protege"]]
         if mode == "real" and unprotected:
@@ -576,7 +596,7 @@ class Engine:
         cash = led.s.cash.get("EUR", ZERO)
         held = self.held_positions(mode)
         exposure = sum((h.qty * px.get(h.market.split("-")[0], ZERO) for h in held.values()), ZERO)
-        meta = self.db.kv_get(f"position_meta_{mode}", {})
+        meta = self._kv_get(f"position_meta_{mode}", {}, mode)
         returns = {m: df["close"].pct_change() for m, df in self.candles.items()}
         scanner = []
         for mk, st in self.states.items():
@@ -617,7 +637,7 @@ class Engine:
                         exposure += p.amount_quote
                     break  # une seule entrée par marché et par cycle
             scanner.append(row)
-        self.db.kv_set(f"position_meta_{mode}", meta, now)
+        self._kv_set(f"position_meta_{mode}", meta, mode)
         self.db.kv_set("scanner", {"ts": now, "rows": scanner}, now)
         self.last_decision_ms = now
 
@@ -646,10 +666,9 @@ class Engine:
                 ests[mk] = ActionEstimate(mk, float(r.mean()), float(r.std(ddof=1) / len(r) ** 0.5), len(r))
         victim, gain = pick_reallocation(ests, cand, switch_cost=float(4 * self.fee_taker))
         if victim:
-            req = self.db.kv_get(f"realloc_{mode}", {})
-            req[victim] = {"au_profit_de": p.market, "gain_borne_basse": gain.borne_basse if gain else None,
-                           "ts": self.clock.now_ms()}
-            self.db.kv_set(f"realloc_{mode}", req, self.clock.now_ms())
+            self._realloc[mode][victim] = {"au_profit_de": p.market, "gain_borne_basse": gain.borne_basse if gain else None,
+                                           "ts": self.clock.now_ms()}
+            self.db.kv_set(f"realloc_{mode}_affichage", self._realloc[mode], self.clock.now_ms())
 
     def _check(self, st: MarketState, side: str, amount_q: Decimal, entry: bool, equity: Decimal, cash: Decimal,
                exposure_after: Decimal, mode: str) -> IntentCheck:
@@ -816,7 +835,9 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
     ck = s.read_secret("owner_command_key")
     if ck:
         register_secret(ck)
-    eng = Engine(s, db, public, state_key=_load_state_key(s), command_key=bytes.fromhex(ck) if ck else None)
+    store = Path(os.environ.get("NELYQOR_ENGINE_STATE_DIR", "/state")) / "etat_moteur.json"
+    eng = Engine(s, db, public, state_key=_load_state_key(s), command_key=bytes.fromhex(ck) if ck else None,
+                 store_path=store)
     tg_token, tg_chat = s.read_secret("telegram_bot_token"), os.environ.get("TELEGRAM_CHAT_ID")
     if tg_token and tg_chat:
         register_secret(tg_token)

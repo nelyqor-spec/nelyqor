@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Parcours iPhone de la PWA (Playwright, profil iPhone 13) contre un serveur en marche.
-// Usage : node scripts/e2e_pwa.cjs http://127.0.0.1:8088 MOT_DE_PASSE [dossier_captures]
+// Usage : node scripts/e2e_pwa.cjs http://127.0.0.1:8088 MOT_DE_PASSE [dossier_captures] [PHRASE_DE_SIGNATURE]
 // Vérifie : connexion, refus d'un mauvais mot de passe, 5 onglets, bannière « données périmées »,
 // distinction simulation/réel, avertissement avant le réel, arrêt d'urgence, mode démo étiqueté, pas de débordement.
 const { chromium, devices } = require("playwright");
 const fs = require("fs");
-const [url, pw, outDir = "reports/screenshots"] = process.argv.slice(2);
+const [url, pw, outDir = "reports/screenshots", phrase = ""] = process.argv.slice(2);
 fs.mkdirSync(outDir, { recursive: true });
 (async () => {
   const checks = [];
@@ -38,7 +38,7 @@ fs.mkdirSync(outDir, { recursive: true });
   await shot("6_activation_reel");
   // envoi réel de la demande : signée dans le navigateur (WebCrypto) ; doit être refusée pour les AUTRES
   // pré-requis (drapeau serveur absent...), jamais pour un défaut de signature
-  await pg.fill("#r-pw", pw); await pg.fill("#r-cf", "J'ACCEPTE DE PERDRE TOUT LE CAPITAL ENGAGE");
+  await pg.fill("#r-pw", pw); await pg.fill("#r-sp", phrase); await pg.fill("#r-cf", "J'ACCEPTE DE PERDRE TOUT LE CAPITAL ENGAGE");
   for (const id of ["#r1", "#r2", "#r3", "#r4"]) await pg.check(id);
   await pg.click("#r-go");
   await pg.waitForFunction(() => /Refusé|Fait/.test(document.querySelector("#sheet").innerText), null, { timeout: 60000 });

@@ -28,11 +28,15 @@ async function api(path, opts = {}) {
 }
 const post = (p, b = {}) => api(p, { method: "POST", body: JSON.stringify(b) });
 
-async function signed(command, fields, password) {
+// La signature utilise la PHRASE DE SIGNATURE, distincte du mot de passe de connexion et jamais envoyée :
+// le mot de passe transite par l'API ; s'il servait à signer, une API compromise pourrait forger les commandes.
+async function signed(command, fields, phrase, password) {
   if (demo) return {};
+  if (!phrase) throw new Error("phrase de signature requise");
+  if (password && phrase === password) throw new Error("la phrase de signature doit différer du mot de passe");
   const { salt, iterations } = await api("/api/command_salt");
   if (!salt) return {}; // le moteur refusera alors les commandes sensibles réelles
-  return signCommand(command, fields, password, salt, iterations);
+  return signCommand(command, fields, phrase, salt, iterations);
 }
 
 async function waitCommand(id) {
@@ -178,10 +182,10 @@ function bind() {
     if (res.needs_signature !== "resume_real") { sheet(`<p>${res.ok ? "✔ Fait" : "✖ Refusé"}</p>${(res.reasons || []).map((x) => `<p class="reason">${esc(x)}</p>`).join("")}`); render(); return; }
     // reprise vers le RÉEL : réactivation signée par le propriétaire (mot de passe -> signature locale)
     sheet(`<h2>Reprise vers le mode réel</h2><p class="bad">La reprise réactive le trading en argent réel.</p>
-      <input id="rs-pw" type="password" placeholder="Mot de passe" autocomplete="current-password">
+      <input id="rs-sp" type="password" placeholder="Phrase de signature (jamais envoyée)" autocomplete="off">
       <button class="btn danger" id="rs-go">Signer et reprendre</button>`);
     $("#rs-go").onclick = () => run(async () => {
-      const sig = await signed("resume_real", { reprise: "reel" }, $("#rs-pw").value);
+      const sig = await signed("resume_real", { reprise: "reel" }, $("#rs-sp").value);
       await cmd("/api/control/resume", sig);
     });
   });
@@ -196,11 +200,11 @@ function bind() {
     sheet(`<h2>Liquidation manuelle</h2><p class="warn">Vend toutes les positions au marché. Distinct de l'arrêt d'urgence.</p>
       ${(est?.lignes || []).map((l) => `<div class="row"><span>${esc(l.market)}</span><span>${eur(l.net_eur)} net (frais ${eur(l.frais_eur)})${l.poussiere_invendable ? " · poussière" : ""}</span></div>`).join("") || "<p>Aucune position.</p>"}
       <div class="row"><span>Total estimé</span><b>${eur(est?.net_total_eur)}</b></div><p class="reason">${esc(est?.avertissement)}</p>
-      <input id="liq-pw" type="password" placeholder="Mot de passe" autocomplete="current-password"><input id="liq-cf" placeholder="Tapez LIQUIDER">
+      <input id="liq-pw" type="password" placeholder="Mot de passe" autocomplete="current-password"><input id="liq-sp" type="password" placeholder="Phrase de signature (jamais envoyée)" autocomplete="off"><input id="liq-cf" placeholder="Tapez LIQUIDER">
       <button class="btn danger" id="liq-go">Confirmer la liquidation</button>`);
     $("#liq-go").onclick = () => run(async () => {
       const fields = { confirmation: $("#liq-cf").value, estimate_id: est?.id || "" };
-      const sig = await signed("liquidation_confirm", fields, $("#liq-pw").value);
+      const sig = await signed("liquidation_confirm", fields, $("#liq-sp").value, $("#liq-pw").value);
       await cmd("/api/control/liquidation_confirm", { password: $("#liq-pw").value, ...fields, ...sig });
     });
   });
@@ -213,11 +217,12 @@ function bind() {
       <label class="chk"><input type="checkbox" id="r3"> La 2FA est activée sur mon compte Bitvavo</label>
       <label class="chk"><input type="checkbox" id="r4"> J'accepte le risque de perte totale</label>
       <input id="r-pw" type="password" placeholder="Mot de passe" autocomplete="current-password">
+      <input id="r-sp" type="password" placeholder="Phrase de signature (jamais envoyée)" autocomplete="off">
       <p class="mute">Recopiez exactement : <b>${esc(st.phrase_activation_reel)}</b></p><input id="r-cf" autocomplete="off">
       <button class="btn danger" id="r-go">Activer le réel</button>`);
     $("#r-go").onclick = () => run(async () => {
       const fields = { confirmation: $("#r-cf").value, declare_retrait_desactive: $("#r1").checked, declare_ip_fixe: $("#r2").checked, declare_2fa: $("#r3").checked, accepte_risque_perte_totale: $("#r4").checked };
-      const sig = await signed("activate_real", fields, $("#r-pw").value);
+      const sig = await signed("activate_real", fields, $("#r-sp").value, $("#r-pw").value);
       await cmd("/api/control/activate_real", { password: $("#r-pw").value, ...fields, ...sig });
     });
   });
