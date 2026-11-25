@@ -206,6 +206,18 @@ class BitvavoREST:
         res: list[list[Any]] = await self.request("GET", f"/{market}/candles", p)
         return res
 
+    async def public_trades(self, market: str, limit: int = 1000, start: int | None = None,
+                            end: int | None = None) -> list[dict[str, Any]]:
+        """Transactions PUBLIQUES du marché (aucune clé) : id, timestamp, amount, price, side (agresseur).
+        Plus récentes d'abord ; pagination par `end`. Poids 5."""
+        p: dict[str, Any] = {"limit": limit}
+        if start is not None:
+            p["start"] = start
+        if end is not None:
+            p["end"] = end
+        res: list[dict[str, Any]] = await self.request("GET", f"/{market}/trades", p, weight=5)
+        return res
+
     # --- privé (lecture)
     async def balance(self) -> list[dict[str, Any]]:
         res: list[dict[str, Any]] = await self.request("GET", "/balance", private=True, weight=5)
