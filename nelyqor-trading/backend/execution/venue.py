@@ -56,14 +56,13 @@ def route_costs(eur_row: dict[str, Any] | None, usdc_row: dict[str, Any] | None,
 
 def choose_route(costs: dict[str, float | None], fx_risk_aversion: float = 1.0) -> tuple[str, float]:
     """Route la moins chère ; la route « capital en USDC » est pénalisée de son risque de change."""
-    cands = {}
-    if costs.get("eur") is not None:
-        cands["eur"] = float(costs["eur"])  # type: ignore[arg-type]
-    if costs.get("usdc_par_transaction") is not None:
-        cands["usdc_par_transaction"] = float(costs["usdc_par_transaction"])  # type: ignore[arg-type]
-    if costs.get("usdc_capital_conserve") is not None:
-        cands["usdc_capital_conserve"] = float(costs["usdc_capital_conserve"]) + fx_risk_aversion * float(
-            costs.get("risque_change_1_ecart_type") or 0)
+    cands: dict[str, float] = {}
+    for k in ("eur", "usdc_par_transaction", "usdc_capital_conserve"):
+        v = costs.get(k)
+        if v is not None:
+            cands[k] = float(v)
+    if "usdc_capital_conserve" in cands:
+        cands["usdc_capital_conserve"] += fx_risk_aversion * float(costs.get("risque_change_1_ecart_type") or 0)
     if not cands:
         return "aucune", float("nan")
     k = min(cands, key=lambda x: cands[x])
@@ -88,8 +87,9 @@ def compare_routes(rows: list[dict[str, Any]], f: FeeSchedule, fx: dict[str, flo
             best, val = choose_route(c)
             if best in wins:
                 wins[best] += 1
-            if c.get("eur") is not None and best != "eur":
-                savings.append((c["eur"] - val) * 1e4)
+            ce = c.get("eur")
+            if ce is not None and best != "eur":
+                savings.append((ce - val) * 1e4)
             if size == sizes[1]:
                 detail.append({"actif": b, **{k: (round(v * 1e4, 1) if v is not None else None) for k, v in c.items()},
                                "meilleure_route": best})
