@@ -22,6 +22,10 @@
 | Contenus externes | données jamais exécutées ; injonctions signalées ; DTD/entités XML refusées | `tests/test_external.py` |
 | Commandes sensibles signées | PBKDF2 + HMAC côté iPhone, vérification moteur, anti-rejeu | `tests/test_command_sig.py`, `test_activate_real_end_to_end_requires_everything`, e2e 14/14 |
 | Instance unique | `flock` exclusif sur `nelyqor.lock` | `test_instance_lock_exclusive` |
+| Preuve de recette signée (phase 4) | `scripts/acceptance.sh --record` signe (clé `engine_state_key`) commit + empreintes du code `backend/**/*.py`, de `config/*` et de la sortie des tests ; le moteur la revérifie contre le code qu'il exécute (30 j max, 0 échec) | `tests/test_phase4_security.py::test_proof_*`, `test_unsigned_acceptance_flag_no_longer_sufficient` |
+| Révocation (phase 4) | retour en simulation / arrêt d'urgence => horodatage signé `auth_revoked_ms` ; toute signature antérieure est refusée | `test_signature_from_before_revocation_is_refused`, `test_revocation_timestamp_tamper_detected` |
+| Réactivation du réel (phase 4) | reprise vers le réel = signature `resume_real` du propriétaire ; l'arrêt d'urgence reste NON signé (toujours possible) | `test_emergency_stop_then_forged_resume_cannot_rearm_real` |
+| Commandes : concurrence et panne | prise atomique (une seule exécution) ; commande interrompue par un crash jamais rejouée | `test_command_taken_once_by_concurrent_loops`, `test_interrupted_command_not_replayed_after_crash` |
 
 ## Configuration de la clé API Bitvavo (par le propriétaire, jamais dans le chat)
 1. Bitvavo › Paramètres › API › Créer une clé.
@@ -42,5 +46,5 @@ SSH par clé uniquement (`PasswordAuthentication no`).
   ne possède pas (`secrets/owner_command_key`) ; horodatage 5 min et nonce anti-rejeu. Une API compromise peut
   encore déposer pause / arrêt d'urgence / reprise (actions conservatrices) mais plus aucune commande sensible.
 - Un attaquant ayant le mot de passe ET l'accès à l'API peut tout faire : protéger le mot de passe (12+ caractères).
-- `acceptance_tests_ok` est une valeur non signée en base (positionnée par le script de recette).
+- (Corrigé en phase 4) `acceptance_tests_ok` non signé : remplacé par une preuve signée liée au code.
 - Le global anti-bruteforce (200 / 15 min) peut être saturé par un attaquant distribué : arrêt d'urgence SSH.
