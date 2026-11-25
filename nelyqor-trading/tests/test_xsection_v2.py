@@ -6,7 +6,14 @@ import pytest
 
 from backend.research.synthetic import synthetic_universe
 from backend.research.xsection import XSConfig, build_panel, run_xsection
-from backend.research.xsection_v2 import EXEC_MODELS, SIZING, XS2Options, block_shuffle, order_effects, run_xs2
+from backend.research.xsection_v2 import (
+    EXEC_MODELS,
+    SIZING,
+    XS2Options,
+    block_shuffle,
+    order_effects,
+    run_xs2,
+)
 
 
 @pytest.fixture(scope="module")

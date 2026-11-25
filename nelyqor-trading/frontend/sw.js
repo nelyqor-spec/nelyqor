@@ -1,6 +1,6 @@
 // Service worker : met en cache uniquement la coquille statique. Les données /api/ ne sont JAMAIS mises en cache
 // (évite d'afficher des chiffres périmés comme s'ils étaient actuels).
-const CACHE = "nelyqor-shell-v3";
+const CACHE = "nelyqor-shell-v4";
 const SHELL = ["./", "index.html", "app.css", "app.js", "sig.js", "demo.js", "manifest.webmanifest", "icons/icon-192.png"];
 self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))));
 self.addEventListener("activate", (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))));

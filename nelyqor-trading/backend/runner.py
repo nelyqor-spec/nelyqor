@@ -316,8 +316,13 @@ class Engine:
     async def process_commands(self) -> None:
         now = self.clock.now_ms()
         for cmd in self.db.q("SELECT * FROM control_commands WHERE status='pending' ORDER BY ts"):
-            # marquage « processing » AVANT exécution : en cas de crash, la commande n'est pas rejouée
-            self.db.exec("UPDATE control_commands SET status='processing' WHERE id=? AND status='pending'", (cmd["id"],))
+            # marquage « processing » AVANT exécution : en cas de crash, la commande n'est pas rejouée ;
+            # prise atomique : si une autre boucle/instance l'a déjà prise, elle n'est jamais exécutée deux fois
+            with self.db.tx() as cx:
+                taken = cx.execute("UPDATE control_commands SET status='processing' WHERE id=? AND status='pending'",
+                                   (cmd["id"],)).rowcount
+            if taken != 1:
+                continue
             payload = json.loads(cmd["payload"] or "{}")
             actor = payload.get("actor", "owner")
             c = cmd["command"]
@@ -333,8 +338,15 @@ class Engine:
                     res = {"ok": True, "note": "nouvelles entrées bloquées ; positions et protections conservées"}
                 elif c == "resume":
                     to_real = self.guardian.resume_state == State.REAL
-                    v = self.guardian.resume(actor, await self.preflight(for_real=to_real))
-                    res = {"ok": v.allowed, "reasons": v.reasons}
+                    why = self._verify_signed("resume_real", payload) if to_real else None
+                    if why is not None:
+                        # reprise vers le RÉEL = réactivation : signature du propriétaire exigée (une API
+                        # compromise ne peut pas réarmer le réel après un arrêt d'urgence)
+                        res = {"ok": False, "needs_signature": "resume_real",
+                               "reasons": [f"reprise vers le mode réel : {why}"]}
+                    else:
+                        v = self.guardian.resume(actor, await self.preflight(for_real=to_real))
+                        res = {"ok": v.allowed, "reasons": v.reasons}
                 elif c == "activate_real":
                     why = self._verify_signed(c, payload)
                     signed = payload.get("sig_fields") or {}
@@ -368,7 +380,8 @@ class Engine:
         from .core.command_sig import verify
 
         used = self.db.kv_get("used_command_nonces", [])
-        why = verify(self.command_key, command, payload, self.clock.now_ms(), set(used))
+        why = verify(self.command_key, command, payload, self.clock.now_ms(), set(used),
+                     not_before_ms=self.guardian.revoked_ms)
         if why is None:
             used = (used + [payload["sig_nonce"]])[-2000:]
             self.db.kv_set("used_command_nonces", used, self.clock.now_ms())
@@ -397,7 +410,12 @@ class Engine:
         }
         if for_real:
             pf["cles_api_presentes"] = self.real_exchange is not None and getattr(self.real_exchange, "has_credentials", False)
-            pf["tests_acceptation_ok"] = bool(self.db.kv_get("acceptance_tests_ok", False))
+            from .core.attest import verify_proof
+            from .core.config import ROOT
+
+            why_t = verify_proof(self.db.kv_get("acceptance_proof"), self.guardian._key, ROOT, now)
+            self.db.kv_set("acceptance_proof_check", {"ts": now, "raisons": why_t}, now)
+            pf["tests_acceptation_ok"] = not why_t
             pf["reconciliation_ok"] = await self._reconcile_real() if self.real_exchange else False
         return pf
 

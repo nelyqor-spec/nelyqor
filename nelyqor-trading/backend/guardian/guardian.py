@@ -48,7 +48,7 @@ TRANSITIONS: dict[State, set[State]] = {
     State.REAL: {State.PAUSE, State.RECONCILIATION, State.INCIDENT, State.SIMULATION},
     State.INCIDENT: {State.PAUSE, State.RECONCILIATION, State.SIMULATION},
 }
-SIGNED_KEYS = ("guardian_state", "resume_state", "real_activated_ms")
+SIGNED_KEYS = ("guardian_state", "resume_state", "real_activated_ms", "auth_revoked_ms")
 
 
 @dataclass
@@ -151,6 +151,15 @@ class Guardian:
         return State(self._get("resume_state", State.SIMULATION.value))
 
     @property
+    def revoked_ms(self) -> int:
+        """Instant de la dernière RÉVOCATION (retour en simulation, arrêt d'urgence) : toute signature du
+        propriétaire antérieure ou égale est refusée, même encore dans sa fenêtre de validité."""
+        return int(self._get("auth_revoked_ms", 0) or 0)
+
+    def _revoke(self) -> None:
+        self._put("auth_revoked_ms", max(self._now(), self.revoked_ms))
+
+    @property
     def is_real(self) -> bool:
         return self.state == State.REAL
 
@@ -219,6 +228,7 @@ class Guardian:
         self._require_engine()
         self._put("resume_state", State.SIMULATION.value)
         self._put("real_activated_ms", None)
+        self._revoke()
         self._set_state(State.SIMULATION, "retour manuel en simulation")
         self._audit(actor, "desactivation_reel", True, {})
 
@@ -228,6 +238,7 @@ class Guardian:
         prev = self.state
         if prev not in (State.PAUSE, State.INCIDENT, State.RECONCILIATION):
             self._put("resume_state", prev.value)
+        self._revoke()
         self._set_state(State.PAUSE, "arrêt d'urgence")
         self._audit(actor, "arret_urgence", True, {"from": prev.value})
 

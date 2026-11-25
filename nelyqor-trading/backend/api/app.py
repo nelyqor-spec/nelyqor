@@ -294,8 +294,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
         return command("emergency_stop", {}, request)
 
     @app.post("/api/control/resume")
-    def resume(request: Request, _: Any = Depends(require_session)) -> dict[str, Any]:
-        return command("resume", {}, request)
+    def resume(request: Request, body: SignedFields | None = None, _: Any = Depends(require_session)) -> dict[str, Any]:
+        # signature transmise telle quelle : seul le moteur peut la vérifier (reprise vers le réel)
+        return command("resume", body.model_dump() if body else {}, request)
 
     @app.post("/api/control/deactivate_real")
     def deactivate(request: Request, _: Any = Depends(require_session)) -> dict[str, Any]:

@@ -185,6 +185,12 @@ async def test_unidentified_manual_flow_pauses_entries(tmp_path):
     assert await eng._reconcile_real()
 
 
+def valid_proof(now_ms):
+    from backend.core.attest import make_proof
+    from backend.core.config import ROOT
+    return make_proof(ROOT, STATE_KEY, "===== 42 passed in 3.2s =====", "test", now_ms)
+
+
 def signed_payload(command, fields, ts, nonce):
     from backend.core.command_sig import sign
     return {"password_ok": True, "signature": sign(CMD_KEY, command, ts, nonce, fields), "sig_ts": ts,
@@ -213,8 +219,8 @@ async def test_activate_real_end_to_end_requires_everything(tmp_path):
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a1'")["result"])
     assert not res["ok"] and any("tests_acceptation_ok" in r for r in res["reasons"])
-    # 3) rejeu de la même signature -> refus
-    db.kv_set("acceptance_tests_ok", True)
+    # 3) rejeu de la même signature -> refus (l'ancien booléen non signé ne suffit plus : preuve signée)
+    db.kv_set("acceptance_proof", valid_proof(clock.now_ms()))
     db.exec("INSERT INTO control_commands VALUES('a2',?,'activate_real',?,'pending',NULL,NULL)",
             (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1"))))
     await eng.process_commands()

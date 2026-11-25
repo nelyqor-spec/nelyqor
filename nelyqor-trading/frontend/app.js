@@ -173,7 +173,18 @@ function bind() {
   const cmd = async (path, body) => { const r = await post(path, body); const res = demo ? r : await waitCommand(r.command_id); sheet(`<p>${res.ok ? "✔ Fait" : "✖ Refusé"}</p>${(res.reasons || []).map((x) => `<p class="reason">${esc(x)}</p>`).join("")}${res.note ? `<p class="mute">${esc(res.note)}</p>` : ""}`); render(); };
   on("btn-stop", () => cmd("/api/control/emergency_stop"));
   on("btn-pause", () => cmd("/api/control/pause"));
-  on("btn-resume", () => cmd("/api/control/resume"));
+  on("btn-resume", async () => {
+    const r = await post("/api/control/resume"); const res = demo ? r : await waitCommand(r.command_id);
+    if (res.needs_signature !== "resume_real") { sheet(`<p>${res.ok ? "✔ Fait" : "✖ Refusé"}</p>${(res.reasons || []).map((x) => `<p class="reason">${esc(x)}</p>`).join("")}`); render(); return; }
+    // reprise vers le RÉEL : réactivation signée par le propriétaire (mot de passe -> signature locale)
+    sheet(`<h2>Reprise vers le mode réel</h2><p class="bad">La reprise réactive le trading en argent réel.</p>
+      <input id="rs-pw" type="password" placeholder="Mot de passe" autocomplete="current-password">
+      <button class="btn danger" id="rs-go">Signer et reprendre</button>`);
+    $("#rs-go").onclick = () => run(async () => {
+      const sig = await signed("resume_real", { reprise: "reel" }, $("#rs-pw").value);
+      await cmd("/api/control/resume", sig);
+    });
+  });
   on("btn-unreal", () => cmd("/api/control/deactivate_real"));
   on("btn-logout", async () => { await post("/api/logout"); sessionStorage.removeItem("csrf"); showLogin(); });
   on("btn-csv", async () => { if (demo) return sheet("<p>Indisponible en démo.</p>"); location.href = "/api/export/operations.csv"; });

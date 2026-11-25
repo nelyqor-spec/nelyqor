@@ -4,7 +4,8 @@
   HMAC-SHA256(k, canonique(commande, ts, nonce, champs)). Le mot de passe ne quitte jamais l'iPhone pour cela.
 - Le moteur détient k (secrets/owner_command_key, lisible par le moteur SEUL) ; l'API ne connaît que le sel
   (public). Une API compromise ne peut donc PAS forger une commande sensible.
-- Fenêtre de validité 5 min ; nonce à usage unique (anti-rejeu)."""
+- Fenêtre de validité 5 min ; nonce à usage unique (anti-rejeu) ; toute signature antérieure à la dernière
+  révocation (signée dans l'état du Guardian) est refusée."""
 from __future__ import annotations
 
 import base64
@@ -16,7 +17,7 @@ from typing import Any
 
 ITER = 600_000
 VALIDITY_MS = 5 * 60_000
-SENSITIVE = {"activate_real", "liquidation_confirm"}
+SENSITIVE = {"activate_real", "liquidation_confirm", "resume_real"}
 
 
 def canonical(command: str, ts: int, nonce: str, fields: dict[str, Any]) -> bytes:
@@ -36,8 +37,10 @@ def sign(key: bytes, command: str, ts: int, nonce: str, fields: dict[str, Any]) 
     return hmac.new(key, canonical(command, ts, nonce, fields), hashlib.sha256).hexdigest()
 
 
-def verify(key: bytes | None, command: str, payload: dict[str, Any], now_ms: int, used_nonces: set[str]) -> str | None:
-    """Renvoie None si valide, sinon la raison du refus."""
+def verify(key: bytes | None, command: str, payload: dict[str, Any], now_ms: int, used_nonces: set[str],
+           not_before_ms: int = 0) -> str | None:
+    """Renvoie None si valide, sinon la raison du refus. `not_before_ms` : instant de la dernière révocation
+    (une autorisation signée avant une révocation n'est jamais réutilisable)."""
     if key is None:
         return "clé de vérification des commandes absente (secrets/owner_command_key)"
     sig = payload.get("signature")
@@ -46,6 +49,8 @@ def verify(key: bytes | None, command: str, payload: dict[str, Any], now_ms: int
         return "commande sensible non signée par le propriétaire"
     if abs(now_ms - ts) > VALIDITY_MS:
         return "signature expirée"
+    if ts <= not_before_ms:
+        return "signature antérieure à une révocation (retour en simulation / arrêt d'urgence)"
     if nonce in used_nonces:
         return "signature déjà utilisée (rejeu)"
     if not hmac.compare_digest(sig, sign(key, command, ts, nonce, fields)):
