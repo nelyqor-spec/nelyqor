@@ -62,3 +62,15 @@ def test_order_log_and_block_shuffle(uni):
     x = (np.arange(1000) % 200 < 100).astype(float)
     y = block_shuffle(x, 50, np.random.default_rng(0))
     assert len(y) == len(x) and abs(y.mean() - x.mean()) < 0.15
+
+
+def test_decomposition_models_never_produce_nan_with_missing_candles(uni):
+    d, cfg, P = uni
+    d2 = {m: df.copy() for m, df in d.items()}
+    for m, df in d2.items():
+        if m != "BTC-EUR":
+            df.iloc[::7] = np.nan  # bougies manquantes (marchés peu liquides)
+    P2 = build_panel(d2, cfg)
+    for ex in ("close_maker", "limit_ideal"):
+        r = run_xs2(d2, cfg, XS2Options(exec_model=ex), panel=P2)
+        assert np.isfinite(r.fees_eur) and np.isfinite(r.equity.iloc[-1])

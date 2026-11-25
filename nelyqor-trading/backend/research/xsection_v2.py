@@ -261,7 +261,9 @@ def run_xs2(data: dict[str, pd.DataFrame], cfg: XSConfig, opt: XS2Options | None
                     pending.append(new_order({"j": j, "side": "sell", "px": C[i, j] * (1 + cfg.limit_offset_bps / 1e4),
                                               "ttl": cfg.limit_ttl_bars, "reason": "sortie"}, i))
                 elif ex in ("close_maker", "limit_ideal"):
-                    px = C[i, j] * (1 + (cfg.limit_offset_bps / 1e4 if ex == "limit_ideal" else 0))
+                    # dernier prix connu (la bougie de décision peut manquer pour un marché peu liquide :
+                    # un prix NaN contaminait la trésorerie — défaut détecté en phase 4)
+                    px = mark[i, j] * (1 + (cfg.limit_offset_bps / 1e4 if ex == "limit_ideal" else 0))
                     pending.append(new_order({"j": j, "side": "sell", "px": px, "market_at": i + 1, "reason": "sortie"}, i))
                 else:
                     pending.append(new_order({"j": j, "side": "sell", "market_at": i + 1, "reason": "sortie"}, i))
@@ -284,7 +286,7 @@ def run_xs2(data: dict[str, pd.DataFrame], cfg: XSConfig, opt: XS2Options | None
                         pending.append(new_order({"j": j, "side": "buy", "px": C[i, j] * (1 - cfg.limit_offset_bps / 1e4),
                                                   "ttl": cfg.limit_ttl_bars, "eur": eur, "reason": "entree"}, i))
                     elif ex in ("close_maker", "limit_ideal"):
-                        px = C[i, j] * (1 - (cfg.limit_offset_bps / 1e4 if ex == "limit_ideal" else 0))
+                        px = mark[i, j] * (1 - (cfg.limit_offset_bps / 1e4 if ex == "limit_ideal" else 0))
                         pending.append(new_order({"j": j, "side": "buy", "px": px, "market_at": i + 1, "eur": eur,
                                                   "reason": "entree"}, i))
                     else:

@@ -573,10 +573,52 @@ def part_sizing(a: argparse.Namespace, store: CandleStore) -> dict[str, Any]:
     return out
 
 
+# ------------------------------------------------------------------------------------------- robustesse
+def part_robust(a: argparse.Namespace, store: CandleStore) -> dict[str, Any]:
+    """Les deux signaux les plus cohérents de la phase 4 (dimensionnement de Kelly, filtre de largeur de marché)
+    sont-ils robustes à l'heure de rééquilibrage et à l'agrégation ? Toutes les phases sont publiées."""
+    raw = universe(store, a.base)
+    out: dict[str, Any] = {}
+    for interval in a.intervals.split(","):
+        data = R3.derive(raw, interval, a.base)
+        cfg0 = R3.make_variant(interval, "base")
+        P = build_panel(data, cfg0)
+        ex = regime_exposures(P, cfg0)
+        expos = {"btc": ex["btc"], "btc_et_proportion_haussiere": ex["btc"] * ex["proportion_haussiere"]}
+        rb = cfg0.rebalance_bars
+        phases = list(range(rb)) if rb <= 12 else list(range(0, rb, max(1, rb // 8)))
+        for variant in ("base", "detention_min_3j"):
+            cfg = R3.make_variant(interval, variant)
+            for sz in ("egal", "kelly"):
+                for en, e in expos.items():
+                    vals, halves = [], []
+                    for p in phases:
+                        m = metrics(run_xs2(data, cfg, XS2Options(sizing=sz, phase=p), panel=P, exposure=e), interval)
+                        vals.append(m["rendement_net"])
+                        halves.append(min(m["moitie_1"] or 0, m["moitie_2"] or 0))
+                    v = np.array(vals)
+                    k = f"{interval}_{variant}_{sz}_{en}"
+                    out[k] = {"par_phase": [round(x, 4) for x in vals], "mediane": float(np.median(v)),
+                              "min": float(v.min()), "max": float(v.max()), "part_positive": float((v > 0).mean()),
+                              "part_pire_moitie_positive": float((np.array(halves) > 0).mean())}
+                    log(f"robuste {k:52s} médiane {np.median(v):+.1%} min {v.min():+.1%} max {v.max():+.1%} positives {(v > 0).mean():.0%}")
+        if interval != a.base:
+            td = tolerant_derive(raw, interval)
+            Pt = build_panel(td, cfg0)
+            ext = regime_exposures(Pt, cfg0)
+            for sz in ("egal", "kelly"):
+                for en, e in {"btc": ext["btc"], "btc_et_proportion_haussiere": ext["btc"] * ext["proportion_haussiere"]}.items():
+                    m = metrics(run_xs2(td, cfg0, XS2Options(sizing=sz), panel=Pt, exposure=e), interval)
+                    out[f"tolerante_{interval}_base_{sz}_{en}"] = {k2: m[k2] for k2 in ("rendement_net", "moitie_1", "moitie_2", "trades", "max_drawdown")}
+                    log(f"robuste tolérante {interval} {sz} {en}: {m['rendement_net']:+.1%}")
+    out["n_essais_partie"] = len(TRIALS)
+    return out
+
+
 def main() -> None:
     global SMOKE
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", required=True, choices=["decomp", "lobsim", "rotation", "regime", "ai", "sizing"])
+    ap.add_argument("--part", required=True, choices=["decomp", "lobsim", "rotation", "regime", "ai", "sizing", "robust"])
     ap.add_argument("--base", default="1h")
     ap.add_argument("--intervals", default="1h,4h,1d")
     ap.add_argument("--ai-interval", default="4h")
@@ -593,7 +635,7 @@ def main() -> None:
     store = CandleStore(a.root)
     t0 = time.time()
     fn = {"decomp": part_decomp, "lobsim": part_lobsim, "rotation": part_rotation, "regime": part_regime,
-          "ai": part_ai, "sizing": part_sizing}[a.part]
+          "ai": part_ai, "sizing": part_sizing, "robust": part_robust}[a.part]
     res = fn(a, store)
     res["_meta"] = {"part": a.part, "duree_s": round(time.time() - t0, 1), "essais_comptes": len(TRIALS),
                     "periode": "RECHERCHE (données <= 25/11/2026, déjà consultées)",
