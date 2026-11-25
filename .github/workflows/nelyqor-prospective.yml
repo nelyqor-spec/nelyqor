@@ -1,16 +1,24 @@
 # Nelyqor Trading — évaluation PROSPECTIVE périodique des candidats figés (API publique, aucune clé, aucun ordre).
-# ATTENTION : les déclenchements planifiés (schedule) ne s'exécutent que lorsque ce fichier est présent sur la
-# branche PAR DÉFAUT du dépôt (règle GitHub). Avant fusion, seuls les push ci-dessous le déclenchent.
-# Ce n'est PAS une exécution continue : une évaluation par jour, journal conservé en cache + artefact (90 j).
+# - v1 : candidats figés le 25/11/2026 (commit 9003293), évalués par scripts/prospective.py — INCHANGÉ.
+# - v2 : candidats phase 4, scripts/prospective_v2.py (prédictions horodatées + notation + rétrospectif séparé).
+# Planification : deux créneaux par jour. Le second ne fait qu'un RATTRAPAGE : il sort immédiatement si une
+# évaluation complète a déjà réussi depuis moins de 20 h (le cron de GitHub peut retarder ou sauter un créneau).
+# Les déclenchements planifiés ne s'exécutent que lorsque ce fichier est sur la branche PAR DÉFAUT (règle GitHub).
+# Ce n'est PAS un serveur de trading ni une exécution continue : une évaluation par jour au plus.
 name: nelyqor-prospective
 
 on:
   schedule:
     - cron: "17 2 * * *"
+    - cron: "43 14 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Forcer l'évaluation même si une évaluation récente existe"
+        default: "false"
   push:
     branches: ["claude/**"]
-    paths: ["nelyqor-trading/reports/prospective/candidats_figes.json", ".github/workflows/nelyqor-prospective.yml"]
+    paths: ["nelyqor-trading/reports/prospective/**", ".github/workflows/nelyqor-prospective.yml"]
 
 permissions:
   contents: read
@@ -29,32 +37,60 @@ env:
 jobs:
   evaluer:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
-      - run: pip install -r requirements.lock
-      - uses: actions/cache/restore@v4
-        with:
-          path: nelyqor-trading/data/market
-          key: bitvavo-market-v1-${{ github.run_id }}
-          restore-keys: bitvavo-market-v1-
       - uses: actions/cache/restore@v4
         with:
           path: nelyqor-trading/data/prospective
           key: prospective-v1-${{ github.run_id }}
           restore-keys: prospective-v1-
-      - name: Mise à jour incrémentale (1 h, EUR + USDC)
-        run: python scripts/download_candles.py --universe --quotes EUR,USDC --interval 1h --days 1100 --time-budget 2400 --pause 0.02 || echo "code=$?"
-      - name: Évaluation des candidats figés
+      - name: Rattrapage — évaluation récente déjà faite ?
+        id: garde
+        run: |
+          now=$(date +%s); last=0
+          [ -f data/prospective/derniere_evaluation_ok ] && last=$(cat data/prospective/derniere_evaluation_ok)
+          age_h=$(( (now - last) / 3600 ))
+          echo "derniere evaluation reussie il y a ${age_h} h"
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$age_h" -lt 20 ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; echo "évaluation récente : rien à faire (quota économisé)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            [ "$age_h" -gt 30 ] && [ "$last" -gt 0 ] && echo "::warning::RATTRAPAGE : dernière évaluation il y a ${age_h} h (créneaux de prédiction manqués comptés, jamais reconstitués)"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.garde.outputs.skip != 'true'
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+        if: steps.garde.outputs.skip != 'true'
+      - uses: actions/cache/restore@v4
+        if: steps.garde.outputs.skip != 'true'
+        with:
+          path: nelyqor-trading/data/market
+          key: bitvavo-market-v1-${{ github.run_id }}
+          restore-keys: bitvavo-market-v1-
+      - name: Mise à jour incrémentale (1 h, EUR + USDC, budget 25 min)
+        if: steps.garde.outputs.skip != 'true'
+        run: python scripts/download_candles.py --universe --quotes EUR,USDC --interval 1h --days 1100 --time-budget 1500 --pause 0.02 || echo "code=$?"
+      - name: Évaluation des candidats figés v1 (inchangée)
+        if: steps.garde.outputs.skip != 'true'
         run: python scripts/prospective.py run
+      - name: Évaluation des candidats figés v2 (prédictions, notation, rétrospectif)
+        if: steps.garde.outputs.skip != 'true'
+        run: |
+          if [ -f reports/prospective/v2/candidats_figes_v2.json ]; then python scripts/prospective_v2.py run; else echo "aucun candidat v2 figé"; fi
+      - name: Horodatage de réussite + consommation
+        if: steps.garde.outputs.skip != 'true'
+        run: |
+          date +%s > data/prospective/derniere_evaluation_ok
+          du -sh data/market data/prospective || true
+          echo "durée du job : voir l'en-tête GitHub ; dépôt public : minutes des runners standards non décomptées"
       - uses: actions/cache/save@v4
-        if: always()
+        if: always() && steps.garde.outputs.skip != 'true'
         with: {path: nelyqor-trading/data/market, key: "bitvavo-market-v1-${{ github.run_id }}"}
       - uses: actions/cache/save@v4
-        if: always()
+        if: always() && steps.garde.outputs.skip != 'true'
         with: {path: nelyqor-trading/data/prospective, key: "prospective-v1-${{ github.run_id }}"}
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.garde.outputs.skip != 'true'
         with: {name: journal-prospectif, path: nelyqor-trading/data/prospective, retention-days: 90}
