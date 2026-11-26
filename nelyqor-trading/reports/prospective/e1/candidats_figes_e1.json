@@ -1,6 +1,6 @@
 {
-  "fige_le_utc": "2026-11-26T16:03:17+00:00",
-  "commit_parent": "dda1a9fefa7c918dde37053bbe145cf071353b81",
+  "fige_le_utc": "2026-11-26T16:17:48+00:00",
+  "commit_parent": "fc6b43f0565ddbf6a00ceefe039ff62f5122dce9",
   "cutoff_ms": 1795737600000,
   "cutoff_utc": "2026-11-27T00:00:00+00:00",
   "empreinte_code": {
@@ -12,7 +12,7 @@
     "backend/events/lexicon.py": "6e1e7d078a97cf4b7605c8a80dfaf6613ee24dc12b3068a87eb3eee9d8b27680",
     "backend/events/model.py": "530ae540314fd03facbea5e5ab98c856dddc163a6228658a16b1c146dd033461",
     "backend/events/journal.py": "4738401b85dd40613c5e862ff8ed7e7b39de8b3f83b2ffa4a54cd44cce5f7a6d",
-    "scripts/prospective_e1.py": "c53a81a721ee3125aae734845d8f49513dcabacfcce002cf603704432fd26eae"
+    "scripts/prospective_e1.py": "10e8d24a320d9c7182d6892fb4c3ed6e8b6cea77e24d8e5e51892b4845214bc1"
   },
   "empreintes_candidats": {
     "e1_ls": "16b2b11d00a896dbdb738aa6d0f1768f9485bf97075811d1e48b5b05d677b9a2",
@@ -21,7 +21,7 @@
     "e1_lc_evt": "ff22e0248698b3f5261158609535f31d310bdb35f30e072c83cc342d39e51999",
     "e1_cash": "414a6d429ab6cc31720ef38313b1a34e46b154f9462fc284a106ac90b7408076"
   },
-  "regles": "reports/prospective/e1/regle_e1.md (sha256 04664013081e24b86022c2c9b2784b63169e36e53632d366ff28a04ba44837e4)",
+  "regles": "reports/prospective/e1/regle_e1.md (sha256 a8301e1bb785c5b1d2dbed746b79c607043fca082f75a354f26137943ed57ba7)",
   "statut": "EXPÉRIMENTAL, NON DÉPLOYABLE (Short indisponible par API)",
   "candidats": [
     {

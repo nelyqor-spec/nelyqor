@@ -168,9 +168,16 @@ def run(a: argparse.Namespace) -> dict[str, Any]:
                 raise ValueError(f"données incomplètes : {sorted(data)}")
             start = int(np.searchsorted(grid, cutoff))
             rows = [r for r in J.rows if r["type"] == "prediction" and r["candidat"] == c["id"]]
-            recorded = {int(r["bougie_ts"]): r["decision"].get("groupes_bloquants", {}) for r in rows}
-            recorded = {t: {m: recorded[t].get(m, []) for m in MARKETS} for t in recorded}
+            # blocages enregistrés : bougie prédite + historique des blocages NON vides depuis la prédiction
+            # précédente (amendement 1) -> le rejeu ne dépend jamais du cache événementiel (évictable)
+            recorded: dict[int, dict[str, list[str]]] = {}
+            for r in rows:
+                for t_s, bl in (r.get("blocages_historique") or {}).items():
+                    recorded[int(t_s)] = {m: bl.get(m, []) for m in MARKETS}
+                recorded[int(r["bougie_ts"])] = {m: r["decision"].get("groupes_bloquants", {}).get(m, []) for m in MARKETS}
+            predicted = {int(r["bougie_ts"]) for r in rows}
             eng, decisions, eq, altered = run_candidate(c, grid, data, start, groups, recorded)
+            prev = max(predicted, default=int(grid[start]) - STEP if start < len(grid) else 0)
             for r in rows:
                 t = int(r["bougie_ts"])
                 if t in decisions and decisions[t] != r["decision"]:
@@ -178,9 +185,10 @@ def run(a: argparse.Namespace) -> dict[str, Any]:
                 elif t not in decisions and int(grid[0]) <= t <= int(grid[-1]):
                     bad.append(f"{c['id']}@{t} (bougie absente au rejeu)")
             last = int(grid[-1])
-            if last >= cutoff and last not in recorded:
+            if last >= cutoff and last not in predicted:
+                hist = {str(t): d["groupes_bloquants"] for t, d in decisions.items() if prev < t < last and d["groupes_bloquants"]}
                 J.append({"type": "prediction", "candidat": c["id"], "bougie_ts": last, "execution_ts": run_ts,
-                          "decision": decisions[last], "empreinte_candidat": P3.cand_fingerprint(c)})
+                          "decision": decisions[last], "blocages_historique": hist, "empreinte_candidat": P3.cand_fingerprint(c)})
             seg = eq[start:] if start < len(eq) else np.array([])
             out["resultats"][c["id"]] = {
                 "bougies_prospectives": int(len(seg)), "equite": float(seg[-1]) if len(seg) else 100.0,
@@ -188,7 +196,8 @@ def run(a: argparse.Namespace) -> dict[str, Any]:
                 "dd": float((seg / np.maximum.accumulate(seg) - 1).min()) if len(seg) else 0.0,
                 "trades": len(eng.trades), "decisions_modifiees_par_evenements": altered,
                 "levier_effectif_max": float(max(eng.effective_gross, default=0.0)),
-                "predictions": len(rows) + (1 if last >= cutoff and last not in recorded else 0)}
+                "predictions": len(rows) + (1 if last >= cutoff and last not in predicted else 0),
+                "creneaux_4h_depuis_depart": int(len(seg)), "creneaux_predits": len(predicted | ({last} if last >= cutoff else set()))}
         except Exception as e:  # noqa: BLE001
             out["resultats"][c["id"]] = {"statut": f"erreur {type(e).__name__}: {str(e)[:200]}"}
     if len(grid) and "BTC-EUR" in data:

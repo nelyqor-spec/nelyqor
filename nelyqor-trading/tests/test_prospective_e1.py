@@ -93,3 +93,24 @@ def test_event_filter_only_abstains(env, monkeypatch):
     o = _run(raw, tmp, monkeypatch, events_dir=ev_dir)
     assert o["resultats"]["e1_ls_evt"]["trades"] == 0 and o["resultats"]["e1_lc_evt"]["trades"] == 0
     assert o["validite"] == "valide"
+
+
+def test_replay_independent_of_event_cache(env, monkeypatch, tmp_path):
+    """Amendement 1 : les blocages vus entre deux évaluations sont enregistrés ; si le cache événementiel est perdu,
+    le rejeu reste exact (aucune divergence)."""
+    raw, tmp = env
+    t_end = max(int(d.index.max()) for d in raw.values())
+    grid_ts = sorted(raw["BTC-EUR"].index)
+    blocked_ts = {int(t) for t in grid_ts[-60::7]}
+    monkeypatch.setattr(E1, "blocking_clusters", lambda g, m, t: ["c1"] if (t - E1.STEP) in blocked_ts else [])
+    from backend.events.journal import append_observations
+    ev_dir = tmp / "events"
+    append_observations(ev_dir, [_ev(1, "a.com", 1_800_000_000_000)])
+    o1 = _run(raw, tmp, monkeypatch, upto=t_end - 24 * H, events_dir=ev_dir)
+    assert o1["validite"] == "valide"
+    rows = [json.loads(x) for x in (tmp / "j.jsonl").read_text().splitlines()]
+    assert any(r.get("blocages_historique") for r in rows if r["candidat"] == "e1_ls_evt")
+    # cache perdu : plus aucun événement, rejeu sans divergence
+    monkeypatch.setattr(E1, "blocking_clusters", lambda g, m, t: [])
+    o2 = _run(raw, tmp, monkeypatch, upto=t_end - 24 * H, events_dir=tmp / "perdu")
+    assert o2["validite"] == "valide", o2["rejeu"]

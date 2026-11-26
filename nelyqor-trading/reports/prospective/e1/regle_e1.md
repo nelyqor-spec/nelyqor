@@ -81,3 +81,16 @@ Pour chaque candidat, chaque évaluation enregistre, pour la dernière bougie 4 
 
 Le journal est chaîné par sha256. À chaque évaluation, le passé est rejoué et doit reproduire exactement chaque décision
 enregistrée ; sinon l'évaluation est **INVALIDE**. Les créneaux manqués sont comptés et jamais reconstitués.
+
+## Amendement 1 (26/11/2026, avant le départ et avant toute observation prospective)
+Une contre-expertise a montré que le rejeu des candidats `*_evt` dépendait du cache événementiel, qui peut être évincé :
+une perte de cache aurait rendu E1 INVALIDE de façon définitive. Chaque prédiction enregistre désormais aussi les
+groupes bloquants **non vides** de toutes les bougies écoulées depuis la prédiction précédente (`blocages_historique`).
+Le rejeu utilise ces enregistrements en priorité, et non le cache.
+
+Le premier gel (16:04 UTC) est retiré et conservé sous `candidats_figes_e1_retire_avant_depart.json`. Aucune règle de
+décision, aucun paramètre, aucun candidat ni aucun critère n'est modifié. Seuls la traçabilité et l'empreinte du script
+changent.
+
+Limite connue : sans planification (PR non fusionnée), il n'y a qu'environ une évaluation par jour. Une seule bougie 4 h
+sur 6 est donc enregistrée comme prédiction ; les autres sont rejouées. Le nombre de créneaux prédits est publié.
