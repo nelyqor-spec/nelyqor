@@ -79,6 +79,12 @@ class IntentCheck:
     sell_amount_base: Decimal | None = None
     base_free_for_sale: Decimal | None = None
     min_order_base: Decimal = ZERO
+    # Phase 5 — capital AUTHENTIFIÉ (soldes lus chez Bitvavo par le moteur, recoupés avec son journal) : exigé
+    # pour toute ENTRÉE réelle. None = non vérifiable => veto (les ventes/protections n'en dépendent pas).
+    authenticated_equity: Decimal | None = None
+    authenticated_cash: Decimal | None = None  # EUR LIBRE authentifié
+    authenticated_ts: int | None = None
+    authenticated_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -360,6 +366,31 @@ class Guardian:
                 r.append("dépasse l'exposition totale")
             if it.reinforcement_of_loser and not it.new_independent_thesis:
                 r.append("renforcement d'une position perdante sans thèse indépendante (anti-martingale)")
+            if it.mode == "real":
+                r.extend(self._check_authenticated(it))
         if it.amount_quote < it.min_order_quote and not conditional:
             r.append("sous le minimum Bitvavo")
         return Verdict(not r, r)
+
+    def _check_authenticated(self, it: IntentCheck) -> list[str]:
+        """Achat RÉEL : bornes relatives au capital AUTHENTIFIÉ (le plafond absolu `max_order_eur` de 500 € ne
+        protège pas un capital de 100 €). Toute donnée manquante, périmée ou divergente => refus."""
+        L = self.limits
+        if it.authenticated_equity is None or it.authenticated_cash is None or it.authenticated_ts is None:
+            why = "; ".join(it.authenticated_reasons) or "soldes Bitvavo non vérifiés"
+            return [f"capital authentifié indisponible : {why}"]
+        r: list[str] = []
+        age = self._now() - it.authenticated_ts
+        if age > L.auth_balance_max_age_ms:
+            r.append(f"soldes authentifiés périmés ({age // 1000} s)")
+        if it.authenticated_equity <= 0:
+            r.append("capital authentifié nul")
+        if it.amount_quote > it.authenticated_cash:
+            r.append("dépasse l'EUR disponible authentifié chez Bitvavo")
+        if it.amount_quote > it.authenticated_equity * L.max_order_fraction_of_authenticated_equity:
+            r.append("dépasse la part autorisée du capital authentifié par ordre")
+        if it.position_after > it.authenticated_equity * L.max_position_fraction:
+            r.append("dépasse la limite par position (capital authentifié)")
+        if it.exposure_after > it.authenticated_equity * L.max_total_exposure_fraction:
+            r.append("dépasse l'exposition totale (capital authentifié)")
+        return r

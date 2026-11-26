@@ -10,6 +10,8 @@ COPY config ./config
 COPY frontend ./frontend
 COPY scripts ./scripts
 COPY pyproject.toml .
-RUN mkdir -p /data /state && chown nelyqor /data /state
+# phase 5 : une base par volume (moteur, commandes, affichage, audit API) ; voir compose.yaml
+RUN mkdir -p /engine /commands /display /apidata /state && chown nelyqor /engine /commands /display /apidata /state
 USER nelyqor
-ENV NELYQOR_DB=/data/nelyqor.db
+ENV NELYQOR_DB=/engine/engine.db NELYQOR_COMMANDS_DB=/commands/commandes.db NELYQOR_DISPLAY_DB=/display/affichage.db \
+    NELYQOR_API_DB=/apidata/api.db

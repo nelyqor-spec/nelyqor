@@ -46,6 +46,12 @@ class HardLimits:
     max_spread_bps: Decimal
     min_quote_volume_24h_eur: Decimal
     anomaly_refuse_threshold: Decimal
+    # Phase 5 — capital AUTHENTIFIÉ (soldes Bitvavo) pour dimensionner un achat réel : `max_order_eur` (500 €)
+    # n'est pas une protection pour un capital de 100 € ; ces bornes sont relatives au capital authentifié.
+    max_order_fraction_of_authenticated_equity: Decimal = Decimal("0.35")
+    auth_balance_max_age_ms: int = 180_000
+    auth_divergence_tolerance_eur: Decimal = Decimal("0.50")
+    auth_divergence_tolerance_fraction: Decimal = Decimal("0.005")
     sha256: str = ""
 
     @classmethod
@@ -66,6 +72,10 @@ class HardLimits:
             max_spread_bps=D(d["max_spread_bps"]),
             min_quote_volume_24h_eur=D(d["min_quote_volume_24h_eur"]),
             anomaly_refuse_threshold=D(d["anomaly_refuse_threshold"]),
+            max_order_fraction_of_authenticated_equity=D(d["max_order_fraction_of_authenticated_equity"]),
+            auth_balance_max_age_ms=int(d["auth_balance_max_age_ms"]),
+            auth_divergence_tolerance_eur=D(d["auth_divergence_tolerance_eur"]),
+            auth_divergence_tolerance_fraction=D(d["auth_divergence_tolerance_fraction"]),
             sha256=file_sha256(p),
         )
 
@@ -75,11 +85,20 @@ class HardLimits:
             raise ValueError("Marge, vente à découvert et dérivés sont interdits")
         if self.allow_withdrawals or self.allow_martingale:
             raise ValueError("Retraits automatiques et martingale sont interdits")
+        if not (Decimal(0) < self.max_order_fraction_of_authenticated_equity <= Decimal(1)):
+            raise ValueError("max_order_fraction_of_authenticated_equity doit être dans ]0, 1]")
+        if not (0 < self.auth_balance_max_age_ms <= 600_000):
+            raise ValueError("auth_balance_max_age_ms doit être dans ]0, 10 min]")
 
 
 @dataclass
 class Settings:
-    db_path: Path = field(default_factory=lambda: Path(os.environ.get("NELYQOR_DB", ROOT / "data" / "nelyqor.db")))
+    # Base du MOTEUR (autoritaire, volume engine_data monté dans le moteur SEUL ; phase 5).
+    db_path: Path = field(default_factory=lambda: Path(os.environ.get("NELYQOR_DB", ROOT / "data" / "engine.db")))
+    # Canaux contrôlés (backend/storage/channels.py) ; par défaut à côté de db_path (développement, tests).
+    commands_db_path: Path | None = None  # api écrit, moteur lit (:ro) — table control_commands seule
+    display_db_path: Path | None = None   # moteur écrit, api lit (:ro) — copie d'affichage
+    api_db_path: Path | None = None       # audit propre à l'API
     role: str = field(default_factory=lambda: os.environ.get("NELYQOR_ROLE", "engine"))  # engine|api|lab
     # Le mode réel exige CETTE variable côté serveur ET une activation authentifiée par le propriétaire.
     real_trading_server_flag: bool = field(
@@ -94,6 +113,30 @@ class Settings:
     monthly_hosting_eur: Decimal = field(default_factory=lambda: D(os.environ.get("NELYQOR_HOSTING_EUR", "7.19")))
     telegram_enabled: bool = field(default_factory=lambda: bool(os.environ.get("TELEGRAM_CHAT_ID")))
     cookie_secure: bool = field(default_factory=lambda: os.environ.get("NELYQOR_COOKIE_SECURE", "true") == "true")
+
+    def __post_init__(self) -> None:
+        base = Path(self.db_path).parent
+        if self.commands_db_path is None:
+            self.commands_db_path = Path(os.environ.get("NELYQOR_COMMANDS_DB", base / "commandes.db"))
+        if self.display_db_path is None:
+            self.display_db_path = Path(os.environ.get("NELYQOR_DISPLAY_DB", base / "affichage.db"))
+        if self.api_db_path is None:
+            self.api_db_path = Path(os.environ.get("NELYQOR_API_DB", base / "api.db"))
+
+    @property
+    def commands_file(self) -> Path:
+        assert self.commands_db_path is not None
+        return Path(self.commands_db_path)
+
+    @property
+    def display_file(self) -> Path:
+        assert self.display_db_path is not None
+        return Path(self.display_db_path)
+
+    @property
+    def api_file(self) -> Path:
+        assert self.api_db_path is not None
+        return Path(self.api_db_path)
 
     def read_secret(self, name: str) -> str | None:
         """Lit un secret monté en fichier (Docker secrets). Jamais depuis le dépôt."""

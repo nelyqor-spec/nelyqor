@@ -93,18 +93,28 @@ MIGRATIONS: list[str] = [
 
 
 class Database:
-    def __init__(self, path: Path | str, readonly: bool = False) -> None:
+    """`migrations` : schéma de la base (par défaut celui du moteur) ; `journal_mode` : WAL pour la base du moteur,
+    DELETE pour les bases d'échange (commandes, affichage) qu'un autre conteneur lit en LECTURE SEULE sur un
+    volume monté `:ro` (un lecteur WAL a besoin d'écrire le fichier -shm, impossible sur un montage `:ro`)."""
+
+    def __init__(self, path: Path | str, readonly: bool = False, migrations: list[str] | None = None,
+                 journal_mode: str = "WAL") -> None:
         self.path = str(path)
         self.readonly = readonly
+        self.migrations = MIGRATIONS if migrations is None else migrations
         self._lock = threading.RLock()
         if self.path != ":memory:" and not readonly:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         uri = f"file:{self.path}?mode=ro" if readonly else self.path
         self.conn = sqlite3.connect(uri, uri=readonly, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
-        if not readonly:
-            self.conn.execute("PRAGMA busy_timeout=10000")  # sérialise les écrivains inter-processus
-            self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=10000")  # sérialise les écrivains inter-processus
+        if readonly:
+            self.conn.execute("PRAGMA query_only=1")
+        else:
+            if journal_mode not in ("WAL", "DELETE"):
+                raise ValueError(journal_mode)
+            self.conn.execute(f"PRAGMA journal_mode={journal_mode}")
             self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute("PRAGMA foreign_keys=ON")
             self.migrate()
@@ -112,7 +122,7 @@ class Database:
     def migrate(self) -> int:
         with self._lock:
             cur = self.conn.execute("PRAGMA user_version").fetchone()[0]
-            for i, sql in enumerate(MIGRATIONS[cur:], start=cur + 1):
+            for i, sql in enumerate(self.migrations[cur:], start=cur + 1):
                 self.conn.execute("BEGIN IMMEDIATE")
                 try:
                     for stmt in [s for s in sql.split(";") if s.strip()]:

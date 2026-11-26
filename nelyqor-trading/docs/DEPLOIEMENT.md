@@ -50,7 +50,7 @@ Laisser tourner pour accumuler des décisions réelles hors échantillon.
 1. Créer la clé API (docs/SECURITE.md), la déposer dans `secrets/`.
 2. Recette sur le serveur, depuis le clone (l'image de production n'embarque pas les tests) :
    `python3 -m venv .venv && .venv/bin/pip install -r requirements.lock`, puis
-   `docker compose stop engine && PYTHON=.venv/bin/python NELYQOR_DB=/var/lib/docker/volumes/nelyqor_data/_data/nelyqor.db scripts/acceptance.sh --record && docker compose start engine`.
+   `docker compose stop engine && PYTHON=.venv/bin/python NELYQOR_DB=/var/lib/docker/volumes/nelyqor_engine_data/_data/engine.db scripts/acceptance.sh --record && docker compose start engine`.
 3. `.env` : `NELYQOR_REAL_TRADING_ALLOWED=true`, puis `docker compose up -d`.
 4. PWA › Réglages › « Demander l'activation du réel » : cocher les déclarations, mot de passe, phrase exacte.
 5. Le moteur vérifie les pré-requis et réconcilie ; en cas de refus, les raisons sont affichées.
@@ -67,3 +67,27 @@ restent consultables via `/api/incidents`. Web Push iOS : non implémenté en V1
   Sans lui, après restauration, le moteur passe en INCIDENT (levée par une reprise signée).
 - Arrêt d'urgence sans l'iPhone : `scripts/emergency_stop.sh` (dépose `/state/ARRET_URGENCE`).
 - Après un arrêt d'urgence ou une pause, attendre 30 s avant de signer une reprise (tolérance d'horloge).
+
+## 9. Bases séparées API / moteur (phase 5)
+| Volume | Fichier | Moteur | API |
+|---|---|---|---|
+| `engine_data` (`/engine`) | `engine.db` : journal, intentions, flux, décisions, journal des commandes | lecture/écriture | **aucun accès** |
+| `commands` (`/commands`) | `commandes.db` : table `control_commands` seule | lecture seule (`:ro`) | écriture |
+| `display` (`/display`) | `affichage.db` : copie d'affichage (≤ 10 s) | écriture (jamais relue) | lecture seule (`:ro`) |
+| `api_data` (`/apidata`) | `api.db` : audit des connexions/demandes | aucun accès | écriture |
+| `engine_state` (`/state`) | magasin signé, `ARRET_URGENCE` | lecture/écriture | aucun accès |
+
+Migration depuis une installation phase 4 (volume `data`, `nelyqor.db`), moteur et API ARRÊTÉS :
+```bash
+docker compose stop engine api
+docker compose run --rm --no-deps -v nelyqor_data:/old engine python -c \
+  "import sqlite3; s=sqlite3.connect('/old/nelyqor.db'); d=sqlite3.connect('/engine/engine.db'); s.backup(d); print(d.execute('PRAGMA integrity_check').fetchone())"
+docker compose up -d && docker volume rm nelyqor_data   # après vérification
+```
+L'ancienne base était modifiable par l'API : si le réel a été activé, vérifier la première réconciliation (aucun
+écart, sinon pause) avant toute reprise. Sauvegardes : `NELYQOR_DB=/var/lib/docker/volumes/nelyqor_engine_data/_data/engine.db
+scripts/backup.sh` (`commandes.db`/`affichage.db` sont dérivées et non sauvegardées).
+
+En mode réel, la PWA affiche `capital_authentifie` (`/api/status`) : si `ok=false`, les achats réels sont suspendus
+(écart journal/soldes, soldes Bitvavo illisibles ou périmés) ; ventes et protections continuent. Rapprocher un flux
+réel (`ack_flow`) demande la phrase de signature.

@@ -10,7 +10,7 @@ from backend.core.clock import FakeClock
 from backend.core.config import ROOT
 from backend.guardian.guardian import REAL_CONFIRMATION_PHRASE, State
 from backend.market_data.models import MarketInfo
-from tests.conftest import BTC_RAW, STATE_KEY
+from tests.conftest import BTC_RAW, STATE_KEY, post_command
 from tests.test_resilience import CMD_KEY, RealSim, make_engine, signed_payload, valid_proof
 
 FIELDS = {"confirmation": REAL_CONFIRMATION_PHRASE, "declare_retrait_desactive": True, "declare_ip_fixe": True,
@@ -18,7 +18,7 @@ FIELDS = {"confirmation": REAL_CONFIRMATION_PHRASE, "declare_retrait_desactive":
 
 
 def submit(db, cid, ts, command, payload):
-    db.exec("INSERT INTO control_commands VALUES(?,?,?,?,'pending',NULL,NULL)", (cid, ts, command, json.dumps(payload)))
+    post_command(db, cid, ts, command, payload)  # canal commandes.db (phase 5), pas la base du moteur
 
 
 def result(db, cid):
@@ -155,18 +155,44 @@ async def test_command_taken_once_by_concurrent_loops(tmp_path):
     clock = FakeClock(1_770_000_000_000)
     eng_a, db = make_engine(tmp_path, clock)
     submit(db, "p1", clock.now_ms(), "emergency_stop", {})
-    stale = db.q("SELECT * FROM control_commands WHERE status='pending' ORDER BY ts")  # lu par B avant A
+    stale = eng_a.inbox.candidates(0, {"emergency_stop"})  # lu par B avant que A ne le prenne
     await eng_a.process_commands()
-    eng_b, db_b = make_engine(tmp_path, clock)  # seconde boucle sur la même base
-    db_b.q = lambda sql, args=(): stale if "status='pending'" in sql else type(db_b).q(db_b, sql, args)  # type: ignore[method-assign]
+    eng_b, db_b = make_engine(tmp_path, clock)  # seconde boucle sur la même base du moteur
+    eng_b.inbox.candidates = lambda since, always: stale  # type: ignore[method-assign]
     await eng_b.process_commands()
     n = db.one("SELECT COUNT(*) n FROM audit WHERE action='arret_urgence'")["n"]
     assert n == 1
 
 
+async def test_api_cannot_replay_processed_command_by_resetting_channel(tmp_path):
+    """Phase 5 : la prise est journalisée dans la base du MOTEUR. Remettre la commande « pending » dans le canal,
+    la supprimer puis la ré-insérer (même identifiant) ne la fait jamais ré-exécuter."""
+    from backend.storage.channels import open_command_writer
+
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = make_engine(tmp_path, clock)
+    await eng.step()
+    submit(db, "s1", clock.now_ms(), "emergency_stop", {})
+    await eng.process_commands()
+    submit(db, "r1", clock.now_ms(), "resume", {})
+    await eng.process_commands()
+    assert eng.guardian.state == State.SIMULATION
+    w = open_command_writer(eng.inbox.path)
+    w.exec("UPDATE control_commands SET status='pending', processed_ms=NULL, result=NULL")
+    w.exec("DELETE FROM control_commands WHERE id='s1'")
+    w.close()
+    submit(db, "s1", clock.now_ms(), "emergency_stop", {})
+    await eng.process_commands()
+    assert eng.guardian.state == State.SIMULATION
+    assert db.one("SELECT COUNT(*) n FROM audit WHERE action='arret_urgence'")["n"] == 1
+    assert result(db, "s1")["ok"]  # résultat d'origine conservé dans le journal du moteur
+
+
 async def test_interrupted_command_not_replayed_after_crash(tmp_path):
     clock = FakeClock(1_770_000_000_000)
     eng, db = make_engine(tmp_path, clock)
+    submit(db, "c1", clock.now_ms(), "emergency_stop", {})  # toujours présente dans le canal de l'API
+    # prise journalisée par le moteur, puis crash avant exécution
     db.exec("INSERT INTO control_commands VALUES('c1',?,'emergency_stop','{}','processing',NULL,NULL)", (clock.now_ms(),))
     db.close()
     eng2, db2 = make_engine(tmp_path, clock)  # redémarrage

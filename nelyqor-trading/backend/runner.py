@@ -7,6 +7,11 @@ réconciliation (réel, 5 min) -> instantané d'equity (1/min) -> heartbeat.
 Deux exécuteurs coexistent : SIMULATION (papier, toujours actif, comparaison permanente) et RÉEL (créé si
 des clés existent). Les entrées réelles exigent l'état REEL_AUTORISE ; la gestion des positions réelles
 existantes (stops natifs, sorties) continue même si le réel est désactivé ou en pause.
+
+Phase 5 — bases séparées (backend/storage/channels.py) : le moteur possède `engine.db` (volume réservé), LIT les
+commandes de l'API dans `commandes.db` (lecture seule, contenu non fiable, prise dans son propre journal) et
+PUBLIE une copie d'affichage dans `affichage.db`, qu'il ne relit jamais. Un achat RÉEL est dimensionné sur le
+capital AUTHENTIFIÉ (soldes Bitvavo recoupés avec le journal : backend/accounting/authenticated.py).
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ from typing import Any
 
 import pandas as pd
 
+from .accounting.authenticated import AuthCapital, authenticate_capital, unavailable
 from .accounting.ledger import ExternalFlow, Fill, Ledger
 from .accounting.reconcile import reconcile
 from .core.clock import Clock, new_id
@@ -37,6 +43,7 @@ from .market_data.universe import MarketState, check_eligibility, diff_markets, 
 from .notify.notifier import Notifier
 from .portfolio.decision import DecisionEngine, HeldPosition
 from .research.registry import Registry
+from .storage.channels import CommandInbox, DisplayPublisher
 from .storage.db import Database
 from .strategies.base import build_strategies
 
@@ -47,14 +54,26 @@ COMMAND_TTL_MS = 10 * 60_000  # une commande non traitée en 10 min expire (sauf
 ALWAYS_VALID_COMMANDS = {"pause", "emergency_stop"}
 ENTRY_LIMIT_TTL_MS = 15 * 60_000
 RECON_OVERLAP_MS = 7 * 86_400_000
+COMMAND_FUTURE_TOLERANCE_MS = 60_000  # commande datée du futur (horloge de l'API) : refusée au-delà
+COMMAND_SCAN_MS = 86_400_000  # fenêtre de lecture du canal : au-delà du TTL, la commande est journalisée « expirée »
+AUTH_REFRESH_MS = 5_000  # soldes relus chez Bitvavo à chaque cycle de décision (au plus une fois par 5 s)
+KNOWN_COMMANDS = {"pause", "emergency_stop", "resume", "activate_real", "deactivate_real", "liquidation_estimate",
+                  "liquidation_confirm", "ack_flow"}
 
 
 class Engine:
     def __init__(self, settings: Settings, db: Database, rest: Any, clock: Clock | None = None,
                  limits: HardLimits | None = None, state_key: bytes | None = None,
-                 command_key: bytes | None = None, store_path: Path | None = None) -> None:
+                 command_key: bytes | None = None, store_path: Path | None = None,
+                 commands_path: Path | None = None, display_path: Path | None = None) -> None:
         self.s, self.db, self.rest = settings, db, rest
         self.clock = clock or Clock()
+        # canal d'ENTRÉE (lecture seule, contenu non fiable) et canal de SORTIE (écriture seule, jamais relu) :
+        # aucun des deux n'est la base du moteur
+        self.inbox = CommandInbox(commands_path or settings.commands_file)
+        self.display = DisplayPublisher(db, display_path or settings.display_file, self.clock.now_ms)
+        self._auth: AuthCapital | None = None
+        self._auth_cache: tuple[int, list[dict[str, Any]]] | None = None
         self.limits = limits or HardLimits.load()
         self.params = load_strategy_params()
         from .core.engine_store import EngineStore
@@ -343,21 +362,38 @@ class Engine:
 
     # ------------------------------------------------------------ commandes de contrôle (depuis l'API)
     async def process_commands(self) -> None:
+        """Commandes déposées par l'API dans `commandes.db` (lecture SEULE, contenu non fiable). La prise se fait
+        dans le journal de la base du MOTEUR (INSERT OR IGNORE sur l'identifiant) : une commande n'est exécutée
+        qu'une fois, même si l'API la remet « pending », la ré-insère ou si deux boucles la lisent."""
         now = self.clock.now_ms()
-        for cmd in self.db.q("SELECT * FROM control_commands WHERE status='pending' ORDER BY ts"):
+        processed = 0
+        for cmd in self.inbox.candidates(now - COMMAND_SCAN_MS, ALWAYS_VALID_COMMANDS):
             # marquage « processing » AVANT exécution : en cas de crash, la commande n'est pas rejouée ;
             # prise atomique : si une autre boucle/instance l'a déjà prise, elle n'est jamais exécutée deux fois
             with self.db.tx() as cx:
-                taken = cx.execute("UPDATE control_commands SET status='processing' WHERE id=? AND status='pending'",
-                                   (cmd["id"],)).rowcount
+                taken = cx.execute("INSERT OR IGNORE INTO control_commands(id,ts,command,payload,status) "
+                                   "VALUES(?,?,?,?,'processing')",
+                                   (cmd["id"], cmd["ts"], cmd["command"], cmd["payload"])).rowcount
             if taken != 1:
                 continue
-            payload = json.loads(cmd["payload"] or "{}")
-            actor = payload.get("actor", "owner")
+            processed += 1
             c = cmd["command"]
             res: dict[str, Any]
             try:
-                if c not in ALWAYS_VALID_COMMANDS and now - int(cmd["ts"]) > COMMAND_TTL_MS:
+                payload = json.loads(cmd["payload"] or "{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("charge utile invalide")
+            except ValueError:
+                payload = None
+            actor = str(payload.get("actor", "owner"))[:32] if payload else "owner"
+            try:
+                if payload is None:
+                    res = {"ok": False, "reasons": ["charge utile invalide ou trop volumineuse"]}
+                elif c not in KNOWN_COMMANDS:
+                    res = {"ok": False, "reasons": ["commande inconnue"]}
+                elif c not in ALWAYS_VALID_COMMANDS and int(cmd["ts"]) > now + COMMAND_FUTURE_TOLERANCE_MS:
+                    res = {"ok": False, "reasons": ["commande datée du futur : refusée"]}
+                elif c not in ALWAYS_VALID_COMMANDS and now - int(cmd["ts"]) > COMMAND_TTL_MS:
                     res = {"ok": False, "reasons": ["commande expirée (non traitée dans les 10 minutes)"]}
                 elif c == "pause":
                     self.guardian.pause(actor, payload.get("reason", "pause manuelle"))
@@ -401,13 +437,23 @@ class Engine:
                 elif c == "liquidation_confirm":
                     res = await self.liquidate(payload)
                 elif c == "ack_flow":
-                    res = self.ack_flow(payload["flow_id"], payload.get("note", "rapproché manuellement"))
+                    res = self.ack_flow(str(payload["flow_id"]), str(payload.get("note", "rapproché manuellement"))[:500],
+                                        payload)
                 else:
                     res = {"ok": False, "reasons": ["commande inconnue"]}
             except Exception as e:  # noqa: BLE001
                 res = {"ok": False, "reasons": [f"{type(e).__name__}: {e}"]}
             self.db.exec("UPDATE control_commands SET status='done', processed_ms=?, result=? WHERE id=?",
                          (self.clock.now_ms(), json.dumps(res, default=str, ensure_ascii=False), cmd["id"]))
+        if processed:
+            self.publish_display(force=True)  # résultat visible sans attendre le prochain instantané
+
+    def publish_display(self, force: bool = False) -> None:
+        """Copie d'affichage pour l'API. Un échec (disque plein…) ne doit jamais bloquer le moteur."""
+        try:
+            self.display.publish(force=force)
+        except Exception as e:  # noqa: BLE001
+            log.warning("publication de l'affichage impossible", extra={"data": {"err": repr(e)}})
 
     def _verify_signed(self, command: str, payload: dict[str, Any]) -> str | None:
         from .core.command_sig import verify
@@ -423,10 +469,18 @@ class Engine:
                 self.db.kv_set("used_command_nonces", used, self.clock.now_ms())
         return why
 
-    def ack_flow(self, flow_id: str, note: str) -> dict[str, Any]:
+    def ack_flow(self, flow_id: str, note: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         r = self.db.one("SELECT * FROM external_flows WHERE id=?", (flow_id,))
         if r is None:
             return {"ok": False, "reasons": ["flux inconnu"]}
+        if r["mode"] == "real" and self.command_key is not None:
+            # rapprocher un flux RÉEL modifie la comptabilité du compte : signature du propriétaire exigée
+            why = self._verify_signed("ack_flow", payload or {})
+            signed = (payload or {}).get("sig_fields") or {}
+            if why is None and signed.get("flow_id") != flow_id:
+                why = "champs signés incohérents (flow_id)"
+            if why is not None:
+                return {"ok": False, "needs_signature": "ack_flow", "reasons": [f"rapprochement d'un flux réel : {why}"]}
         px = self.prices_eur()
         amt = D(r["amount"])
         val = amt if r["symbol"] == "EUR" else amt * px.get(r["symbol"], ZERO)
@@ -445,6 +499,8 @@ class Engine:
             "integrite_etat": self.guardian.verify_integrity() if self.guardian.integrity_enabled else not for_real,
         }
         if for_real:
+            # phase 5 : le réel exige que la base du moteur, le canal de commandes et l'affichage soient distincts
+            pf["bases_separees"] = self.bases_separated()
             pf["cles_api_presentes"] = self.real_exchange is not None and getattr(self.real_exchange, "has_credentials", False)
             from .core.attest import verify_proof
             from .core.config import ROOT
@@ -455,6 +511,58 @@ class Engine:
             pf["reconciliation_ok"] = await self._reconcile_real() if self.real_exchange else False
         return pf
 
+    def bases_separated(self) -> bool:
+        if self.db.path == ":memory:":
+            return False
+        paths = {Path(self.db.path).resolve(), self.inbox.path.resolve(), self.display.path.resolve()}
+        return len(paths) == 3
+
+    # ------------------------------------------------------------ capital authentifié (phase 5)
+    async def authenticated_capital(self) -> AuthCapital:
+        """Soldes lus CHEZ BITVAVO par le moteur (requête signée avec ses clés), recoupés avec son journal.
+        Jamais lu dans une base : ni la base d'affichage, ni le canal de commandes n'entrent dans ce calcul."""
+        now = self.clock.now_ms()
+        ex = self.real_exchange
+        res: AuthCapital
+        if ex is None:
+            res = unavailable(now, "aucun compte réel attaché")
+        else:
+            cache = self._auth_cache
+            if cache is None or now - cache[0] > AUTH_REFRESH_MS:
+                try:
+                    bal = await ex.balance()
+                    if not isinstance(bal, list):
+                        raise ValueError("réponse de solde inattendue")
+                    cache = (self.clock.now_ms(), bal)
+                    self._auth_cache = cache
+                except Exception as e:  # noqa: BLE001 - erreur réseau, API, format : jamais d'achat sur l'inconnu
+                    self._auth_cache = None
+                    cache = None
+                    log.error("soldes Bitvavo illisibles", extra={"data": {"err": repr(e)}})
+                    res = unavailable(now, f"{type(e).__name__}")
+            if cache is not None:
+                led = self._ledger("real")
+                excluded = set(self._kv_get("real_excluded_symbols", [], "real"))
+                res = authenticate_capital(cache[1], cache[0], self.clock.now_ms(), dict(led.s.cash),
+                                           {s: p.qty for s, p in led.s.positions.items()}, excluded,
+                                           self.prices_eur(), self.limits)
+        self._auth = res
+        self.db.kv_set("capital_authentifie", res.as_display(), now)  # copie d'affichage
+        if not res.ok:
+            self.notifier.notify("securite", "Achats réels suspendus : " + "; ".join(res.reasons),
+                                 dedup_key=f"auth-{res.reasons[0][:48]}")
+        return res
+
+    @staticmethod
+    def _apply_auth(chk: IntentCheck, auth: AuthCapital | None) -> IntentCheck:
+        if auth is not None and auth.ok:
+            chk.authenticated_equity, chk.authenticated_cash, chk.authenticated_ts = (auth.equity_eur,
+                                                                                      auth.eur_available, auth.ts)
+        else:
+            chk.authenticated_equity = chk.authenticated_cash = chk.authenticated_ts = None
+            chk.authenticated_reasons = list(auth.reasons) if auth is not None else ["soldes non vérifiés"]
+        return chk
+
     async def _reconcile_real(self) -> bool:
         """Compare le journal réel aux soldes Bitvavo ; enregistre les flux identifiés, signale les autres.
         Premier rapprochement : les soldes existants sont enregistrés comme solde d'ouverture (EUR) ; les
@@ -464,6 +572,7 @@ class Engine:
             return False
         try:
             bal = await ex.balance()
+            self._auth_cache = (self.clock.now_ms(), list(bal))  # soldes frais : réutilisés pour le capital authentifié
             since = int(self.db.kv_get("recon_since_ms", 0))
             start = max(0, since - RECON_OVERLAP_MS) if since else None
             deps = await ex.deposit_history(start)
@@ -618,6 +727,13 @@ class Engine:
         px = self.prices_eur()
         equity = led.value_eur(px)
         cash = led.s.cash.get("EUR", ZERO)
+        auth: AuthCapital | None = None
+        if mode == "real":
+            # phase 5 : dimensionnement sur min(journal, soldes Bitvavo authentifiés) ; écart ou soldes
+            # invérifiables => equity/trésorerie nulles ET veto du Guardian (aucun achat ; ventes permises)
+            auth = await self.authenticated_capital()
+            equity, cash = auth.sizing(equity, cash)
+        auth_spent = ZERO
         held = self.held_positions(mode)
         exposure = sum((h.qty * px.get(h.market.split("-")[0], ZERO) for h in held.values()), ZERO)
         meta = self._kv_get(f"position_meta_{mode}", {}, mode)
@@ -647,6 +763,10 @@ class Engine:
                                 self._consider_reallocation(mode, p, held)
                         continue
                     chk = self._check(st, "buy", p.amount_quote, True, equity, cash, exposure + p.amount_quote, mode)
+                    if mode == "real":
+                        self._apply_auth(chk, auth)
+                        if chk.authenticated_cash is not None:
+                            chk.authenticated_cash -= auth_spent  # achats déjà acceptés dans ce cycle
                     chk.reinforcement_of_loser = mk in held and (st.last_price or ZERO) < held[mk].avg_cost
                     req = OrderRequest(mk, "buy", p.order_type,
                                        amount_quote=p.amount_quote if p.order_type == "market" else None,
@@ -659,6 +779,7 @@ class Engine:
                         meta[mk] = {"entry_ts": now, "strategy": p.strategy, "stop": str(p.details.get("stop", 0))}
                         cash -= p.amount_quote
                         exposure += p.amount_quote
+                        auth_spent += p.amount_quote
                     break  # une seule entrée par marché et par cycle
             scanner.append(row)
         self._kv_set(f"position_meta_{mode}", meta, mode)
@@ -798,6 +919,7 @@ class Engine:
                                             "n_markets": len(self.markets), "data_ok": data_ok,
                                             "last_data_ms": self.last_data_ms,
                                             "real_exec": self.real_exec is not None}, self.clock.now_ms())
+        self.publish_display()  # l'API ne voit que cette copie (affichage.db, montée :ro dans l'API)
 
     async def step(self) -> None:
         now = self.clock.now_ms()
@@ -868,6 +990,8 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
     store = Path(os.environ.get("NELYQOR_ENGINE_STATE_DIR", "/state")) / "etat_moteur.json"
     eng = Engine(s, db, public, state_key=_load_state_key(s), command_key=bytes.fromhex(ck) if ck else None,
                  store_path=store)
+    if not eng.bases_separated():
+        log.error("base du moteur, canal de commandes et affichage NON distincts : mode réel impossible")
     tg_token, tg_chat = s.read_secret("telegram_bot_token"), os.environ.get("TELEGRAM_CHAT_ID")
     if tg_token and tg_chat:
         register_secret(tg_token)

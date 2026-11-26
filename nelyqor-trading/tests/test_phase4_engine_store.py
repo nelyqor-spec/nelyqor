@@ -15,7 +15,7 @@ from backend.guardian.guardian import REAL_CONFIRMATION_PHRASE, IntentCheck, Sta
 from backend.market_data.models import MarketInfo
 from backend.runner import Engine
 from backend.storage.db import Database
-from tests.conftest import BTC_RAW, STATE_KEY
+from tests.conftest import BTC_RAW, STATE_KEY, post_command
 from tests.fake_bitvavo import FakePublic
 from tests.test_resilience import CMD_KEY, RealSim, signed_payload, valid_proof
 
@@ -44,7 +44,7 @@ async def to_real(tmp_path, clock):
 
 
 def submit(db, cid, ts, command, payload):
-    db.exec("INSERT INTO control_commands VALUES(?,?,?,?,'pending',NULL,NULL)", (cid, ts, command, json.dumps(payload)))
+    post_command(db, cid, ts, command, payload)  # canal commandes.db (phase 5), pas la base du moteur
 
 
 def result(db, cid):

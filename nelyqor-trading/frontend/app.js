@@ -203,7 +203,19 @@ function bind() {
     a.download = "operations.csv"; a.click(); URL.revokeObjectURL(a.href);
   });
   on("btn-fisc", async () => { const r = await api(`/api/export/fiscal?year=${new Date().getFullYear()}`); sheet(`<h2>Aide 2086</h2><div class="row"><span>Total prix de cession</span><b>${eur(r.total_prix_cession)}</b></div><div class="row"><span>Plus-values</span><b>${eur(r.total_plus_values)}</b></div><div class="row"><span>Sous le seuil de 305 €</span><b>${r.sous_seuil_305 ? "oui" : "non"}</b></div><p class="reason">${esc(r.avertissement)}</p><p class="reason">${esc(r.note_valorisation)}</p>`); });
-  document.querySelectorAll("[data-ack]").forEach((b) => { b.onclick = () => run(() => cmd("/api/control/ack_flow", { flow_id: b.dataset.ack, note: "rapproché depuis l'iPhone" })); });
+  document.querySelectorAll("[data-ack]").forEach((b) => { b.onclick = () => run(async () => {
+    const body = { flow_id: b.dataset.ack, note: "rapproché depuis l'iPhone" };
+    const r = await post("/api/control/ack_flow", body); const res = demo ? r : await waitCommand(r.command_id);
+    if (res.needs_signature !== "ack_flow") { sheet(`<p>${res.ok ? "✔ Fait" : "✖ Refusé"}</p>${(res.reasons || []).map((x) => `<p class="reason">${esc(x)}</p>`).join("")}`); render(); return; }
+    // flux RÉEL : le rapprochement modifie la comptabilité, signature du propriétaire exigée (phase 5)
+    sheet(`<h2>Rapprocher un flux réel</h2><p class="warn">Le mouvement sera intégré au journal du compte réel.</p>
+      <input id="ack-sp" type="password" placeholder="Phrase de signature (jamais envoyée)" autocomplete="off">
+      <button class="btn danger" id="ack-go">Signer et rapprocher</button>`);
+    $("#ack-go").onclick = () => run(async () => {
+      const sig = await signed("ack_flow", { flow_id: body.flow_id }, $("#ack-sp").value);
+      await cmd("/api/control/ack_flow", { ...body, ...sig });
+    });
+  }); });
   on("btn-liq", async () => {
     const r = await post("/api/control/liquidation_estimate"); const res = demo ? r : await waitCommand(r.command_id);
     const est = res.estimate;

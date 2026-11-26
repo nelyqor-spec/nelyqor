@@ -2,9 +2,9 @@
 
 ```text
  iPhone / PWA ──HTTPS (Caddy)──> api (FastAPI, rôle "api", AUCUNE clé Bitvavo)
-                                   │  écrit control_commands / lit l'état
+                                   │  écrit commandes.db (control_commands) / lit affichage.db (:ro)
                                    ▼
-                           SQLite WAL (/data/nelyqor.db)
+          commandes.db ──(lecture seule)──> engine ──(écrit)──> affichage.db   [phase 5 : engine.db au moteur SEUL]
                                    ▲
  Bitvavo REST/WS <── engine (rôle "engine", SEUL détenteur des clés)
                       QUANT (signaux, risque, dimensionnement) → GUARDIAN (veto) → EXECUTION
