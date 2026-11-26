@@ -59,13 +59,15 @@ def position_cap(equity_eur: Decimal, risk: float, confidence: float, base_fract
 
 
 def cvar(losses: np.ndarray, alpha: float = 0.95) -> float:
-    """Perte moyenne dans la queue défavorable (1-alpha). Prudence petits échantillons :
-    on prend au moins 3 observations dans la queue et on ne descend jamais sous la pire perte / 2."""
-    losses = np.sort(np.asarray(losses, dtype=float))[::-1]
+    """Perte moyenne dans la queue défavorable (1-alpha), k = ceil(n(1-alpha)) pires pertes. Prudence petits
+    échantillons : jamais sous la pire perte / 2. (Phase 5 : l'ancien minimum de 3 observations rendait
+    l'estimateur MOINS prudent quand n < 60 — défaut relevé par l'audit mathématique ; NaN ignorés.)"""
+    losses = np.asarray(losses, dtype=float)
+    losses = np.sort(losses[np.isfinite(losses)])[::-1]
     n = len(losses)
     if n == 0:
         return 0.0
-    k = max(3, int(np.ceil(round(n * (1 - alpha), 9))))  # round : évite 1000*0.05 -> 50.000000000000004
+    k = max(1, int(np.ceil(round(n * (1 - alpha), 9))))  # round : évite 1000*0.05 -> 50.000000000000004
     k = min(k, n)
     est = float(losses[:k].mean())
     if n < 100:
@@ -85,7 +87,7 @@ def block_bootstrap(returns: np.ndarray, horizon: int, n_scen: int, block: int, 
     out = np.zeros((n_scen, A))
     nb = int(np.ceil(horizon / block))
     for s in range(n_scen):
-        starts = rng.integers(0, T - block, nb)
+        starts = rng.integers(0, T - block + 1, nb)  # borne haute exclue : +1 pour pouvoir tirer le dernier bloc
         path = np.concatenate([r[i: i + block] for i in starts])[:horizon]
         out[s] = path.sum(axis=0)
     return out

@@ -190,3 +190,98 @@ def test_accounting_identity_every_bar():
     assert eng.cash >= 0 and (eng.qty == 0).all()
     assert res.equity.iloc[-1] == pytest.approx(eng.cash, abs=1e-9)
     assert res.fees_eur == pytest.approx(sum(o["fee"] for o in res.orders), abs=1e-9)
+
+
+def test_vectorized_classify_equals_reference_loop():
+    from backend.research.xsection_v4 import classify, classify_reference
+    rng = np.random.default_rng(7)
+    for trial in range(20):
+        n, k = 300, 12
+        close = rng.normal(100, 1, (n, k))
+        close[rng.random((n, k)) < 0.15] = np.nan  # absences
+        close[: rng.integers(0, 50), rng.integers(0, k)] = np.nan  # cotations tardives
+        close[200:, rng.integers(0, k)] = np.nan  # disparition
+        close[rng.integers(0, n, 3)] = np.nan  # pannes globales
+        pol = DataPolicy(gap_days=rng.integers(1, 10) / 24)
+        a, oa = classify(close, H, pol)
+        b, ob = classify_reference(close, H, pol)
+        assert (oa == ob).all() and (a == b).all(), trial
+
+
+# ---------------------------------------------------------------- corrections de la contre-expertise (phase 5)
+def test_d1_delisted_market_leaves_denominator():
+    """10 marchés ; 9 radiés à t=1 (plus jamais de bougie) ; seul A cote. Ancien dénominateur (10 marchés vus) :
+    part 1/10 < 10 % ... ici = 10 % -> limite ; avec 20 marchés, part 1/20 -> PANNE fictive pour toujours.
+    Correction : après `gap` bougies brutes, les radiés sortent du dénominateur -> A redevient non-panne."""
+    from backend.research.xsection_v4 import classify, classify_reference
+    n, k = 40, 20
+    C = np.full((n, k), np.nan)
+    C[:, 0] = 1.0
+    C[0, :] = 1.0
+    pol = DataPolicy(gap_days=10 / 24)  # gap = 10 bougies horaires
+    for fn in (classify, classify_reference):
+        st, out = fn(C, H, pol)
+        assert out[1:10].all()  # au début : 1/20 présent -> panne (indiscernable d'une collecte défaillante)
+        assert not out[11:].any()  # ensuite : dénominateur = marchés récemment actifs -> plus de panne fictive
+        assert (st[11:, 0] == ACTIF).all()
+
+
+def test_d1_no_market_present_is_outage():
+    from backend.research.xsection_v4 import classify, classify_reference
+    C = np.ones((6, 3))
+    C[3, :] = np.nan
+    for fn in (classify, classify_reference):
+        st, out = fn(C, H, DataPolicy())
+        assert out[3] and (st[3] == PANNE).all()
+
+
+def test_d2_pending_sell_not_cancelled_by_empty_decision():
+    """Vente limite à t=1 (validité 3) non traversée à t=2 ; la stratégie renvoie {} à t=2 : la vente reste en
+    attente et est remplie à t=3 quand le haut traverse."""
+    cfg = ExecConfig(slippage_bps=0, mode="limit", ttl_bars=3, through_bps=0, limit_offset_bps=0)
+    a = bars([(10, 10, 9, 10, 1e6), (10, 10, 9, 10, 1e6), (10, 10, 10, 10, 1e6), (10, 10, 10, 10, 1e6), (10, 11, 10, 10, 1e6), flat(10, 1)[0]])
+    res, eng = run({"A": a}, {0: {"A": 0.5}, 2: {"A": 0.0}}, cfg=cfg, liquidate_at_end=False)
+    assert eng.qty[0] == 0 and [o["side"] for o in eng.orders_log] == ["buy", "sell"]
+
+
+def test_d4_limit_sell_volume_cap_keeps_remainder():
+    """Détention 5 unités à 10 ; vente limite ; capacité par bougie 4 × 10 × 5 % = 2 € ... trop faible (< 5 €) ;
+    volume 20 -> capacité 10 € = 1 unité par bougie : la vente s'étale, le reliquat reste en attente."""
+    cfg = ExecConfig(slippage_bps=0, mode="limit", ttl_bars=10, through_bps=0, limit_offset_bps=0, max_volume_share=0.05)
+    rows = [(10, 10, 9, 10, 1e6)] * 2 + [(10, 11, 10, 10, 20)] * 8
+    res, eng = run({"A": bars(rows)}, {0: {"A": 0.5}, 2: {"A": 0.0}}, cfg=cfg, liquidate_at_end=False)
+    sells = [o for o in eng.orders_log if o["side"] == "sell"]
+    assert len(sells) >= 3 and all(o["notional"] <= 10 + 1e-9 for o in sells[:-1])
+    assert res.stats["limite_partiels"] >= 2
+
+
+def test_d6_decision_at_last_bar_is_recorded():
+    a = bars(flat(10, 3))
+    res, eng = run({"A": a}, {2: {"A": 0.5}}, liquidate_at_end=False)
+    nx = eng.next_orders()
+    assert len(nx) == 1 and nx[0]["sens"] == "buy" and nx[0]["montant_eur"] == pytest.approx(50)
+    assert eng.qty[0] == 0  # non exécutée dans l'échantillon
+
+
+def test_d7_zero_or_nan_prices_are_absent_not_crash():
+    a = bars([(10, 10, 10, 10, 1e6), (np.nan, 10, 10, 10, 1e6), (10, 10, 10, 0.0, 1e6), (10, 10, 10, 10, 1e6)])
+    res, eng = run({"A": a}, {0: {"A": 0.5}}, liquidate_at_end=False)
+    # marché unique invalide = aucun marché présent -> PANNE (ordre gelé, ni annulé ni exécuté) puis exécution t=3
+    assert list(eng.state.ravel()) == [ACTIF, PANNE, PANNE, ACTIF]
+    assert eng.qty[0] > 0 and eng.orders_log[0]["i"] == 3
+    assert np.isfinite(res.equity).all()
+
+
+def test_d8_partial_sell_qty_floored_to_step():
+    cfg = ExecConfig(slippage_bps=0, amount_step=0.001)
+    a = bars(flat(3, 4))
+    res, eng = run({"A": a}, {0: {"A": 0.9}, 1: {"A": 0.3}}, cfg=cfg, liquidate_at_end=False)
+    q = eng.qty[0]
+    assert abs(q * 1000 - round(q * 1000)) < 1e-6
+
+
+def test_d9_aggregate_sorts_and_dedupes():
+    a = bars(flat(10, 4))
+    dup = pd.concat([a.iloc[[2, 0, 1]], a.iloc[[1]].assign(close=11.0), a.iloc[[3]]])
+    out = aggregate(dup, "2h", asof_ms=4 * H)
+    assert list(out.index) == [0, 2 * H] and out["close"].iloc[0] == 11.0

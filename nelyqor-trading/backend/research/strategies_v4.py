@@ -68,6 +68,10 @@ class Rotation:
         return [m for m, v in sc.items() if v > self.cfg.min_score]
 
     # 3) montant
+    def risk(self, i: int, m: str) -> float:
+        rv = float(self.P["rv"][m].iloc[i])
+        return risk_score_vol(rv, self.bpd) if np.isfinite(rv) else 100.0
+
     def size(self, i: int, m: str, e: float) -> float:
         p = self.p
         w = min(p.max_weight, (1 - p.reserve) * e / p.top_n)
@@ -75,7 +79,7 @@ class Rotation:
         daily = rv * np.sqrt(self.bpd) if np.isfinite(rv) else np.nan
         if p.sizing == "volatilite" and daily > 0:
             w *= float(np.clip(p.target_daily_vol / daily, 0.0, 1.0))
-        rs = risk_score_vol(rv, self.bpd) if np.isfinite(rv) else 100.0
+        rs = self.risk(i, m)
         if rs > p.risk_cut:
             w *= max(0.0, 1 - (rs - p.risk_cut) / (100 - p.risk_cut)) ** 2
         return float(w)
@@ -88,16 +92,30 @@ class Rotation:
         ranked = self.select(i, eng)
         keep_zone = set(ranked[: p.top_n + p.buffer])
         targets: dict[str, float] = {}
+        kept: list[str] = []
         for m in eng.held():
             held_bars = i - int(eng.entry_i[eng.j[m]])
-            if held_bars < p.min_hold_bars:
-                continue
-            if m not in keep_zone or (p.exit_on_risk_off and e <= 0):
+            if held_bars >= p.min_hold_bars and (m not in keep_zone or (p.exit_on_risk_off and e <= 0)):
                 targets[m] = 0.0
+                continue
+            kept.append(m)
+            # S4 : réduction SEULEMENT (jamais de renfort) d'une position conservée dont le risque dépasse 45/100
+            if held_bars >= p.min_hold_bars and self.risk(i, m) > p.risk_cut:
+                w_t = self.size(i, m, max(e, 0.0))
+                if eng.weight(m) > w_t + 0.02:
+                    targets[m] = w_t
         if e > 0:
+            # S1 : nouvelles entrées limitées aux places libres (top_n − positions conservées) et au budget restant
+            budget = (1 - p.reserve) * e - sum(targets.get(m, eng.weight(m)) for m in kept)
+            slots = p.top_n - len(kept)
             for m in ranked[: p.top_n]:
+                if slots <= 0 or budget <= 0:
+                    break
                 if m not in eng.held():
-                    targets[m] = self.size(i, m, e)
+                    w = min(self.size(i, m, e), budget)
+                    targets[m] = w
+                    budget -= w
+                    slots -= 1
         self.journal.append({"i": i, "exposition": e, "classement": ranked[: p.top_n + p.buffer], "cibles": targets})
         return targets
 
@@ -107,19 +125,22 @@ def ref_buy_hold(eng: Engine, market: str) -> Any:
     done = {"x": False}
 
     def s(i: int, e: Engine) -> dict[str, float]:
-        if not done["x"] and e.state[i, e.j[market]] == ACTIF:
-            done["x"] = True
+        jj = e.j[market]
+        if e.qty[jj] <= 0 and e.state[i, jj] == ACTIF and not done["x"]:  # S2 : « fait » = position réellement détenue
             return {market: 0.999}
+        if e.qty[jj] > 0:
+            done["x"] = True
         return {}
     return s
 
 
 def ref_btc_trend(P: dict[str, pd.DataFrame], cfg: XSConfig, market: str = "BTC-EUR", rebalance_bars: int = 1) -> Any:
     ema = P["close"][market].ewm(span=cfg.regime_ema, adjust=False, min_periods=cfg.regime_ema).mean()
+    cl = P["close"][market].to_numpy(float)
     on = (P["close"][market] > ema).to_numpy()
 
     def s(i: int, e: Engine) -> dict[str, float]:
-        if i % rebalance_bars:
+        if i % rebalance_bars or not np.isfinite(cl[i]):  # S3 : prix absent -> aucune décision (pas une sortie)
             return {}
         return {market: 0.999 if on[i] else 0.0}
     return s
