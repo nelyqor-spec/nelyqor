@@ -10,7 +10,7 @@ Date : 26/11/2026. Branche `claude/new-session-cv44ga`, PR n° 1 vers `main` (ou
 
 **Source des chiffres** : chaque chiffre vient d'un calcul exécuté ici ou sur GitHub Actions. Runs cités :
 `nelyqor-microstructure` 45805830505, `nelyqor-events` 45812366734, `nelyqor-deploy-check` 45853598003, 45854773632 et
-le run suivant le commit `854a041`, `nelyqor-prospective` n° 14 à 16.
+45859884345 (échec, § 11.1), 45861154677 et le run sur le commit final (§ 11.1), `nelyqor-prospective` n° 14 à 17.
 
 **Légende** : [RÉEL] mesuré sur un service réel · [SYNTHÉTIQUE] scénario construit pour tester le code · [HYPOTHÈSE]
 valeur supposée.
@@ -111,9 +111,10 @@ Le réseau de cet environnement bloque `bitvavo.com`, `docs.bitvavo.com` et `amf
 - **Contre-expertise indépendante** : 7 défauts (3 moyens : rappel au lieu de liquidation sur une discontinuité, sortie en
   attente jamais purgée, levier effectif non mesuré ; 4 mineurs), **tous corrigés**.
   - 5 des 7 tests de l'auditeur passent.
-  - **A4** exige un levier ≤ 1,0 à chaque clôture. Le modèle retenu mesure le levier et le réduit au-delà de 1,5×, à
-    l'ouverture suivante. C'est un choix de modèle documenté, pas un défaut ouvert.
-  - **A5** lisait un attribut interne supprimé par la correction. Le test est à réécrire ; le défaut a disparu.
+  - **A4** exigeait un levier ≤ 1,0 à chaque clôture : c'est mathématiquement impossible sans rééquilibrage continu.
+    Il est **remplacé** par un test de la borne démontrée (§ 11.2).
+  - **A5** lisait un attribut interne supprimé par la correction. Il est **remplacé** par un parcours du graphe d'objets
+    (§ 11.2).
 - **Limites** : marge isolée seulement, chemin intra-bougie inconnu (pessimiste), pas de profondeur de carnet en
   liquidation, aucune radiation d'un actif shorté, et **aucune donnée réelle utilisée**.
 
@@ -290,7 +291,8 @@ Le réseau de cet environnement bloque `bitvavo.com`, `docs.bitvavo.com` et `amf
 
 ## 8. Tests réussis
 
-- **Suite complète** : `pytest` **523 tests réussis**, `ruff` et `mypy` sans erreur (81 fichiers).
+- **Suite complète** : `pytest` **616 tests réussis** à la clôture (523 avant celle-ci), `ruff` et `mypy` sans erreur
+  (81 fichiers).
 - **Tests nouveaux de la phase 6** :
 
 | Fichier | Tests |
@@ -305,7 +307,9 @@ Le réseau de cet environnement bloque `bitvavo.com`, `docs.bitvavo.com` et `amf
   - local : 99 contrôles réussis, 0 échec, 1 non exécuté (le build, refait en CI) ; recette PWA 14/14 ;
   - CI run 45853598003 : vrai Dockerfile, 96 sur 97 (recette 13/14, ordre de la recette corrigé) ;
   - CI run 45854773632 : **vert** ;
-  - run suivant `854a041` : voir la PR.
+  - run 45859884345 (`854a041`) : **échec**, 99 sur 100 (§ 11.1) ;
+  - run 45861154677 (`a7ee622`) : **vert, 100 sur 100, 0 non exécuté**, recette 14/14 ;
+  - run sur le commit final : § 11.1.
 
 ## 9. Fonctionnalités : opérationnelles et expérimentales
 
@@ -329,3 +333,164 @@ Le réseau de cet environnement bloque `bitvavo.com`, `docs.bitvavo.com` et `amf
 - **Puissance statistique** : les hypothèses E1 ne pourront être évaluées qu'à 6 et 12 mois. Il est probable qu'elles ne
   soient pas soutenues.
 - **Infrastructure** : HTTPS, pare-feu, matériel cible et restauration sur de vrais volumes non vérifiés sans serveur.
+
+## 11. Clôture de la phase 6 (26/11/2026, soir)
+
+Une vérification externe du propriétaire confirme la documentation officielle de Bitvavo du 16/11/2026 : le trading sur
+marge n'est pas disponible pour l'exécution d'ordres par API. **Le Short reste exclusivement expérimental.**
+
+### 11.1 Dernier run Docker
+
+- **Run 45859884345** (commit `854a041`) : **ÉCHEC**, 99 sur 100. Contrôle en échec :
+  « caddy : /meta/command_salt servi (200) ».
+  - **Cause, dans le script de vérification et non dans le produit** : après le `chown 10001` des secrets factices, le
+    `chmod 644` du sel était lancé par l'utilisateur non root du runner GitHub, et refusé (« Operation not permitted »).
+    En local, le script tournait en root et le défaut était invisible.
+  - **Correction (`a7ee622`)** :
+    - le mode est appliqué dans le conteneur root, avec un contrôle `stat` qui fait échouer le script bruyamment ;
+    - la procédure de production, qui s'exécute en root, est réordonnée et vérifiée par `stat`.
+- **Run 45861154677** (`a7ee622`) : **SUCCÈS, 100 PASS, 0 FAIL, 0 SKIP**.
+  - Construction du vrai Dockerfile sur ubuntu-latest.
+  - Sel servi par Caddy (200, sel exact).
+  - Recette PWA 14/14.
+  - Montages, permissions, redémarrages, `kill -9`, coupures réseau, échange en panne ou périmé, arrêt d'urgence SSH.
+- **Run déclenché sur le commit final** `ae0aa49`, après les corrections de protection : résultat consigné en § 11.7.
+
+### 11.2 Les deux tests rouges de l'auditeur, réexaminés de façon indépendante
+
+**A4, levier**. Notations : short de notionnel n = w·E₀, collatéral M = n, produit de la vente P = n, quantité
+q = n/x₀.
+
+- À la clôture au prix x :
+  - équité : E(x) = E₀ − q(x − x₀) − frais ;
+  - levier effectif : L(x) = q·x / E(x), **strictement croissant** en x.
+- **Pourquoi l'ancien test ne pouvait pas passer** : la décision est prise à la clôture et ne s'exécute qu'à l'ouverture
+  suivante. Garantir L ≤ 1 à chaque clôture est donc impossible sans rééquilibrage continu.
+- **Borne démontrée** : la liquidation (santé (M+P)/(q·x) < 1,1) impose q·x < 2n/1,1, d'où
+  **L ≤ L_liq(w) = 1,818·w / (1 − 0,818·w)**, soit **1,538** pour w = 0,5.
+- **Nouveau test** (`tests/test_directional_audit.py::test_A4_*`), sur 200 trajectoires aléatoires haussières :
+  - la borne n'est jamais dépassée : maximum observé **1,537**, levier médian des maxima 1,358 ; 164 trajectoires sur 200
+    dépassent 1,2 ;
+  - chaque clôture au-delà du seuil de 1,2 est suivie, à l'ouverture suivante, d'une réduction, d'un stop, d'un rappel ou
+    d'une liquidation.
+
+**A5, accès au futur**. L'ancien test lisait `view._e`, supprimé par la correction. Il échouait par `AttributeError`, ce
+qui ne prouvait rien.
+
+- **Nouveau test** : parcours de tout le graphe d'objets atteignable depuis la vue (`gc.get_referents`, profondeur 4).
+  - Il ne doit y trouver aucun moteur et aucun tableau de plus de i+1 lignes.
+  - L'équité doit être identique avec des données tronquées.
+
+**Validation par mutation** : les deux nouveaux tests échouent bien quand on réintroduit le défaut, soit en désactivant
+la réduction du levier, soit en réinjectant une référence au moteur dans la vue. **Aucun défaut n'est masqué.** Les tests
+de l'auditeur sont intégrés au dépôt (7 sur 7 verts).
+
+### 11.3 Protection des positions (injection de fautes, `tests/test_phase6_invariant_protection.py`, 77 tests)
+
+**Invariant vérifié après chaque cycle**, y compris un cycle qui échoue, en simulation et sur le chemin réel simulé :
+toute position détenue satisfait l'une de ces conditions :
+- elle a un stop vivant **chez l'échange** ;
+- elle est marquée « non protégée » **et** une notification `arret_protection` la nomme.
+
+Fautes testées :
+- annulation du stop suivie d'une vente refusée, rejetée, au statut UNKNOWN ou en échec réseau ;
+- annulation rejetée, sans réponse, ou appliquée avec réponse perdue ;
+- décalage d'horloge de ±20 s et ±200 s ;
+- coupure réseau de 1 et de 3 cycles ;
+- redémarrage avec ou sans réseau ;
+- carnet sans prix, données périmées ;
+- ordre UNKNOWN sur un autre marché ;
+- scénario combiné ;
+- 6 calendriers de fautes aléatoires × 2 modes.
+
+**Cinq violations trouvées, toutes corrigées** (`ae0aa49`). Sans ces corrections, **17 tests échouent**.
+
+| Défaut | Violation | Correction |
+|---|---|---|
+| P1 | vente en échec réseau après l'annulation du stop : position nue, affichée « protégée », sans notification | notification, puis repose du stop ; chaque marché isolé dans `manage_positions` |
+| P2 | annulation non confirmée (relecture impossible) | stop réputé incertain, donc non protégé |
+| P3 | position non protégée non notifiée en simulation ; clé d'alerte commune aux modes | notification dans les deux modes, clé par mode |
+| P4 | redémarrage puis cycle en échec : stops papier perdus, toujours affichés protégés | filet `_audit_protections` en fin de cycle, même en échec : rétrograde sans jamais promouvoir |
+| P5 | position sans état de marché ou sans niveau de stop ignorée en silence | marquage et notification |
+
+Restent non couverts :
+- l'état réel d'un stop chez l'échange pendant une coupure, par nature inconnaissable ;
+- le vrai client HTTP avec ses relances ;
+- le WebSocket ;
+- les refus de signature liés à l'horloge ;
+- un `stopLossLimit` non exécuté ;
+- une modification de déclencheur interrompue ;
+- un vrai `kill -9` en plein cycle (simulé par une exception).
+
+### 11.4 Intégrité des générations prospectives
+
+Empreintes de code et de candidats **recalculées sur l'arbre courant** : aucune divergence.
+
+| Génération | Figée (UTC) | Départ (UTC) | Fichiers / candidats | Parent |
+|---|---|---|---|---|
+| v1 | 25/11 20:07:04 | 26/11 00:00 | 8 / 5 | `9f4e4c2` |
+| v2 | 25/11 21:45:18 | 26/11 00:00 | 7 / 4 | `68ec93f` |
+| v3 | 26/11 10:36:55 | **27/11 00:00** | 6 / 7 | `1917023` |
+| E1 | 26/11 16:17:48 | **27/11 00:00** | 9 / 5 | `fc6b43f` |
+| E1, premier gel (retiré, conservé) | 26/11 16:03:17 | — | diffère seulement par `scripts/prospective_e1.py` (amendement 1) | `dda1a9f` |
+
+- **Nouveau garde-fou** (`tests/test_gel_dependances.py`), qui s'exécute à chaque CI :
+  - empreintes de v1, v2, v3 et E1 recalculées ;
+  - dépendances **transitives** absentes des empreintes verrouillées (`backend/events/safety.py`,
+    `backend/data/store.py`) : leur modification exige une nouvelle génération.
+- `backend/core/config.py` a changé après les gels, mais les scripts prospectifs n'en utilisent que `ROOT` (vérifié par
+  un test).
+- **Prédictions** : aucune n'a été reconstituée. Le premier déclenchement après le départ est programmé le 27/11 à
+  00:25 UTC (PR non fusionnée).
+
+### 11.5 Sécurité des workflows et impossibilité d'activer le réel automatiquement
+
+- **Test automatique à chaque CI** (`tests/test_workflows_securite.py`), sur les 10 workflows :
+  - aucun `secrets.*`, aucune clé Bitvavo, aucun `NELYQOR_REAL_TRADING_ALLOWED=true` ;
+  - aucun déclencheur exposé aux forks (`pull_request(_target)`, `workflow_run`, `issue_comment`) ;
+  - permissions globales `contents: read` ;
+  - une seule exception : le job prospectif (`contents: write` limité à la branche d'archive sur la branche par défaut,
+    `issues: write`, `actions: read`) ;
+  - aucune expression non fiable (`github.event.*`, sortie de pas, entrée non booléenne) interpolée dans un script.
+- **Correction** : l'horodatage de réussite lu depuis le cache ou un artefact importé passait dans `$(( ))`, une
+  expansion arithmétique bash capable d'exécuter du code, et dans une interpolation `${{ }}`. Il est désormais validé
+  comme entier strict et passé par l'environnement. Ce n'était exploitable qu'avec un droit d'écriture sur le dépôt.
+- **Réel** : aucune voie automatique. Le Guardian exige :
+  - le drapeau serveur sur la machine du propriétaire ;
+  - des clés ;
+  - une commande signée (phrase distincte du mot de passe) ;
+  - une preuve de recette signée et un rapprochement des soldes ;
+  - `bases_separees`, `horloge_synchronisee` et `point_acces_bitvavo_officiel`.
+
+  Aucun de ces éléments n'existe dans GitHub Actions.
+
+### 11.6 Préparation de la fusion de la PR n° 1
+
+- **Mergeabilité** : `main` (`5fee106`) est un ancêtre direct de la branche. La fusion est sans conflit, en avance rapide
+  de 61 commits (avant le commit de ce rapport).
+- **Risque découvert et traité** : la branche par défaut ne voit pas les caches de cette branche (journal et ≈ 3 ans de
+  bougies).
+  - Une évaluation sur un historique incomplet rendrait v3 et E1 **INVALIDES** (divergence de rejeu).
+  - Ajout du workflow **`nelyqor-donnees`** (manuel, sans recherche), qui pré-remplit les données jusqu'au statut
+    « COMPLET ».
+- **Procédure pas à pas** : `docs/FUSION_PR1.md`.
+  1. Fusionner.
+  2. Lancer `nelyqor-donnees` jusqu'au statut COMPLET.
+  3. Choisir le dernier run prospectif réussi de la branche.
+  4. Lancer `nelyqor-prospective` sur `main` avec `seed_run_id` = son identifiant et `force` = vrai.
+  5. Vérifier « aucun problème » et la création de la branche `prospective-journal`.
+  6. Ne plus utiliser `seed_run_id` ensuite.
+- **Un run planifié lancé trop tôt échoue sans dommage** : alerte « journal perdu », archive et caches non écrits.
+- **Ce qui reste à faire par le propriétaire** : la fusion elle-même, puis les deux déclenchements manuels.
+
+### 11.7 Preuves de réussite à la clôture
+
+| Preuve | Résultat |
+|---|---|
+| `pytest` (suite complète) | **616 réussis** |
+| `ruff check .` / `mypy` | sans erreur / sans erreur (81 fichiers) |
+| Vérification Docker en CI, run 45861154677 | **100/100**, recette PWA 14/14 |
+| Vérification Docker en CI sur `ae0aa49` | voir la description de la PR (consignée à réception) |
+| Prospectif, runs 15 à 17 | succès (v1, v2, v3 et E1 valides avant départ) |
+| Empreintes v1, v2, v3, E1 | intactes (test automatique) |
+| Short | non intégrable par API (Bitvavo, confirmé par le propriétaire le 16/11/2026), expérimental |
