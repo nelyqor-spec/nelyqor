@@ -123,6 +123,12 @@ class ExecutionEngine:
                          (self.mode,))
         return sum((D(r["reserved_quote"] or 0) for r in rows), ZERO)
 
+    def pending_buy_quote(self) -> Decimal:
+        """EUR réservés par les achats actifs (ordres en attente compris) : exposition engagée non encore remplie."""
+        rows = self.db.q(f"SELECT reserved_quote FROM intents WHERE mode=? AND side='buy' AND status IN {_ACTIVE_SQL}",  # noqa: S608
+                         (self.mode,))
+        return self._sum(rows, "reserved_quote")
+
     def active_sell_base(self, market: str, exclude_intent: str | None = None) -> Decimal:
         """Quantité de base déjà engagée dans des ventes actives (y compris stops et take-profits)."""
         rows = self.db.q(f"SELECT id, reserved_base FROM intents WHERE mode=? AND market=? AND side='sell' "  # noqa: S608
@@ -193,6 +199,14 @@ class ExecutionEngine:
         with self.db.tx() as c:  # contrôle + création atomiques (anti-double vente / double réservation)
             if req.side == "buy":
                 chk.available_quote = available_quote - self._reserved_quote_tx(c)
+                if chk.is_entry:
+                    # phase 6 : les achats EN ATTENTE (non remplis) comptent dans l'exposition totale et dans la
+                    # position de leur marché ; leur nombre est plafonné (contrôle atomique avec la création)
+                    pend = c.execute(f"SELECT market, reserved_quote FROM intents WHERE mode=? AND side='buy' "  # noqa: S608
+                                     f"AND status IN {_ACTIVE_SQL}", (self.mode,)).fetchall()
+                    chk.active_entry_orders = len(pend)
+                    chk.exposure_after += self._sum(pend, "reserved_quote")
+                    chk.position_after += self._sum([r for r in pend if r["market"] == req.market], "reserved_quote")
             else:
                 chk.base_free_for_sale = (req.position_qty or ZERO) - self._active_sell_tx(c, req.market)
             verdict = self.g.check(chk)

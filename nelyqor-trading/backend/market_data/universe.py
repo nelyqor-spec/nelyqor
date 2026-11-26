@@ -33,13 +33,22 @@ def spread_bps(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
     return (ask - bid) / ((ask + bid) / 2) * 10000
 
 
+def data_age_ms(st: MarketState, now_ms: int) -> int:
+    """Âge de la donnée de marché : le PLUS ANCIEN de l'heure de réception et de l'horodatage de l'échange.
+    Une réponse reçue à l'instant mais horodatée d'il y a une heure (cache, flux figé) est PÉRIMÉE (phase 6)."""
+    age = now_ms - st.ts_received_ms
+    if st.ts_market_ms:
+        age = max(age, now_ms - st.ts_market_ms)
+    return age
+
+
 def check_eligibility(st: MarketState, limits: HardLimits, now_ms: int, quote: str = "EUR") -> Eligibility:
     r: list[str] = []
     if not st.info.is_trading:
         r.append(f"statut {st.info.status}")
     if st.info.quote != quote:
         r.append(f"devise de cotation {st.info.quote}")
-    if now_ms - st.ts_received_ms > limits.max_stale_ms:
+    if data_age_ms(st, now_ms) > limits.max_stale_ms:
         r.append("donnée périmée")
     if st.ts_market_ms and st.ts_market_ms - st.ts_received_ms > 5000:
         r.append("horodatage marché incohérent (futur)")

@@ -85,6 +85,8 @@ class IntentCheck:
     authenticated_cash: Decimal | None = None  # EUR LIBRE authentifié
     authenticated_ts: int | None = None
     authenticated_reasons: list[str] = field(default_factory=list)
+    # Phase 6 — achats déjà actifs (ordres en attente compris), comptés DANS la transaction de soumission
+    active_entry_orders: int = 0
 
 
 @dataclass
@@ -364,6 +366,9 @@ class Guardian:
                 r.append("dépasse la limite par position")
             if it.equity > 0 and it.exposure_after > it.equity * L.max_total_exposure_fraction:
                 r.append("dépasse l'exposition totale")
+            if it.active_entry_orders >= L.max_active_entry_orders:
+                r.append(f"trop d'ordres d'achat simultanés ({it.active_entry_orders} actifs, "
+                         f"max {L.max_active_entry_orders})")
             if it.reinforcement_of_loser and not it.new_independent_thesis:
                 r.append("renforcement d'une position perdante sans thèse indépendante (anti-martingale)")
             if it.mode == "real":

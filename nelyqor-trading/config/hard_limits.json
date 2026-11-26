@@ -17,5 +17,7 @@
   "max_order_fraction_of_authenticated_equity": "0.35",
   "auth_balance_max_age_ms": 180000,
   "auth_divergence_tolerance_eur": "0.50",
-  "auth_divergence_tolerance_fraction": "0.005"
+  "auth_divergence_tolerance_fraction": "0.005",
+  "_comment_phase6": "Au plus max_active_entry_orders achats actifs simultanément par mode (ordres limites en attente compris) ; les ordres en attente comptent dans l'exposition totale et dans la position de leur marché. Ventes et protections jamais bornées.",
+  "max_active_entry_orders": 3
 }

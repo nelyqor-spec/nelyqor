@@ -52,6 +52,9 @@ class HardLimits:
     auth_balance_max_age_ms: int = 180_000
     auth_divergence_tolerance_eur: Decimal = Decimal("0.50")
     auth_divergence_tolerance_fraction: Decimal = Decimal("0.005")
+    # Phase 6 — nombre maximal d'ordres d'ENTRÉE (achats) actifs simultanément par mode (ordres limites en
+    # attente compris). Les ventes et protections ne sont jamais bornées par ce plafond.
+    max_active_entry_orders: int = 3
     sha256: str = ""
 
     @classmethod
@@ -76,6 +79,7 @@ class HardLimits:
             auth_balance_max_age_ms=int(d["auth_balance_max_age_ms"]),
             auth_divergence_tolerance_eur=D(d["auth_divergence_tolerance_eur"]),
             auth_divergence_tolerance_fraction=D(d["auth_divergence_tolerance_fraction"]),
+            max_active_entry_orders=int(d.get("max_active_entry_orders", 3)),
             sha256=file_sha256(p),
         )
 
@@ -87,6 +91,8 @@ class HardLimits:
             raise ValueError("Retraits automatiques et martingale sont interdits")
         if not (Decimal(0) < self.max_order_fraction_of_authenticated_equity <= Decimal(1)):
             raise ValueError("max_order_fraction_of_authenticated_equity doit être dans ]0, 1]")
+        if not (1 <= self.max_active_entry_orders <= 20):
+            raise ValueError("max_active_entry_orders doit être dans [1, 20]")
         if not (0 < self.auth_balance_max_age_ms <= 600_000):
             raise ValueError("auth_balance_max_age_ms doit être dans ]0, 10 min]")
 

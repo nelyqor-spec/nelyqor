@@ -40,7 +40,7 @@ from .features import indicators as ind
 from .guardian.guardian import Guardian, IntentCheck, State
 from .market_data.bitvavo_rest import BitvavoError, BitvavoREST
 from .market_data.models import Candle, MarketInfo
-from .market_data.universe import MarketState, check_eligibility, diff_markets, spread_bps
+from .market_data.universe import MarketState, check_eligibility, data_age_ms, diff_markets, spread_bps
 from .notify.notifier import Notifier
 from .portfolio.decision import DecisionEngine, HeldPosition
 from .research.registry import Registry
@@ -516,7 +516,7 @@ class Engine:
 
     async def preflight(self, for_real: bool) -> dict[str, bool]:
         now = self.clock.now_ms()
-        fresh = [st for st in self.states.values() if now - st.ts_received_ms <= self.limits.max_stale_ms]
+        fresh = [st for st in self.states.values() if data_age_ms(st, now) <= self.limits.max_stale_ms]
         pf = {
             "donnees_marche_fraiches": bool(fresh),
             "aucun_ordre_inconnu": self.db.one("SELECT 1 FROM intents WHERE status IN ('UNKNOWN','SUBMITTING')") is None,
@@ -765,7 +765,6 @@ class Engine:
             equity, cash = auth.sizing(equity, cash)
         auth_spent = ZERO
         held = self.held_positions(mode)
-        exposure = sum((h.qty * px.get(h.market.split("-")[0], ZERO) for h in held.values()), ZERO)
         meta = self._kv_get(f"position_meta_{mode}", {}, mode)
         returns = {m: df["close"].pct_change() for m, df in self.candles.items()}
         scanner = []
@@ -779,7 +778,10 @@ class Engine:
                 ob = self.paper.books.get(mk) if self.paper else None
                 depth = ob.depth_quote("asks", D(50)) if ob else ZERO
                 held_rets = {h: returns[h] for h in held if h in returns and h != mk}
-                props = self.decider.evaluate_entry(st.info, st, df, equity, cash, exposure, held.get(mk), depth,
+                # exposition ENGAGÉE pour le dimensionnement : positions du journal + achats encore en attente
+                # (phase 6 ; l'exécuteur refait ce calcul de façon atomique au contrôle)
+                committed = self._exposure(mode, px) + ex.pending_buy_quote()
+                props = self.decider.evaluate_entry(st.info, st, df, equity, cash, committed, held.get(mk), depth,
                                                     held_returns=held_rets)
                 for p in props:
                     row.setdefault("propositions", []).append({"strategy": p.strategy, "action": p.action,
@@ -792,7 +794,10 @@ class Engine:
                             if p.details.get("contrainte_liante") == "disponible_apres_reserve" and held:
                                 self._consider_reallocation(mode, p, held)
                         continue
-                    chk = self._check(st, "buy", p.amount_quote, True, equity, cash, exposure + p.amount_quote, mode)
+                    # exposition RECALCULÉE depuis le journal (un achat rempli dans ce cycle y figure déjà) ;
+                    # l'exécuteur ajoute les achats encore en attente dans sa transaction
+                    chk = self._check(st, "buy", p.amount_quote, True, equity, cash,
+                                      self._exposure(mode, px) + p.amount_quote, mode)
                     if mode == "real":
                         self._apply_auth(chk, auth)
                         if chk.authenticated_cash is not None:
@@ -808,13 +813,16 @@ class Engine:
                     if r.accepted:
                         meta[mk] = {"entry_ts": now, "strategy": p.strategy, "stop": str(p.details.get("stop", 0))}
                         cash -= p.amount_quote
-                        exposure += p.amount_quote
                         auth_spent += p.amount_quote
                     break  # une seule entrée par marché et par cycle
             scanner.append(row)
         self._kv_set(f"position_meta_{mode}", meta, mode)
         self.db.kv_set("scanner", {"ts": now, "rows": scanner}, now)
         self.last_decision_ms = now
+
+    def _exposure(self, mode: str, px: dict[str, Decimal]) -> Decimal:
+        """Valeur des positions DÉTENUES (journal des fills), hors ordres en attente."""
+        return sum((h.qty * px.get(h.market.split("-")[0], ZERO) for h in self.held_positions(mode).values()), ZERO)
 
     def _consider_reallocation(self, mode: str, p: Any, held: dict[str, HeldPosition]) -> None:
         """Opportunité bloquée faute de liquidités : libérer la position la plus faible si le gain net
@@ -850,7 +858,7 @@ class Engine:
         held = self.held_positions(mode).get(st.info.market)
         pos_after = (held.qty * (st.best_bid or ZERO) if held else ZERO) + (amount_q if entry else ZERO)
         return IntentCheck(st.info.market, side, "market", amount_q, entry, not entry,
-                           data_age_ms=self.clock.now_ms() - st.ts_received_ms, market_trading=st.info.is_trading,
+                           data_age_ms=data_age_ms(st, self.clock.now_ms()), market_trading=st.info.is_trading,
                            spread_bps=spread_bps(st.best_bid, st.best_ask), anomaly=st.anomaly_score,
                            min_order_quote=st.info.min_order_quote, available_quote=cash, equity=equity,
                            exposure_after=exposure_after, position_after=pos_after, mode=mode)
