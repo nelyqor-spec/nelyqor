@@ -154,6 +154,16 @@ jobs:
         run: |
           ARCH=""; [ "$IS_DEFAULT" = "true" ] && ARCH="../archive"
           python scripts/prospective_check.py --v1 ../v1.log --v2 ../v2.log --v3 ../v3.log --e1 ../e1.log --archive "$ARCH" --last-ok "$LAST_OK" --out ../resultats.json
+      - name: Suivi prospectif (tableau en lecture seule, résumé du job)
+        if: always() && steps.garde.outputs.skip != 'true'
+        run: |
+          python scripts/suivi_prospectif.py --journal-dir data/prospective --resultats ../resultats.json \
+            --log-v1 ../v1.log --log-v2 ../v2.log --log-v3 ../v3.log --log-e1 ../e1.log \
+            --out-md ../suivi/suivi_prospectif.md --out-json ../suivi/suivi_prospectif.json \
+            || echo "::warning::tableau de suivi prospectif indisponible (informatif, n'affecte pas l'évaluation)"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.garde.outputs.skip != 'true'
+        with: {name: suivi-prospectif, path: suivi, retention-days: 90, if-no-files-found: ignore}
       - name: Horodatage de réussite
         if: steps.garde.outputs.skip != 'true'
         run: mkdir -p data/prospective && date +%s > data/prospective/derniere_evaluation_ok && du -sh data/market data/prospective || true

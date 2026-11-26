@@ -37,8 +37,8 @@ tar -C "$STATE_DIR" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -sal
 sha256sum "$DEST/etat-moteur-$TS.tar.enc" > "$DEST/etat-moteur-$TS.tar.enc.sha256"
 echo "OK $DEST/etat-moteur-$TS.tar.enc"
 if [ -f "$API_DB" ]; then snap "$API_DB" api; else echo "ATTENTION : audit de l'API absent ($API_DB) : non sauvegardé"; fi
-# rétention : 30 dernières sauvegardes de chaque type
+# rétention : NELYQOR_BACKUP_KEEP (30 par défaut) dernières sauvegardes de chaque type
 for p in engine-*.db.enc api-*.db.enc etat-moteur-*.tar.enc; do
   # shellcheck disable=SC2012
-  ls -1t "$DEST"/$p 2>/dev/null | tail -n +31 | while read -r f; do rm -f "$f" "$f.sha256"; done
+  ls -1t "$DEST"/$p 2>/dev/null | tail -n +$(( ${NELYQOR_BACKUP_KEEP:-30} + 1 )) | while read -r f; do rm -f "$f" "$f.sha256"; done
 done

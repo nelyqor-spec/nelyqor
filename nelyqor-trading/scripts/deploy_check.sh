@@ -140,13 +140,14 @@ sed -n 2p "$WORK/gen.txt" > "$WORK/secrets/owner_command_salt"
 sed -n 3p "$WORK/gen.txt" > "$WORK/secrets/owner_command_key"
 openssl rand -hex 32 > "$WORK/secrets/engine_state_key"
 : > "$WORK/secrets/bitvavo_api_key"; : > "$WORK/secrets/bitvavo_api_secret"   # AUCUNE clé : simulation seule
+: > "$WORK/secrets/ntfy_url"   # alertes ntfy désactivées (phase 7)
 rm -f "$WORK/gen.txt"
 # Permissions EXACTES de docs/DEPLOIEMENT.md : fichiers en 600, propriétaire = uid 10001 des conteneurs
 # (chown fait par un conteneur root jetable : fonctionne aussi sans sudo sur le runner CI)
 chmod 600 "$WORK/secrets"/*
 docker run --rm --user 0 -v "$WORK/secrets:/s" "$IMAGE" chown 10001:10001 \
   /s/bitvavo_api_key /s/bitvavo_api_secret /s/owner_password_hash /s/engine_state_key /s/owner_command_key \
-  /s/owner_command_salt || { echo "chown des secrets factices impossible" >&2; exit 1; }
+  /s/owner_command_salt /s/ntfy_url || { echo "chown des secrets factices impossible" >&2; exit 1; }
 # sel PUBLIC en 644 (D3) : appliqué dans le conteneur root (après le chown, l'utilisateur du runner CI n'est plus
 # propriétaire et ne peut plus changer le mode). Vérifié : échec bruyant si le mode n'est pas appliqué.
 docker run --rm --user 0 -v "$WORK/secrets:/s" "$IMAGE" chmod 644 /s/owner_command_salt \
@@ -184,6 +185,7 @@ secrets:
   engine_state_key: {file: $WORK/secrets/engine_state_key}
   owner_command_key: {file: $WORK/secrets/owner_command_key}
   owner_command_salt: {file: $WORK/secrets/owner_command_salt}
+  ntfy_url: {file: $WORK/secrets/ntfy_url}
 EOF
 check "configuration compose valide" dc config -q
 check "image : outils de test NON livrés (faux Bitvavo, sondes)" \

@@ -125,7 +125,7 @@ def api() -> dict[str, Any]:
         "engine_db_absente": not Path("/engine/engine.db").exists(),
         "engine_db_inouvrable": not engine_db_ouverte,
         "etat_moteur_absent": not Path("/state/etat_moteur.json").exists(),
-        "aucun_secret_moteur": not any(n.startswith(("bitvavo", "engine_", "owner_command_key", "telegram"))
+        "aucun_secret_moteur": not any(n.startswith(("bitvavo", "engine_", "owner_command_key", "telegram", "ntfy"))
                                        for n in names),
         "secrets_api": names,
         "secret_mdp_lisible": _readable(sec / "owner_password_hash"),

@@ -38,6 +38,10 @@ services:
       NELYQOR_DB: /engine/engine.db
       NELYQOR_COMMANDS_DB: /commands/commandes.db
       NELYQOR_DISPLAY_DB: /display/affichage.db
+      # phase 7 : seuils d'espace libre (Mo) ; sous le seuil critique, écritures non critiques suspendues
+      NELYQOR_DISK_WARN_FREE_MB: ${NELYQOR_DISK_WARN_FREE_MB:-2048}
+      NELYQOR_DISK_CRIT_FREE_MB: ${NELYQOR_DISK_CRIT_FREE_MB:-512}
+      NELYQOR_NTFY_DETAILS: ${NELYQOR_NTFY_DETAILS:-false}
     volumes:
       - engine_data:/engine      # base du moteur : jamais montée ailleurs (phase 5)
       - commands:/commands:ro    # commandes déposées par l'API : lues, jamais écrites par le moteur
@@ -49,6 +53,7 @@ services:
       - engine_state_key
       - owner_command_key
       - owner_command_salt
+      - ntfy_url            # phase 7 : alertes ntfy (fichier vide = désactivé)
     deploy:
       resources:
         limits: {cpus: "1.5", memory: 1200M}
@@ -107,9 +112,16 @@ services:
     # secrets/owner_command_salt est en 644 (choix documenté, D3) ; les vrais secrets restent en 600 (uid 10001).
     networks:
       default: {ipv4_address: 172.30.57.10}
-    ports: ["80:80", "443:443"]
+    # SEUL service publié. Docker contourne UFW pour les ports publiés : ne jamais publier engine/api ;
+    # NELYQOR_BIND_IP restreint l'écoute (ex. IP Tailscale 100.x.y.z, ou 127.0.0.1 derrière un tunnel) — phase 7
+    ports: ["${NELYQOR_BIND_IP:-0.0.0.0}:80:80", "${NELYQOR_BIND_IP:-0.0.0.0}:443:443"]
+    logging:   # phase 7 : rotation des journaux aussi pour Caddy (hors ancre commune)
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
     environment:
       NELYQOR_DOMAIN: ${NELYQOR_DOMAIN:?définir NELYQOR_DOMAIN dans .env}
+      # acme : Let's Encrypt (domaine public) ; internal : certificat de l'autorité interne de Caddy (sans domaine)
+      NELYQOR_TLS: ${NELYQOR_TLS:-acme}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./frontend:/srv/frontend:ro   # PWA servie par Caddy, jamais par l'API (phase 4)
@@ -188,3 +200,5 @@ secrets:
     file: ./secrets/owner_command_key
   owner_command_salt:
     file: ./secrets/owner_command_salt
+  ntfy_url:
+    file: ./secrets/ntfy_url

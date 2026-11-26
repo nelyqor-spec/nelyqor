@@ -4,10 +4,15 @@
 Aucun point d'accès privé : pas de clé, pas d'ordre, pas de solde. Sert /v2/time, /v2/markets, /v2/ticker/book,
 /v2/ticker/24h et /v2/{marché}/candles, comme le Bitvavo public, pour que le moteur tourne en SIMULATION dans
 une pile Docker isolée d'internet. Pilotage du test (réseau interne de la pile uniquement) :
-    POST /control/mode/<normal|stale|error|hang>
+    POST /control/mode/<normal|stale|error|hang|ratelimit|incoherent>
       normal : réponses fraîches ; stale : carnet horodaté 1 h dans le passé (données PÉRIMÉES) ;
-      error  : HTTP 503 ; hang : aucune réponse (délai d'attente du client).
+      error  : HTTP 503 ; hang : aucune réponse (délai d'attente du client) ;
+      ratelimit  : HTTP 429 (errorCode 105, limite de requêtes) — phase 7 ;
+      incoherent : données INCOHÉRENTES (carnet croisé, prix nul/négatif/NaN, horodatage futur, volumes
+                   absurdes, bougies désordonnées et dupliquées) — phase 7.
     GET  /control/stats  : compteurs de requêtes par chemin.
+    POST /ntfy/<sujet>   : FAUX serveur ntfy (phase 7) : enregistre l'alerte (titre, corps) ;
+    GET  /control/alerts : alertes reçues.
 Usage : python scripts/deploy_fake_bitvavo.py [port]
 """
 from __future__ import annotations
@@ -33,7 +38,8 @@ N = 600
 _START = int(time.time() * 1000) // 3_600_000 * 3_600_000 - (N - 1) * 3_600_000
 DF = {m["market"]: synthetic_candles(N, 3 + k, start_ms=_START, p0=[50000.0, 3000.0, 150.0][k])
       for k, m in enumerate(MARKETS)}
-STATE: dict[str, Any] = {"mode": "normal", "stats": {}}
+STATE: dict[str, Any] = {"mode": "normal", "stats": {}, "alerts": []}
+INCOHERENT_BOOK = [("NaN", "NaN"), ("-5", "-4"), ("0", "0")]  # carnets incohérents, en plus d'un carnet croisé
 LOCK = threading.Lock()
 
 
@@ -54,9 +60,16 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path.startswith("/ntfy/"):
+            n = min(int(self.headers.get("Content-Length") or 0), 65536)
+            body = self.rfile.read(n).decode("utf-8", "replace")
+            with LOCK:
+                STATE["alerts"].append({"ts": int(time.time() * 1000), "topic": self.path.split("/", 2)[2],
+                                        "title": self.headers.get("Title", ""), "body": body})
+            return self._send(200, {"ok": True})
         if self.path.startswith("/control/mode/"):
             mode = self.path.rsplit("/", 1)[1]
-            if mode in ("normal", "stale", "error", "hang"):
+            if mode in ("normal", "stale", "error", "hang", "ratelimit", "incoherent"):
                 STATE["mode"] = mode
                 return self._send(200, {"mode": mode})
         self._send(404, {"error": "inconnu"})
@@ -67,6 +80,8 @@ class H(BaseHTTPRequestHandler):
             STATE["stats"][path] = STATE["stats"].get(path, 0) + 1
         if path == "/control/stats":
             return self._send(200, {"mode": STATE["mode"], "stats": STATE["stats"]})
+        if path == "/control/alerts":
+            return self._send(200, STATE["alerts"])
         if path == "/health":
             return self._send(200, {"ok": True})
         mode = STATE["mode"]
@@ -75,6 +90,10 @@ class H(BaseHTTPRequestHandler):
             return None
         if mode == "error":
             return self._send(503, {"error": "indisponible (simulé)"})
+        if mode == "ratelimit":
+            return self._send(429, {"errorCode": 105, "error": "limite de requêtes dépassée (simulé)"})
+        if mode == "incoherent":
+            return self._incoherent(path)
         now = int(time.time() * 1000)
         ts = now - 3_600_000 if mode == "stale" else now
         if path == "/v2/time":
@@ -94,6 +113,36 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, [[int(t), f"{r.open:.2f}", f"{r.high:.2f}", f"{r.low:.2f}", f"{r.close:.2f}",
                                      f"{r.volume:.4f}"] for t, r in d.iloc[::-1].iterrows()])
         self._send(404, {"errorCode": 110, "error": "point d'accès non servi par le faux Bitvavo"})
+
+
+    def _incoherent(self, path: str) -> None:
+        now = int(time.time() * 1000)
+        if path == "/v2/time":
+            return self._send(200, {"time": now})
+        if path == "/v2/markets":
+            return self._send(200, MARKETS)
+        if path == "/v2/ticker/book":
+            out = []
+            for k, m in enumerate(MARKETS):
+                p = _px(m["market"])
+                if k == 0:  # carnet CROISÉ (meilleure offre d'achat > meilleure offre de vente), daté du futur
+                    out.append({"market": m["market"], "bid": f"{p * 1.05:.2f}", "bidSize": "2", "ask": f"{p:.2f}",
+                                "askSize": "2", "timestamp": now + 3_600_000})
+                else:
+                    bid, ask = INCOHERENT_BOOK[k % len(INCOHERENT_BOOK)]
+                    out.append({"market": m["market"], "bid": bid, "bidSize": "-1", "ask": ask, "askSize": "abc",
+                                "timestamp": "pas-une-date"})
+            return self._send(200, out)
+        if path == "/v2/ticker/24h":
+            return self._send(200, [{"market": m["market"], "last": "-1", "volumeQuote": "1e400", "timestamp": now}
+                                    for m in MARKETS])
+        parts = path.split("/")
+        if len(parts) == 4 and parts[3] == "candles" and parts[2] in DF:
+            d = DF[parts[2]].iloc[-50:]
+            rows = [[int(t), f"{r.open:.2f}", f"{r.low:.2f}", f"{r.high:.2f}", f"{-r.close:.2f}", "-1"]  # haut < bas
+                    for t, r in d.iterrows()]
+            return self._send(200, rows + rows[:5])  # ordre croissant (Bitvavo : décroissant) ET doublons
+        return self._send(404, {"errorCode": 110, "error": "point d'accès non servi par le faux Bitvavo"})
 
 
 if __name__ == "__main__":

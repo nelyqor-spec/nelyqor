@@ -31,6 +31,7 @@ from .accounting.ledger import ExternalFlow, Fill, Ledger
 from .accounting.reconcile import reconcile
 from .core.clock import Clock, new_id
 from .core.config import HardLimits, Settings, load_strategy_params
+from .core.disk import CRITIQUE, OK, DiskThresholds, free_mb, is_disk_full_error, next_level
 from .core.logging import get_logger, register_secret, setup_logging
 from .core.num import ZERO, D, fmt
 from .execution.engine import ExecutionEngine, InstanceLock, OrderRequest, SubmitResult
@@ -128,6 +129,64 @@ class Engine:
         self._last_px: dict[str, Decimal] = {}  # dernier prix connu par actif (D5)
         self._open_orders_checked = False
         self.command_key = command_key  # vérifie les commandes sensibles signées par le propriétaire
+        # phase 7 : surveillance du disque (backend/core/disk.py) ; en « critique », écritures non critiques suspendues
+        self.disk_th = DiskThresholds.from_env()
+        self.disk_level = OK
+        self.disk_free_mb: float | None = None
+        self.disk_full_errors = 0
+
+    @property
+    def writes_suspended(self) -> bool:
+        """Disque presque plein : décisions, nouvelles entrées, instantanés, bougies hors positions et purge
+        suspendus ; suivi des ordres, ventes, protections et battement de cœur continuent."""
+        return self.disk_level == CRITIQUE
+
+    def _disk_paths(self) -> list[Path]:
+        out = [] if self.db.path == ":memory:" else [Path(self.db.path).parent]
+        if self.store is not None:
+            out.append(self.store.path.parent)
+        return [p for p in out if p.exists()]
+
+    def check_disk(self) -> str:
+        """Mesure l'espace libre (base du moteur, magasin d'état) et applique les seuils ; notifie chaque passage
+        en alerte / critique et la reprise. Ne lève jamais : une mesure impossible laisse le niveau inchangé."""
+        paths = self._disk_paths()
+        if not paths:
+            return self.disk_level
+        try:
+            free = min(free_mb(p)[0] for p in paths)
+        except OSError as e:
+            log.warning("mesure de l'espace disque impossible", extra={"data": {"err": repr(e)}})
+            return self.disk_level
+        self.disk_free_mb = free
+        self._set_disk_level(next_level(self.disk_level, free, self.disk_th))
+        return self.disk_level
+
+    def _set_disk_level(self, new: str) -> None:
+        old, self.disk_level = self.disk_level, new
+        if new == old:
+            return
+        free = f"{self.disk_free_mb:.0f} Mo libres" if self.disk_free_mb is not None else "espace inconnu"
+        if new == CRITIQUE:
+            log.error("DISQUE PRESQUE PLEIN : écritures non critiques suspendues", extra={"data": {"libre_mo": self.disk_free_mb}})
+            self.notifier.notify("disque", f"Disque presque plein ({free}) : décisions et nouvelles entrées SUSPENDUES, "
+                                 "protections et ventes maintenues. Libérer de l'espace (docs/RUNBOOKS.md).",
+                                 dedup_key=f"disque-critique-{self.clock.now_ms()}")
+        elif new == OK and old == CRITIQUE or new != OK and old == OK:
+            msg = (f"Espace disque revenu ({free}) : écritures reprises." if new == OK
+                   else f"Espace disque faible ({free}) : libérer de l'espace avant saturation.")
+            log.warning(msg)
+            self.notifier.notify("disque", msg, dedup_key=f"disque-{new}-{self.clock.now_ms()}")
+        else:
+            log.warning("niveau disque", extra={"data": {"de": old, "vers": new, "libre_mo": self.disk_free_mb}})
+
+    def on_disk_full(self, e: BaseException) -> None:
+        """Écriture refusée faute de place (SQLITE_FULL / ENOSPC) : la transaction est annulée par SQLite (base
+        intacte) ; passage immédiat en « critique »."""
+        self.disk_full_errors += 1
+        if self.disk_level != CRITIQUE:
+            self._set_disk_level(CRITIQUE)
+        log.error("écriture refusée : disque plein", extra={"data": {"err": repr(e)[:200], "n": self.disk_full_errors}})
 
     def _check_emergency_file(self) -> None:
         if self.store is None:
@@ -1157,7 +1216,7 @@ class Engine:
     # ------------------------------------------------------------ snapshot / santé
     def snapshot(self, force: bool = False) -> None:
         now = self.clock.now_ms()
-        if force or now - self.last_snapshot_ms >= 60_000:  # 1/min : ~525k lignes/an/mode au plus
+        if (force or now - self.last_snapshot_ms >= 60_000) and not self.writes_suspended:  # 1/min
             px = self.prices_eur()
             for ex in self.execs():
                 led = self._ledger(ex.mode)
@@ -1175,7 +1234,10 @@ class Engine:
         self.db.kv_set("engine_heartbeat", {"ts": self.clock.now_ms(), "mode": mode, "pid": os.getpid(),
                                             "n_markets": len(self.markets), "data_ok": data_ok,
                                             "last_data_ms": self.last_data_ms,
-                                            "real_exec": self.real_exec is not None}, self.clock.now_ms())
+                                            "real_exec": self.real_exec is not None,
+                                            "disque": {"niveau": self.disk_level, "libre_mo": self.disk_free_mb,
+                                                       "ecritures_suspendues": self.writes_suspended}},
+                         self.clock.now_ms())
         self.publish_display()  # l'API ne voit que cette copie (affichage.db, montée :ro dans l'API)
 
     async def step(self) -> None:
@@ -1186,6 +1248,7 @@ class Engine:
 
     async def _step(self) -> None:
         now = self.clock.now_ms()
+        self.check_disk()  # phase 7 : avant toute écriture du cycle
         # Arrêt d'urgence par SSH : fichier déposé dans le répertoire d'état du MOTEUR (l'API ne peut ni le
         # créer ni le neutraliser, contrairement à une ligne de control_commands)
         self._check_emergency_file()
@@ -1211,7 +1274,7 @@ class Engine:
                 self._open_orders_checked = True
             except Exception as e:  # noqa: BLE001
                 log.warning("rapprochement des ordres ouverts impossible", extra={"data": {"err": repr(e)[:200]}})
-        if now - self.last_purge_ms >= PURGE_EVERY_MS:
+        if now - self.last_purge_ms >= PURGE_EVERY_MS and not self.writes_suspended:
             self.purge_history()
         for ex in self.execs():
             await ex.recover()
@@ -1219,7 +1282,17 @@ class Engine:
             await ex.cancel_stale_entries(ENTRY_LIMIT_TTL_MS)
         if self.real_exec is not None and now - self.last_fee_refresh_ms > 3_600_000:
             await self.refresh_fees()
-        if now - self.last_decision_ms >= 60_000:
+        if now - self.last_decision_ms >= 60_000 and self.writes_suspended:
+            # disque presque plein : positions et protections seulement (aucune décision, aucune entrée)
+            held_s = sorted(set(self.held_positions("simulation")) | (set(self.held_positions("real"))
+                                                                      if self.real_exec is not None else set()))
+            stale_h = [m for m in held_s if m not in self.candles or int(self.candles[m].index[-1]) + 2 * INTERVAL_MS <= now]
+            if stale_h:
+                await self.refresh_candles(stale_h[:20])
+            for ex in self.execs():
+                await self.manage_positions(ex)
+            self.last_decision_ms = now
+        elif now - self.last_decision_ms >= 60_000:
             eligible = [m for m, st in self.states.items()
                         if check_eligibility(st, self.limits, now, clock_skew_ms=self.clock_skew_ms).eligible]
             held = set(self.held_positions("simulation"))
@@ -1268,9 +1341,12 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
     if not eng.bases_separated():
         log.error("base du moteur, canal de commandes et affichage NON distincts : mode réel impossible")
     tg_token, tg_chat = s.read_secret("telegram_bot_token"), os.environ.get("TELEGRAM_CHAT_ID")
-    if tg_token and tg_chat:
-        register_secret(tg_token)
-        eng.notifier = Notifier(db, eng.clock.now_ms, tg_token, tg_chat)
+    ntfy_url = s.read_secret("ntfy_url")  # phase 7 : canal gratuit (le nom du sujet est le secret)
+    for sec in (tg_token, ntfy_url):
+        if sec:
+            register_secret(sec)
+    if (tg_token and tg_chat) or ntfy_url:
+        eng.notifier = Notifier(db, eng.clock.now_ms, tg_token if tg_chat else None, tg_chat, ntfy_url=ntfy_url)
     if key and secret and not eng.official_endpoints():
         log.error("clés présentes mais BITVAVO_REST_URL/WS_URL ne sont pas les points d'accès officiels : réel désactivé")
         key = secret = None
@@ -1295,6 +1371,12 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
             await eng.step()
             failures = 0
         except Exception as e:  # noqa: BLE001
+            if is_disk_full_error(e):
+                # disque plein : transaction annulée (base intacte), écritures non critiques suspendues ; pas de
+                # mise en pause du Guardian (son magasin peut être sur le même disque) : on réessaie au cycle suivant
+                eng.on_disk_full(e)
+                await asyncio.sleep(5)
+                continue
             failures += 1
             log.exception("erreur de boucle", extra={"data": {"failures": failures}})
             if failures >= 5:

@@ -1,4 +1,21 @@
+# Phase 7 : mode TLS choisi par NELYQOR_TLS (.env) — « acme » (défaut) : Let's Encrypt pour un domaine public ;
+# « internal » : certificat signé par l'autorité INTERNE de Caddy (sans domaine : Tailscale, WireGuard, réseau local).
+# En « internal », l'iPhone doit faire confiance à la racine de Caddy (docs/INSTALLATION.md, option B).
+{
+	# ne jamais tenter d'installer la racine interne dans le magasin du conteneur (lecture seule)
+	skip_install_trust
+}
+
+(tls_acme) {
+	# rien : HTTPS automatique (Let's Encrypt / ZeroSSL) pour {$NELYQOR_DOMAIN}
+}
+
+(tls_internal) {
+	tls internal
+}
+
 {$NELYQOR_DOMAIN} {
+	import tls_{$NELYQOR_TLS:acme}
 	encode gzip
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

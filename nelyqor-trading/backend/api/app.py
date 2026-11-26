@@ -199,7 +199,8 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
         months = _months_since(int(snaps[0]["ts"])) if snaps else 0
         hosting = s.monthly_hosting_eur * D(str(round(months, 3)))
         pnl = last - initial - net
-        return {"mode": mode, "equity_eur": str(last), "capital_initial_eur": str(initial), "apports_nets_eur": str(net),
+        split = _pnl_split(database, mode, initial, snaps[-1] if snaps else None)
+        return {**split, "mode": mode, "equity_eur": str(last), "capital_initial_eur": str(initial), "apports_nets_eur": str(net),
                 "pnl_trading_eur": str(pnl), "twr": str(twr(series)) if len(series) > 1 else "0",
                 "frais_eur": f"{fees['f'] if fees else 0:.4f}", "cout_hebergement_estime_eur": str(hosting.quantize(D('0.01'))),
                 "resultat_economique_eur": str((pnl - hosting).quantize(D("0.01"))),
@@ -230,7 +231,15 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
                 report = json.loads(Path(lab_file).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 report = None
-        return {"registre": reg, "experiences": exps, "rapport_lab": report}
+        # tableau de suivi prospectif (scripts/suivi_prospectif.py), s'il est fourni à ce serveur : AFFICHAGE seul
+        suivi = None
+        suivi_file = os.environ.get("NELYQOR_SUIVI_PROSPECTIF")
+        if suivi_file and Path(suivi_file).is_file():
+            try:
+                suivi = json.loads(Path(suivi_file).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                suivi = None
+        return {"registre": reg, "experiences": exps, "rapport_lab": report, "suivi_prospectif": suivi}
 
     @app.get("/api/orders")
     def orders(_: Any = Depends(require_session)) -> dict[str, Any]:
@@ -375,6 +384,42 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
 
         app.mount("/", StaticFiles(directory=FRONTEND), name="static")
     return app
+
+
+def _pnl_split(database: Any, mode: str, initial: Decimal, snap: dict[str, Any] | None) -> dict[str, Any]:
+    """Bénéfices/pertes RÉALISÉS (ventes faites, frais déduits) et LATENTS (positions encore ouvertes, à la dernière
+    valorisation publiée par le moteur), recalculés depuis le journal des exécutions de la copie d'affichage, par la
+    même comptabilité que le moteur (coût moyen, frais inclus). Jamais d'estimation : non calculable => None + raison."""
+    from ..accounting.ledger import ExternalFlow, Fill, Ledger
+
+    out: dict[str, Any] = {"pnl_realise_eur": None, "pnl_latent_eur": None, "positions_detail": {},
+                           "valorisation_ts": paris_str(int(snap["ts"])) if snap else None,
+                           "positions_eur": snap["positions_eur"] if snap else None,
+                           "cash_eur": snap["cash_eur"] if snap else None, "pnl_note": ""}
+    try:
+        led = Ledger(initial)
+        events: list[tuple[int, int, Any]] = []
+        for f in database.q("SELECT * FROM fills WHERE mode=?", (mode,)):
+            events.append((int(f["ts"]), 1, Fill(f["ts"], f["market"], f["side"], D(f["amount"]), D(f["price"]), D(f["fee"]),
+                                                 f["fee_currency"], D(f["fee_eur"]) if f["fee_eur"] else None, f["id"])))
+        for fl in database.q("SELECT * FROM external_flows WHERE mode=? AND identified=1", (mode,)):
+            events.append((int(fl["ts"]), 0, ExternalFlow(fl["ts"], fl["kind"], fl["symbol"], D(fl["amount"]),
+                                                          D(fl["value_eur"]))))
+        for _, kind, ev in sorted(events, key=lambda e: (e[0], e[1])):
+            led.apply_fill(ev) if kind == 1 else led.apply_flow(ev)
+    except (ValueError, ArithmeticError, KeyError, TypeError) as e:
+        out["pnl_note"] = f"répartition réalisé/latent non calculable : {str(e)[:160]}"
+        return out
+    held = {s: p for s, p in led.s.positions.items() if p.qty > 0}
+    out["pnl_realise_eur"] = str(led.s.realized_eur.quantize(D("0.01")))
+    out["positions_detail"] = {f"{s}-EUR": {"quantite": str(p.qty), "cout_eur": str(p.cost_eur.quantize(D("0.01"))),
+                                            "cout_moyen_eur": str(p.avg_cost)} for s, p in held.items()}
+    if snap is not None:
+        out["pnl_latent_eur"] = str((D(snap["positions_eur"]) - sum((p.cost_eur for p in held.values()), D(0))).quantize(D("0.01")))
+        out["pnl_note"] = "latent : valeur des positions à la dernière valorisation du moteur, moins leur coût d'achat (frais inclus)"
+    elif held:
+        out["pnl_note"] = "latent non calculable : aucune valorisation publiée par le moteur"
+    return out
 
 
 def _state_value(raw: Any) -> str:
