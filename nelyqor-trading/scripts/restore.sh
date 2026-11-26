@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SRC="$1"
-TARGET="${2:-${NELYQOR_DB:-data/nelyqor.db}}"
+TARGET="${2:-${NELYQOR_DB:-data/engine.db}}"   # base du MOTEUR (phase 5)
 PASS="${NELYQOR_BACKUP_PASS_FILE:-secrets/backup_passphrase}"
 sha256sum -c "$SRC.sha256"
 TMP="$(mktemp)"

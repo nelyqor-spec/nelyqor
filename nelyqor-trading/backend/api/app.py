@@ -1,5 +1,11 @@
-"""API de contrôle et de visualisation (rôle « api »). N'a AUCUN accès aux clés Bitvavo :
-les commandes sont déposées dans control_commands et exécutées par le moteur après contrôle GUARDIAN."""
+"""API de contrôle et de visualisation (rôle « api »). N'a AUCUN accès aux clés Bitvavo.
+
+Phase 5 — bases séparées (backend/storage/channels.py) : l'API n'ouvre JAMAIS la base du moteur.
+- LECTURE : `affichage.db`, copie publiée par le moteur, ouverte en lecture seule (volume monté `:ro`) ;
+- ÉCRITURE : `commandes.db` (table control_commands seule), lue par le moteur qui valide chaque commande
+  (Guardian, signatures du propriétaire) ; et `api.db`, son propre journal d'audit.
+Une API compromise peut mentir à l'affichage ou ne pas relayer une commande ; elle ne peut plus modifier le
+journal, les flux, les intentions ni l'état du moteur."""
 from __future__ import annotations
 
 import json
@@ -22,6 +28,7 @@ from ..core.clock import PARIS, new_id, paris_str, utc_iso
 from ..core.config import ROOT, Settings
 from ..core.num import D
 from ..guardian.guardian import REAL_CONFIRMATION_PHRASE
+from ..storage.channels import ReadOnlyView, open_api_db, open_command_writer
 from ..storage.db import Database
 from .auth import AuthManager
 
@@ -56,21 +63,29 @@ class LiquidationBody(ReauthBody, SignedFields):
     estimate_id: str = Field(max_length=64)
 
 
-class AckFlowBody(BaseModel):
+class AckFlowBody(SignedFields):
     flow_id: str = Field(max_length=128)
     note: str = Field(default="", max_length=500)
 
 
-def create_app(settings: Settings | None = None, db: Database | None = None, auth: AuthManager | None = None) -> FastAPI:
+COMMAND_RETENTION_MS = 7 * 86_400_000
+
+
+def create_app(settings: Settings | None = None, auth: AuthManager | None = None, display: ReadOnlyView | None = None,
+               commands: Database | None = None, api_db: Database | None = None) -> FastAPI:
     s = settings or Settings(role="api")
     if s.role == "engine":
         s.role = "api"
-    database = db or Database(s.db_path)
+    database = display or ReadOnlyView(s.display_file)  # LECTURE SEULE : copie d'affichage du moteur
+    cmds = commands or open_command_writer(s.commands_file)  # seule base « moteur » que l'API écrit
+    adb = api_db or open_api_db(s.api_file)
+    cmds.exec("DELETE FROM control_commands WHERE ts < ?", (int(time.time() * 1000) - COMMAND_RETENTION_MS,))
     if auth is None:
         hp = s.secrets_dir / "owner_password_hash"
         auth = AuthManager(hp.read_text().strip() if hp.exists() else None)
     app = FastAPI(title="Nelyqor Trading", docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.db, app.state.auth, app.state.settings = database, auth, s
+    app.state.db, app.state.commands, app.state.api_db = database, cmds, adb
+    app.state.auth, app.state.settings = auth, s
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
@@ -88,8 +103,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
         return req.client.host if req.client else "?"
 
     def audit(actor: str, action: str, ip: str, ok: bool, details: dict[str, Any]) -> None:
-        database.exec("INSERT INTO audit(ts,actor,action,ip,ok,details) VALUES(?,?,?,?,?,?)",
-                      (int(time.time() * 1000), actor, action, ip, int(ok), json.dumps(details, ensure_ascii=False)))
+        adb.exec("INSERT INTO audit(ts,actor,action,ip,ok,details) VALUES(?,?,?,?,?,?)",
+                 (int(time.time() * 1000), actor, action, ip, int(ok), json.dumps(details, ensure_ascii=False)))
 
     def require_session(request: Request) -> Any:
         sess = auth.get(request.cookies.get(COOKIE))
@@ -102,8 +117,8 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
     def command(name: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
         cid = new_id()
         payload = {**payload, "actor": "owner", "ip": ip_of(request)}
-        database.exec("INSERT INTO control_commands(id,ts,command,payload,status) VALUES(?,?,?,?,?)",
-                      (cid, int(time.time() * 1000), name, json.dumps(payload, ensure_ascii=False), "pending"))
+        cmds.exec("INSERT INTO control_commands(id,ts,command,payload,status) VALUES(?,?,?,?,?)",
+                  (cid, int(time.time() * 1000), name, json.dumps(payload, ensure_ascii=False), "pending"))
         audit("owner", f"commande {name}", ip_of(request), True, {"id": cid})
         return {"command_id": cid, "status": "pending"}
 
@@ -144,7 +159,7 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
     def status(_: Any = Depends(require_session)) -> dict[str, Any]:
         now = int(time.time() * 1000)
         hb = database.kv_get("engine_heartbeat")
-        du = shutil.disk_usage(Path(s.db_path).parent)
+        du = shutil.disk_usage(s.display_file.parent if s.display_file.parent.exists() else Path("."))
         return {
             "etat": _state_value(database.kv_get("guardian_state")),
             "etat_note": "affichage ; la signature de l'état est vérifiée par le moteur (rôle api sans clé)",
@@ -164,6 +179,9 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
             "ordres_inconnus": len(database.q("SELECT id FROM intents WHERE status IN ('UNKNOWN','SUBMITTING')")),
             "flux_non_identifies": len(database.q("SELECT id FROM external_flows WHERE identified=0")),
             "phrase_activation_reel": REAL_CONFIRMATION_PHRASE,
+            "capital_authentifie": database.kv_get("capital_authentifie"),
+            "affichage_disponible": database.available,
+            "source": "copie d'affichage publiée par le moteur (lecture seule)",
         }
 
     @app.get("/api/portfolio")
@@ -235,14 +253,23 @@ def create_app(settings: Settings | None = None, db: Database | None = None, aut
 
     @app.get("/api/incidents")
     def incidents(_: Any = Depends(require_session)) -> dict[str, Any]:
+        engine_audit = [{**dict(r), "source": "moteur"} for r in database.q(
+            "SELECT ts,actor,action,ok,details FROM audit ORDER BY ts DESC LIMIT 100")]
+        api_audit = [{**dict(r), "source": "api"} for r in adb.q(
+            "SELECT ts,actor,action,ok,details FROM audit ORDER BY ts DESC LIMIT 100")]
+        merged = sorted(engine_audit + api_audit, key=lambda r: int(r["ts"] or 0), reverse=True)[:100]
         return {"notifications": [dict(r) for r in database.q("SELECT * FROM notifications ORDER BY ts DESC LIMIT 50")],
-                "audit": [dict(r) for r in database.q("SELECT ts,actor,action,ok,details FROM audit ORDER BY ts DESC LIMIT 100")]}
+                "audit": merged}
 
     @app.get("/api/commands/{cid}")
     def command_status(cid: str, _: Any = Depends(require_session)) -> dict[str, Any]:
+        # résultat : journal du MOTEUR (publié dans l'affichage) ; sinon la commande attend encore
         r = database.one("SELECT id,command,status,result FROM control_commands WHERE id=?", (cid,))
         if r is None:
-            raise HTTPException(404)
+            p = cmds.one("SELECT id,command FROM control_commands WHERE id=?", (cid,))
+            if p is None:
+                raise HTTPException(404)
+            return {"id": p["id"], "command": p["command"], "status": "pending", "result": None}
         d = dict(r)
         d["result"] = json.loads(d["result"]) if d["result"] else None
         return d

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """MOTEUR DE DÉVELOPPEMENT sur faux Bitvavo (bougies SYNTHÉTIQUES) — pour tests d'interface uniquement.
-Ne contacte aucun échange, n'a aucune clé. Usage : NELYQOR_DB=... python scripts/dev_engine_fake.py"""
+Ne contacte aucun échange, n'a aucune clé. Usage : NELYQOR_DB=/tmp/nq/engine.db python scripts/dev_engine_fake.py
+Bases séparées (phase 5) : le moteur écrit engine.db et affichage.db, lit commandes.db (même dossier par défaut,
+ou NELYQOR_COMMANDS_DB / NELYQOR_DISPLAY_DB). Lancer l'API avec le même NELYQOR_DB (elle n'ouvre que
+affichage.db en lecture seule, commandes.db et api.db)."""
 from __future__ import annotations
 
 import asyncio

@@ -30,7 +30,7 @@ out = Path("reports/acceptance_output.txt").read_text()
 rec = make_proof(Path("."), key.encode(), out, commit, int(time.time() * 1000))
 if rec["proof"]["tests_failed"] or not rec["proof"]["tests_passed"]:
     sys.exit("recette non conforme : aucune preuve enregistrée")
-db = Database(os.environ.get("NELYQOR_DB", "data/nelyqor.db"))
+db = Database(os.environ.get("NELYQOR_DB", "data/engine.db"))  # base du MOTEUR (phase 5), moteur arrêté
 db.kv_set("acceptance_proof", rec)
 print("preuve de recette signée enregistrée :", commit, rec["proof"]["tests_passed"], "tests,", rec["proof"]["code_sha256"][:12])
 EOF2

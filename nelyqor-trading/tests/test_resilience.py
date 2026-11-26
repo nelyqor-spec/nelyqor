@@ -17,7 +17,7 @@ from backend.guardian.guardian import REAL_CONFIRMATION_PHRASE, State
 from backend.market_data.models import MarketInfo
 from backend.runner import Engine
 from backend.storage.db import Database
-from tests.conftest import BTC_RAW, STATE_KEY
+from tests.conftest import BTC_RAW, STATE_KEY, post_command
 from tests.fake_bitvavo import FakePublic
 
 CMD_KEY = bytes(range(32))
@@ -109,7 +109,7 @@ async def test_emergency_stop_via_command_keeps_positions(tmp_path):
     st = eng.states["BTC-EUR"]
     await eng.exec.submit(OrderRequest("BTC-EUR", "buy", "market", amount_quote=D(20),
                                        check=eng._check(st, "buy", D(20), True, D(100), D(100), D(20), "simulation")), D(100))
-    db.exec("INSERT INTO control_commands(id,ts,command,payload,status) VALUES('c1',0,'emergency_stop','{}','pending')")
+    post_command(eng, "c1", 0, "emergency_stop")
     await eng.process_commands()
     assert eng.guardian.state == State.PAUSE
     assert eng.paper.available.get("BTC", 0) > 0  # pause ≠ liquidation
@@ -207,28 +207,24 @@ async def test_activate_real_end_to_end_requires_everything(tmp_path):
               "declare_2fa": True, "accepte_risque_perte_totale": True}
     # 1) API compromise : password_ok + toutes les déclarations EN CLAIR, mais aucune signature du propriétaire
     forged = {"password_ok": True, **fields}
-    db.exec("INSERT INTO control_commands VALUES('f1',?,'activate_real',?,'pending',NULL,NULL)",
-            (clock.now_ms(), json.dumps(forged)))
+    post_command(eng, "f1", clock.now_ms(), "activate_real", json.dumps(forged))
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='f1'")["result"])
     assert not res["ok"] and any("non signée" in r for r in res["reasons"])
     assert eng.guardian.state != State.REAL
     # 2) signée mais recette non enregistrée -> refus
-    db.exec("INSERT INTO control_commands VALUES('a1',?,'activate_real',?,'pending',NULL,NULL)",
-            (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1"))))
+    post_command(eng, "a1", clock.now_ms(), "activate_real", json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1")))
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a1'")["result"])
     assert not res["ok"] and any("tests_acceptation_ok" in r for r in res["reasons"])
     # 3) rejeu de la même signature -> refus (l'ancien booléen non signé ne suffit plus : preuve signée)
     db.kv_set("acceptance_proof", valid_proof(clock.now_ms()))
-    db.exec("INSERT INTO control_commands VALUES('a2',?,'activate_real',?,'pending',NULL,NULL)",
-            (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1"))))
+    post_command(eng, "a2", clock.now_ms(), "activate_real", json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n1")))
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a2'")["result"])
     assert not res["ok"] and any("rejeu" in r for r in res["reasons"])
     # 4) tout est réuni : signature fraîche
-    db.exec("INSERT INTO control_commands VALUES('a3',?,'activate_real',?,'pending',NULL,NULL)",
-            (clock.now_ms(), json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n2"))))
+    post_command(eng, "a3", clock.now_ms(), "activate_real", json.dumps(signed_payload("activate_real", fields, clock.now_ms(), "n2")))
     await eng.process_commands()
     res = json.loads(db.one("SELECT result FROM control_commands WHERE id='a3'")["result"])
     assert res["ok"], res
@@ -270,7 +266,7 @@ async def test_emergency_stop_processed_during_network_outage(tmp_path):
     eng, db = make_engine(tmp_path, clock)
     await eng.step()
     eng.rest.fail = True
-    db.exec("INSERT INTO control_commands(id,ts,command,payload,status) VALUES('s1',0,'emergency_stop','{}','pending')")
+    post_command(eng, "s1", 0, "emergency_stop")
     clock.advance(700_000)
     with pytest.raises(httpx.ConnectError):
         await eng.step()
@@ -283,8 +279,8 @@ async def test_stale_command_expires_but_emergency_stop_never_expires(tmp_path):
     clock = FakeClock(1_770_000_000_000)
     eng, db = make_engine(tmp_path, clock)
     old = clock.now_ms() - 3_600_000
-    db.exec("INSERT INTO control_commands VALUES('r1',?,'resume','{}','pending',NULL,NULL)", (old,))
-    db.exec("INSERT INTO control_commands VALUES('e1',?,'emergency_stop','{}','pending',NULL,NULL)", (old,))
+    post_command(eng, "r1", old, "resume")
+    post_command(eng, "e1", old, "emergency_stop")
     await eng.process_commands()
     r1 = json.loads(db.one("SELECT result FROM control_commands WHERE id='r1'")["result"])
     assert not r1["ok"] and "expirée" in r1["reasons"][0]

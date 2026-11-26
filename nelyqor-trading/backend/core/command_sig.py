@@ -20,7 +20,7 @@ from typing import Any
 ITER = 600_000
 VALIDITY_MS = 5 * 60_000
 FUTURE_TOLERANCE_MS = 30_000  # une signature « du futur » survivrait à une révocation
-SENSITIVE = {"activate_real", "liquidation_confirm", "resume_real"}
+SENSITIVE = {"activate_real", "liquidation_confirm", "resume_real", "ack_flow"}
 
 
 def canonical(command: str, ts: int, nonce: str, fields: dict[str, Any]) -> bytes:

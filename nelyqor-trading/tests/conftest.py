@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sys
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +23,18 @@ STATE_KEY = b"cle-de-test-integrite-etat-0123456789"
 BTC_RAW = {"market": "BTC-EUR", "status": "trading", "base": "BTC", "quote": "EUR", "pricePrecision": 5,
            "minOrderInBaseAsset": "0.0001", "minOrderInQuoteAsset": "5", "maxOrderInQuoteAsset": "1000000",
            "quantityDecimals": 8, "notionalDecimals": 2, "orderTypes": ["market", "limit", "stopLoss", "stopLossLimit"]}
+
+
+def post_command(target: Any, cid: str, ts: int, command: str, payload: Any = "{}", status: str = "pending") -> None:
+    """Dépose une commande comme le fait l'API (phase 5) : dans le CANAL `commandes.db`, jamais dans la base du
+    moteur. `target` : un moteur (son canal) ou la base du moteur (canal voisin par défaut)."""
+    from backend.storage.channels import open_command_writer
+
+    path = target.inbox.path if hasattr(target, "inbox") else Path(target.path).parent / "commandes.db"
+    w = open_command_writer(path)
+    w.exec("INSERT INTO control_commands(id,ts,command,payload,status) VALUES(?,?,?,?,?)",
+           (cid, ts, command, payload if isinstance(payload, str) else json.dumps(payload), status))
+    w.close()
 
 
 @pytest.fixture
