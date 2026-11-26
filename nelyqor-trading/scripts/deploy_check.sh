@@ -285,25 +285,9 @@ check "coupure api : moteur non affecté (heartbeat frais)" fresh
 docker network connect --alias api "$NET" "$(cid api)"   # sans l'alias, Caddy ne résout plus « api »
 check "coupure api : reprise via Caddy" wait_for 60 engine_alive_http
 
-# ------------------------------------------------------------------ 6. arrêt d'urgence SSH
-log "arrêt d'urgence SSH (scripts/emergency_stop.sh)"
-check "emergency_stop.sh : exécution" bash scripts/emergency_stop.sh
-check "arrêt d'urgence : drapeau appliqué par le moteur" wait_for 60 bash -c "probe engine state | tail -1 | grep -q 'ARRET_URGENCE.applique-'"
-check "arrêt d'urgence : état PAUSE_NOUVELLES_ENTREES" wait_for 30 bash -c "[ \"\$(probe engine state | tail -1 | jget etat)\" = PAUSE_NOUVELLES_ENTREES ]"
-check "arrêt d'urgence : commande du canal secondaire traitée" wait_for 60 bash -c "[ \"\$(probe engine state | tail -1 | jget arret_urgence_ok)\" -ge 1 ]"
-check "arrêt d'urgence : drapeau consommé (pas de ré-application en boucle)" expect_json "$(state)" drapeau_urgence_en_attente false
-
-log "kill -9 du moteur (panne brutale) : l'arrêt d'urgence doit survivre"
-RE1=$(restarts engine)
-hardkill engine
-check "kill -9 moteur : relancé par la politique de redémarrage" wait_for 90 bash -c "[ \"\$(docker inspect -f '{{.RestartCount}}' $(cid engine))\" -gt $RE1 ]"
-check "kill -9 moteur : heartbeat repris" wait_for 120 fresh
-SK=$(state)
-check "kill -9 moteur : état PAUSE conservé (signé, magasin /state)" expect_json "$SK" etat PAUSE_NOUVELLES_ENTREES
-check "kill -9 moteur : pas d'INCIDENT d'intégrité" bash -c "! docker logs $(cid engine) 2>&1 | grep -q 'falsification'"
-check "kill -9 moteur : verrou d'instance repris (pas d'erreur de verrou)" bash -c "! docker logs --since 2m $(cid engine) 2>&1 | grep -qi 'verrou.*déjà'"
-
-# ------------------------------------------------------------------ 7. recette PWA (Playwright) contre la pile réelle
+# ------------------------------------------------------------------ 6. recette PWA (Playwright) contre la pile réelle
+# AVANT l'arrêt d'urgence SSH : une signature postérieure de moins de 30 s à une révocation est refusée
+# (tolérance d'horloge, docs/DEPLOIEMENT.md § 8), ce qui ferait échouer le parcours « activation signée »
 run_e2e=0
 if [ "$E2E" = 1 ]; then run_e2e=1
 elif [ "$E2E" = auto ] && command -v node > /dev/null && node -e "require('playwright')" > /dev/null 2>&1; then run_e2e=1; fi
@@ -318,6 +302,25 @@ if [ "$run_e2e" = 1 ]; then
 else
   record SKIP "recette PWA e2e_pwa.cjs" "Node/Playwright indisponible"
 fi
+# ------------------------------------------------------------------ 7. arrêt d'urgence SSH
+log "arrêt d'urgence SSH (scripts/emergency_stop.sh)"
+AU0=$(st arret_urgence_ok); AU0=${AU0:-0}
+check "emergency_stop.sh : exécution" bash scripts/emergency_stop.sh
+check "arrêt d'urgence : drapeau appliqué par le moteur" wait_for 60 bash -c "probe engine state | tail -1 | grep -q 'ARRET_URGENCE.applique-'"
+check "arrêt d'urgence : état PAUSE_NOUVELLES_ENTREES" wait_for 30 bash -c "[ \"\$(probe engine state | tail -1 | jget etat)\" = PAUSE_NOUVELLES_ENTREES ]"
+check "arrêt d'urgence : commande du canal secondaire traitée" wait_for 60 bash -c "[ \"\$(probe engine state | tail -1 | jget arret_urgence_ok)\" -gt $AU0 ]"
+check "arrêt d'urgence : drapeau consommé (pas de ré-application en boucle)" expect_json "$(state)" drapeau_urgence_en_attente false
+
+log "kill -9 du moteur (panne brutale) : l'arrêt d'urgence doit survivre"
+RE1=$(restarts engine)
+hardkill engine
+check "kill -9 moteur : relancé par la politique de redémarrage" wait_for 90 bash -c "[ \"\$(docker inspect -f '{{.RestartCount}}' $(cid engine))\" -gt $RE1 ]"
+check "kill -9 moteur : heartbeat repris" wait_for 120 fresh
+SK=$(state)
+check "kill -9 moteur : état PAUSE conservé (signé, magasin /state)" expect_json "$SK" etat PAUSE_NOUVELLES_ENTREES
+check "kill -9 moteur : pas d'INCIDENT d'intégrité" bash -c "! docker logs $(cid engine) 2>&1 | grep -q 'falsification'"
+check "kill -9 moteur : verrou d'instance repris (pas d'erreur de verrou)" bash -c "! docker logs --since 2m $(cid engine) 2>&1 | grep -qi 'verrou.*déjà'"
+
 check "après la recette : moteur jamais en INCIDENT" bash -c "[ \"\$(probe engine state | tail -1 | jget etat)\" != INCIDENT ]"
 state > "$OUT/etat_final.json"
 
