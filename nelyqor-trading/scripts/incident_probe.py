@@ -91,7 +91,7 @@ async def _seed() -> dict[str, Any]:
         check=eng._check(st, "buy", amt, True, D(100), D(100), amt, "simulation")), D(100))
     if r.accepted:
         eng._kv_set("position_meta_simulation", {"BTC-EUR": {"entry_ts": eng.clock.now_ms(), "strategy": "incident",
-                                                              "stop": str(st.best_bid * D("0.9"))}}, "simulation")
+                                                              "stop": str((st.best_bid or D(0)) * D("0.9"))}}, "simulation")
         await eng.manage_positions(eng.paper_exec)  # type: ignore[arg-type]  # pose le stop de protection
     lock.release()
     return {"achat_accepte": bool(r.accepted), "raisons": getattr(r, "reasons", None)}
@@ -132,7 +132,8 @@ def brute() -> dict[str, Any]:
             h["Host"] = os.environ["HOST"]
         if os.environ.get("XFF"):
             h["X-Forwarded-For"] = f"203.0.113.{i + 1}"  # adresse usurpée différente à chaque essai
-        req = urllib.request.Request(url, data=json.dumps({"password": pw}).encode(), headers=h, method="POST")
+        req = urllib.request.Request(url, data=json.dumps({"password": pw}).encode(), headers=h,  # noqa: S310
+                                     method="POST")
         try:
             with urllib.request.urlopen(req, timeout=15, context=ctx) as r:  # noqa: S310 — pile de test
                 codes.append(r.status)
