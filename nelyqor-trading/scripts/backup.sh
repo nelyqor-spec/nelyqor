@@ -21,3 +21,11 @@ sha256sum "$DEST/nelyqor-$TS.db.enc" > "$DEST/nelyqor-$TS.db.enc.sha256"
 # rétention : 30 dernières sauvegardes
 ls -1t "$DEST"/nelyqor-*.db.enc 2>/dev/null | tail -n +31 | while read -r f; do rm -f "$f" "$f.sha256"; done
 echo "OK $DEST/nelyqor-$TS.db.enc"
+# Magasin d'état du moteur (phase 4) : sans lui, le robot repasse en INCIDENT après restauration.
+STATE_DIR="${NELYQOR_ENGINE_STATE_HOST_DIR:-}"
+if [ -n "$STATE_DIR" ] && [ -d "$STATE_DIR" ]; then
+  tar -C "$STATE_DIR" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -out "$DEST/etat-moteur-$TS.tar.enc" -pass "file:$PASS"
+  echo "OK $DEST/etat-moteur-$TS.tar.enc"
+else
+  echo "ATTENTION : NELYQOR_ENGINE_STATE_HOST_DIR non défini : magasin d'état du moteur NON sauvegardé"
+fi

@@ -52,18 +52,25 @@ class EngineStore:
         if not hmac.compare_digest(sig, self._sig(seq, data)):
             self._flag("signature du magasin d'état invalide")
             return
-        last = int(self._marker.read_text() or 0) if self._marker.exists() else 0
+        last = self.marker_seq()
         if seq < last:
             self._flag(f"compteur du magasin d'état revenu en arrière ({seq} < {last}) : rejeu")
             return
         self._doc = {"seq": seq, "data": data}
+
+    def marker_seq(self) -> int:
+        try:
+            return int(self._marker.read_text().strip() or 0) if self._marker.exists() else 0
+        except (ValueError, OSError):
+            return 1 << 62  # marqueur illisible : tout fichier est réputé ancien (prudence), le moteur démarre en INCIDENT
 
     def _flag(self, why: str) -> None:
         self.tampered = True
         self.reason = why
 
     def _write(self) -> None:
-        self._doc["seq"] += 1
+        # jamais en dessous du plus haut compteur connu (réinitialisation après corruption incluse)
+        self._doc["seq"] = max(self._doc["seq"], self.marker_seq() if self.marker_seq() < (1 << 62) else 0) + 1
         body = {"seq": self._doc["seq"], "data": self._doc["data"], "sig": self._sig(self._doc["seq"], self._doc["data"])}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")

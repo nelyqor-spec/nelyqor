@@ -63,6 +63,7 @@ class Engine:
         self.guardian = Guardian(db, self.limits, settings.real_trading_server_flag, settings.role, self.clock.now_ms,
                                  state_key=state_key, store=self.store)
         self._realloc: dict[str, dict[str, Any]] = {"simulation": {}, "real": {}}  # en mémoire du moteur seulement
+        self._liq_estimate: dict[str, Any] | None = None
         self.registry = Registry(db, self.clock.now_ms, settings.role)
         self.notifier = Notifier(db, self.clock.now_ms)
         self.markets: dict[str, MarketInfo] = {}
@@ -86,6 +87,18 @@ class Engine:
         self.last_snapshot_ms = 0
         self.last_fee_refresh_ms = 0
         self.command_key = command_key  # vérifie les commandes sensibles signées par le propriétaire
+
+    def _check_emergency_file(self) -> None:
+        if self.store is None:
+            return
+        flag = self.store.path.parent / "ARRET_URGENCE"
+        if flag.exists():
+            self.guardian.emergency_stop("ssh")
+            try:
+                flag.rename(flag.with_name(f"ARRET_URGENCE.applique-{self.clock.now_ms()}"))
+            except OSError:
+                pass  # le blocage en mémoire reste actif
+            self.notifier.notify("incident", "Arrêt d'urgence appliqué (canal SSH du moteur)", dedup_key=new_id())
 
     # ------------------------------------------------------------ état réel protégé
     def _kv_get(self, key: str, default: Any, mode: str) -> Any:
@@ -354,7 +367,8 @@ class Engine:
                     res = {"ok": True, "note": "nouvelles entrées bloquées ; positions et protections conservées"}
                 elif c == "resume":
                     to_real = self.guardian.resume_state == State.REAL
-                    why = self._verify_signed("resume_real", payload) if to_real else None
+                    sticky = bool(self.store is not None and self.store.get("falsification"))
+                    why = self._verify_signed("resume_real", payload) if (to_real or sticky) else None
                     if why is not None:
                         # reprise vers le RÉEL = réactivation : signature du propriétaire exigée (une API
                         # compromise ne peut pas réarmer le réel après un arrêt d'urgence)
@@ -364,6 +378,8 @@ class Engine:
                         v = self.guardian.resume(actor, await self.preflight(for_real=to_real),
                                                  expected_target=State.REAL if to_real else self.guardian.resume_state)
                         res = {"ok": v.allowed, "reasons": v.reasons}
+                        if v.allowed and sticky and self.store is not None:
+                            self.store.set("falsification", None)  # levée par une reprise SIGNÉE seulement
                 elif c == "activate_real":
                     why = self._verify_signed(c, payload)
                     signed = payload.get("sig_fields") or {}
@@ -460,6 +476,14 @@ class Engine:
         def key(prefix: str, d: dict[str, Any]) -> str:
             return f"{prefix}-{d.get('txId') or d.get('timestamp')}-{d.get('symbol')}-{d.get('amount')}"
 
+        if (not self._kv_get("real_opening_done", False, "real") and self.store is not None
+                and self.db.one("SELECT 1 FROM fills WHERE mode='real' LIMIT 1") is not None):
+            # le magasin d'état a été perdu/réinitialisé : refaire l'ouverture exclurait les positions du robot
+            self.guardian.incident("magasin d'état du moteur perdu alors que des transactions réelles existent : "
+                                   "restaurer /state depuis la sauvegarde")
+            if self.store is not None:
+                self.store.set("falsification", "magasin perdu avec historique réel")
+            return False
         if not self._kv_get("real_opening_done", False, "real"):
             # Les mouvements antérieurs sont déjà dans le solde d'ouverture : on les marque comme intégrés.
             with self.db.tx() as c:
@@ -709,21 +733,24 @@ class Engine:
                 total += gross - fee
         est = {"id": new_id(), "ts": self.clock.now_ms(), "mode": mode, "lignes": out, "net_total_eur": fmt(total),
                "avertissement": "Estimation sur le carnet connu ; le glissement réel peut être supérieur."}
+        self._liq_estimate = est  # référence : mémoire du moteur (la base n'en a qu'une copie d'affichage)
         self.db.kv_set("liquidation_estimate", est, self.clock.now_ms())
         return est
 
     async def liquidate(self, payload: dict[str, Any]) -> dict[str, Any]:
-        est = self.db.kv_get("liquidation_estimate")
+        est = self._liq_estimate
         if not est or est["id"] != payload.get("estimate_id") or self.clock.now_ms() - est["ts"] > 120_000:
             return {"ok": False, "reasons": ["estimation absente, déjà utilisée ou expirée (2 min) : recommencer"]}
         if est.get("mode") == "real" or self.command_key is not None:
             why = self._verify_signed("liquidation_confirm", payload)
             signed = payload.get("sig_fields") or {}
-            if why or signed.get("estimate_id") != est["id"] or signed.get("confirmation") != "LIQUIDER":
+            if why or signed.get("estimate_id") != est["id"] or signed.get("confirmation") != "LIQUIDER" or (
+                    "mode" in signed and signed.get("mode") != est["mode"]):
                 return {"ok": False, "reasons": [why or "champs signés incohérents"]}
         elif not payload.get("password_ok") or payload.get("confirmation") != "LIQUIDER":
             return {"ok": False, "reasons": ["confirmation invalide"]}
-        self.db.kv_set("liquidation_estimate", None, self.clock.now_ms())  # usage unique
+        self._liq_estimate = None  # usage unique
+        self.db.kv_set("liquidation_estimate", None, self.clock.now_ms())
         await self.refresh_tickers()  # jamais de vente sur des prix périmés
         mode = est["mode"]
         ex = self.real_exec if mode == "real" else self.paper_exec
@@ -774,6 +801,9 @@ class Engine:
 
     async def step(self) -> None:
         now = self.clock.now_ms()
+        # Arrêt d'urgence par SSH : fichier déposé dans le répertoire d'état du MOTEUR (l'API ne peut ni le
+        # créer ni le neutraliser, contrairement à une ligne de control_commands)
+        self._check_emergency_file()
         # Les commandes de contrôle (arrêt d'urgence, pause) passent AVANT tout accès réseau.
         await self.process_commands()
         if not self.guardian.verify_integrity():

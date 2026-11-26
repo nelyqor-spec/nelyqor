@@ -35,10 +35,15 @@ def test_browser_signature_matches_python():
     fields = {"confirmation": "J'ACCEPTE DE PERDRE TOUT LE CAPITAL ENGAGE", "declare_ip_fixe": True, "estimate_id": "é"}
     js = f"""
 import {{ signCommand }} from "{(ROOT / 'frontend/sig.js').as_posix()}";
-const r = await signCommand("activate_real", {json.dumps(fields)}, {json.dumps(PW)}, {json.dumps(salt)}, 2000, 1234, "nonce-x");
+const r = await signCommand("activate_real", {json.dumps(fields)}, {json.dumps(PW)}, {json.dumps(salt)}, 600000, 1234, "nonce-x");
 console.log(r.signature);
+let refused = false;
+try {{ await signCommand("activate_real", {{}}, "x", {json.dumps(salt)}, 1, 1, "n"); }} catch (e) {{ refused = true; }}
+console.log(refused ? "ITER_FIGE" : "ITER_ACCEPTE");
 """
     out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
-    k = derive_key(PW, salt, 2000)
-    assert out.stdout.strip() == sign(k, "activate_real", 1234, "nonce-x", fields)
+    k = derive_key(PW, salt)  # 600 000 itérations, figées côté iPhone
+    lines = out.stdout.split()
+    assert lines[0] == sign(k, "activate_real", 1234, "nonce-x", fields)
+    assert lines[1] == "ITER_FIGE"  # une API compromise ne peut pas imposer 1 itération (D1)

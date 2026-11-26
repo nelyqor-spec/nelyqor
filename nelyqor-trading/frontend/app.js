@@ -34,7 +34,11 @@ async function signed(command, fields, phrase, password) {
   if (demo) return {};
   if (!phrase) throw new Error("phrase de signature requise");
   if (password && phrase === password) throw new Error("la phrase de signature doit différer du mot de passe");
-  const { salt, iterations } = await api("/api/command_salt");
+  // sel servi par Caddy depuis un fichier en lecture seule (hors de portée de l'API) ; repli API en dev
+  let salt = "";
+  try { const r = await fetch("/meta/command_salt", { cache: "no-store" }); if (r.ok) salt = (await r.text()).trim(); } catch (_) { /* dev */ }
+  if (!salt) salt = (await api("/api/command_salt")).salt;
+  const iterations = 600000;
   if (!salt) return {}; // le moteur refusera alors les commandes sensibles réelles
   return signCommand(command, fields, phrase, salt, iterations);
 }
@@ -191,7 +195,13 @@ function bind() {
   });
   on("btn-unreal", () => cmd("/api/control/deactivate_real"));
   on("btn-logout", async () => { await post("/api/logout"); sessionStorage.removeItem("csrf"); showLogin(); });
-  on("btn-csv", async () => { if (demo) return sheet("<p>Indisponible en démo.</p>"); location.href = "/api/export/operations.csv"; });
+  on("btn-csv", async () => {
+    if (demo) return sheet("<p>Indisponible en démo.</p>");
+    // téléchargement par fetch + blob : jamais de navigation vers /api/* (une réponse HTML piégée de l'API ne s'exécute pas)
+    const r = await fetch("/api/export/operations.csv", { credentials: "same-origin" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([await r.text()], { type: "text/csv" }));
+    a.download = "operations.csv"; a.click(); URL.revokeObjectURL(a.href);
+  });
   on("btn-fisc", async () => { const r = await api(`/api/export/fiscal?year=${new Date().getFullYear()}`); sheet(`<h2>Aide 2086</h2><div class="row"><span>Total prix de cession</span><b>${eur(r.total_prix_cession)}</b></div><div class="row"><span>Plus-values</span><b>${eur(r.total_plus_values)}</b></div><div class="row"><span>Sous le seuil de 305 €</span><b>${r.sous_seuil_305 ? "oui" : "non"}</b></div><p class="reason">${esc(r.avertissement)}</p><p class="reason">${esc(r.note_valorisation)}</p>`); });
   document.querySelectorAll("[data-ack]").forEach((b) => { b.onclick = () => run(() => cmd("/api/control/ack_flow", { flow_id: b.dataset.ack, note: "rapproché depuis l'iPhone" })); });
   on("btn-liq", async () => {
@@ -203,7 +213,7 @@ function bind() {
       <input id="liq-pw" type="password" placeholder="Mot de passe" autocomplete="current-password"><input id="liq-sp" type="password" placeholder="Phrase de signature (jamais envoyée)" autocomplete="off"><input id="liq-cf" placeholder="Tapez LIQUIDER">
       <button class="btn danger" id="liq-go">Confirmer la liquidation</button>`);
     $("#liq-go").onclick = () => run(async () => {
-      const fields = { confirmation: $("#liq-cf").value, estimate_id: est?.id || "" };
+      const fields = { confirmation: $("#liq-cf").value, estimate_id: est?.id || "", mode: est?.mode || "" };
       const sig = await signed("liquidation_confirm", fields, $("#liq-sp").value, $("#liq-pw").value);
       await cmd("/api/control/liquidation_confirm", { password: $("#liq-pw").value, ...fields, ...sig });
     });

@@ -89,7 +89,7 @@ async def test_signature_from_before_revocation_is_refused(tmp_path):
     clock.advance(1_000)
     submit(db, "d1", clock.now_ms(), "deactivate_real", {})
     await eng.process_commands()
-    assert eng.guardian.state == State.SIMULATION and eng.guardian.revoked_ms == clock.now_ms()
+    assert eng.guardian.state == State.SIMULATION and eng.guardian.revoked_ms == clock.now_ms() + 30_000
     clock.advance(1_000)  # toujours dans la fenêtre de 5 min de la signature volée
     submit(db, "x1", clock.now_ms(), "activate_real", stolen)
     await eng.process_commands()
@@ -108,6 +108,8 @@ async def test_emergency_stop_then_forged_resume_cannot_rearm_real(tmp_path):
     submit(db, "s1", clock.now_ms(), "emergency_stop", {})  # arrêt d'urgence : NON signé, toujours possible
     await eng.process_commands()
     assert eng.guardian.state == State.PAUSE
+    clock.advance(30_000)  # tolérance d'horloge après une révocation
+    await eng.step()  # données de marché rafraîchies (sinon la reprise est refusée pour données périmées)
     # API compromise : « reprise » non signée -> refusée, le réel n'est pas réarmé
     clock.advance(1_000)
     submit(db, "r1", clock.now_ms(), "resume", {"password_ok": True})

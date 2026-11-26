@@ -125,7 +125,8 @@ async def test_M1_pause_revokes_previous_resume_signature(tmp_path):
     stolen = signed_payload("resume_real", {"reprise": "reel"}, clock.now_ms(), "r2")
     submit(db, "p0", clock.now_ms(), "pause", {})
     await eng.process_commands()
-    clock.advance(1_000)
+    clock.advance(31_000)  # tolérance d'horloge après une révocation
+    await eng.step()
     resume_sig = signed_payload("resume_real", {"reprise": "reel"}, clock.now_ms(), "r1")
     submit(db, "r1", clock.now_ms(), "resume", resume_sig)
     await eng.process_commands()
@@ -170,3 +171,81 @@ def test_real_entry_vetoed_when_server_flag_absent(tmp_path):
     it = IntentCheck("BTC-EUR", "buy", "market", D(10), True, mode="real", equity=D(100), available_quote=D(100))
     v = eng.guardian.check(it)
     assert not v.allowed and any("drapeau serveur" in r for r in v.reasons)
+
+
+# ------------------------------------------------------------------ seconde contre-expertise (D1–D8, A5)
+async def test_A5_signature_29s_in_future_issued_before_stop_is_revoked(tmp_path):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = engine(tmp_path, clock)
+    eng.attach_real_exchange(RealSim([MarketInfo.from_bitvavo(BTC_RAW)], {"EUR": D(0)}, now_ms=clock.now_ms))
+    await eng.step()
+    db.kv_set("acceptance_proof", valid_proof(clock.now_ms()))
+    early = signed_payload("activate_real", FIELDS, clock.now_ms() + 29_000, "f29")  # signée avant l'arrêt
+    submit(db, "s1", clock.now_ms(), "emergency_stop", {})
+    await eng.process_commands()
+    clock.advance(1_000)
+    submit(db, "a1", clock.now_ms(), "activate_real", early)
+    await eng.process_commands()
+    assert not result(db, "a1")["ok"] and eng.guardian.state != State.REAL
+
+
+async def test_D2_emergency_file_in_engine_state_dir(tmp_path):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = await to_real(tmp_path, clock)
+    (tmp_path / "state" / "ARRET_URGENCE").touch()  # SSH : canal hors de portée de l'API
+    await eng.step()
+    assert eng.guardian.state == State.PAUSE and eng.guardian.entries_blocked_mem
+    assert list((tmp_path / "state").glob("ARRET_URGENCE.applique-*"))
+
+
+async def test_D3_forged_unknown_intent_does_not_block_and_pauses(tmp_path):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = engine(tmp_path, clock)
+    await eng.step()
+    db.exec("INSERT INTO intents(id,ts,mode,market,side,order_type,status,client_order_id,updated_ms,details) "
+            "VALUES('x1',?, 'simulation','BTC-EUR','sell','market','UNKNOWN','c-x1',?, '{}')",
+            (clock.now_ms() + 10**9, clock.now_ms()))
+    assert eng.paper_exec._has_unresolved() is False  # ligne non émise par le moteur : ne bloque rien
+    assert eng.guardian.state == State.PAUSE  # mais signalée (pause des nouvelles entrées)
+    assert db.kv_get("intentions_non_authentiques")["ids"] == ["x1"]
+
+
+async def test_D4_lost_store_with_real_history_goes_incident_and_needs_signature(tmp_path):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = engine(tmp_path, clock)
+    db.exec("INSERT INTO fills(id,intent_id,exchange_order_id,ts,market,side,amount,price,fee,fee_currency,fee_eur,taker,mode)"
+            " VALUES('f1','i1','o1',?,'BTC-EUR','buy','0.001','50000','0.1','EUR','0.1',1,'real')", (clock.now_ms(),))
+    eng.attach_real_exchange(RealSim([MarketInfo.from_bitvavo(BTC_RAW)], {"EUR": D(10)}, now_ms=clock.now_ms))
+    assert await eng._reconcile_real() is False  # magasin vierge + historique réel : pas de ré-ouverture
+    assert eng.guardian.state == State.INCIDENT and eng.store.get("falsification")
+    await eng.step()
+    submit(db, "r1", clock.now_ms(), "resume", {})
+    await eng.process_commands()
+    assert not result(db, "r1")["ok"]  # reprise non signée refusée tant que l'incident n'est pas levé
+
+
+async def test_D7_liquidation_estimate_tampered_in_db_ignored(tmp_path):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = engine(tmp_path, clock)
+    await eng.step()
+    est = eng.liquidation_estimate()
+    forged = {**est, "id": "faux", "ts": clock.now_ms()}
+    db.kv_set("liquidation_estimate", forged)
+    r = await eng.liquidate({**signed_payload("liquidation_confirm", {"confirmation": "LIQUIDER", "estimate_id": "faux"},
+                                              clock.now_ms(), "L1"), "estimate_id": "faux"})
+    assert not r["ok"]  # seule l'estimation en mémoire du moteur fait foi
+
+
+def test_D8_emergency_stop_effective_in_memory_even_if_write_fails(tmp_path, monkeypatch):
+    clock = FakeClock(1_770_000_000_000)
+    eng, db = engine(tmp_path, clock)
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(eng.store, "_write", boom)
+    try:
+        eng.guardian.emergency_stop("owner")
+    except OSError:
+        pass
+    it = IntentCheck("BTC-EUR", "buy", "market", D(10), True, equity=D(100), available_quote=D(100))
+    assert not eng.guardian.check(it).allowed

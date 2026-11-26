@@ -12,9 +12,22 @@
 	request_body {
 		max_size 64KB
 	}
-	# API : seul chemin relayé vers le conteneur api
+	# API : seul chemin relayé vers le conteneur api. Ses réponses sont « sandboxées » : même si une API
+	# compromise renvoyait du HTML, aucun script ne s'exécuterait sur l'origine de la PWA (phase 4, D5).
 	handle /api/* {
-		reverse_proxy api:8000
+		header Content-Security-Policy "sandbox; default-src 'none'; frame-ancestors 'none'"
+		header -Service-Worker-Allowed
+		reverse_proxy api:8000 {
+			header_down -Service-Worker-Allowed
+			header_down -Content-Security-Policy
+		}
+	}
+	# Sel public de signature servi depuis un fichier en LECTURE SEULE (l'API ne peut pas l'altérer, D1)
+	handle /meta/command_salt {
+		root * /srv/meta
+		rewrite * /owner_command_salt
+		header Cache-Control "no-store"
+		file_server
 	}
 	# PWA servie par Caddy depuis un montage en LECTURE SEULE (phase 4) : une API compromise ne peut plus
 	# servir un JavaScript piégé qui capterait la phrase de signature saisie dans l'iPhone.

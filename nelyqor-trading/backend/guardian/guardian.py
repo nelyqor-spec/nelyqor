@@ -100,6 +100,7 @@ class Guardian:
         # reçoit alors qu'une copie d'affichage, que l'API peut modifier sans aucun effet sur le moteur
         self.store = store
         self.tamper_detected = False
+        self.entries_blocked_mem = False  # arrêt d'urgence appliqué en mémoire même si la persistance échoue
 
     # --- stockage signé
     def _sig(self, key: str, value: Any) -> str:
@@ -173,7 +174,9 @@ class Guardian:
         return int(self._get("auth_revoked_ms", 0) or 0)
 
     def _revoke(self) -> None:
-        self._put("auth_revoked_ms", max(self._now(), self.revoked_ms))
+        from ..core.command_sig import FUTURE_TOLERANCE_MS
+        # + tolérance d'horloge : une signature « du futur » émise avant la révocation est aussi révoquée
+        self._put("auth_revoked_ms", max(self._now() + FUTURE_TOLERANCE_MS, self.revoked_ms))
 
     @property
     def is_real(self) -> bool:
@@ -255,6 +258,7 @@ class Guardian:
     def emergency_stop(self, actor: str) -> None:
         """Bloque immédiatement les nouvelles entrées. N'annule PAS les protections, ne liquide pas."""
         self._require_engine()
+        self.entries_blocked_mem = True  # d'abord en mémoire : effectif même si l'écriture échoue (disque plein)
         prev = self.state
         if prev not in (State.PAUSE, State.INCIDENT, State.RECONCILIATION):
             self._put("resume_state", prev.value)
@@ -275,6 +279,7 @@ class Guardian:
         if target == State.REAL and (not self.real_server_flag or self._get("real_activated_ms", None) is None):
             target = State.SIMULATION
         self._set_state(target, "reprise après contrôles")
+        self.entries_blocked_mem = False
         self._audit(actor, "reprise", True, {"to": target.value})
         return Verdict(True, [])
 
@@ -303,6 +308,8 @@ class Guardian:
         conditional = it.order_type in CONDITIONAL_TYPES
         if self.role != "engine":
             r.append(f"rôle {self.role} sans droit d'exécution")
+        if it.is_entry and self.entries_blocked_mem:
+            r.append("arrêt d'urgence actif (mémoire du moteur)")
         if it.mode == "real" and it.is_entry and not self.real_server_flag:
             r.append("drapeau serveur du réel absent : aucune entrée réelle")
         if self.tamper_detected:

@@ -206,6 +206,7 @@ class ExecutionEngine:
                  fmt(reserve_q) if verdict.allowed else "0", fmt(reserve_b) if verdict.allowed else "0",
                  "PENDING" if verdict.allowed else "VETOED", cid, self._now(),
                  json.dumps({"veto": verdict.reasons, "purpose": req.purpose,
+                             "tag": self._tag(intent_id, cid, req.market, req.side, req.order_type),
                              "trigger": fmt(req.trigger_amount) if req.trigger_amount is not None else None,
                              "original_reserve_quote": fmt(reserve_q)}, ensure_ascii=False)))
         if not verdict.allowed:
@@ -242,9 +243,37 @@ class ExecutionEngine:
         return self._sum(c.execute(f"SELECT reserved_base FROM intents WHERE mode=? AND market=? AND side='sell' "  # noqa: S608
                                    f"AND status IN {_ACTIVE_SQL}", (self.mode, market)).fetchall(), "reserved_base")
 
+    def _tag(self, intent_id: str, cid: str, market: str, side: str, order_type: str) -> str | None:
+        """Étiquette HMAC (clé d'état du moteur) des champs immuables d'une intention : une ligne écrite en base
+        par un autre processus (API compromise) est reconnaissable et ne peut plus bloquer les protections."""
+        key = getattr(self.g, "_key", None)
+        if key is None:
+            return None
+        import hashlib
+        import hmac
+        msg = "\0".join(["intent-v1", intent_id, cid, self.mode, market, side, order_type]).encode()
+        return hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+    def _authentic(self, row: Any) -> bool:
+        if getattr(self.g, "_key", None) is None:
+            return True  # mode historique sans clé (tests/dev)
+        try:
+            tag = json.loads(row["details"] or "{}").get("tag")
+        except (ValueError, TypeError):
+            return False
+        exp = self._tag(row["id"], row["client_order_id"] or "", row["market"], row["side"], row["order_type"])
+        import hmac
+        return isinstance(tag, str) and exp is not None and hmac.compare_digest(tag, exp)
+
     def _has_unresolved(self) -> bool:
-        return self.db.one("SELECT 1 FROM intents WHERE mode=? AND status IN ('UNKNOWN','SUBMITTING','PENDING') LIMIT 1",
-                           (self.mode,)) is not None
+        rows = self.db.q("SELECT id, client_order_id, market, side, order_type, details FROM intents "
+                         "WHERE mode=? AND status IN ('UNKNOWN','SUBMITTING','PENDING')", (self.mode,))
+        forged = [r["id"] for r in rows if not self._authentic(r)]
+        if forged:
+            # signalée, jamais bloquante pour les protections : pause des nouvelles entrées seulement
+            self.db.kv_set("intentions_non_authentiques", {"ids": forged[:50], "ts": self._now()}, self._now())
+            self.g.pause("execution", "intention non émise par le moteur détectée en base (falsification ?)")
+        return len(rows) > len(forged)
 
     def _set(self, intent_id: str, **fields: Any) -> None:
         fields["updated_ms"] = self._now()

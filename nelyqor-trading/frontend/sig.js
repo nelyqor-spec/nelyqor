@@ -9,7 +9,11 @@ export function canonical(v) {
 const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+export const ITER = 600000; // FIGÉ : une API compromise ne peut pas imposer un dérivé faible (1 itération)
+
 export async function signCommand(command, fields, password, salt, iterations, ts = Date.now(), nonce = crypto.randomUUID()) {
+  if (iterations !== ITER) throw new Error("paramètres de signature inattendus : refus");
+  if (!/^[A-Za-z0-9+/]{22}==$/.test(salt)) throw new Error("sel de signature invalide : refus");
   const enc = new TextEncoder();
   const base = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: b64(salt), iterations }, base, 256);
