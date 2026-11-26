@@ -10,7 +10,7 @@ intégralement perdu.**
 
 ## Sommaire
 - [Architecture](docs/ARCHITECTURE.md) · [Sécurité](docs/SECURITE.md) · [Déploiement VPS + Bitvavo](docs/DEPLOIEMENT.md)
-- [Runbooks (incidents, sauvegarde, mise à jour, révocation)](docs/RUNBOOKS.md) · [Fiscalité](docs/FISCALITE.md)
+- [Runbooks (incidents, sauvegarde, mise à jour, révocation)](docs/RUNBOOKS.md) · [Fiscalité](docs/FISCALITE.md) · [Infrastructure 24 h/24 + banc Bitvavo](docs/INFRASTRUCTURE.md)
 
 ## Installation locale (développement)
 

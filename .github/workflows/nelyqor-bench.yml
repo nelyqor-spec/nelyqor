@@ -1,0 +1,102 @@
+# Nelyqor Trading — BANC DE PERFORMANCES Bitvavo sur données PUBLIQUES (phase 7, points 2 et 5).
+# - Aucune clé, aucun secret, aucun ordre, aucun point d'accès privé : /time, /markets, /ticker/book, /ticker/24h,
+#   /{marché}/candles et le WebSocket public (ticker, book, trades).
+# - Limites d'API respectées par le script : plafond propre de 400 poids/min (limite publique 1000), réserve sur
+#   l'en-tête remaining, pause jusqu'à resetat, ARRÊT immédiat sur HTTP 429 ou erreur 105 (code de sortie 3).
+# - Le moteur RÉEL du projet balaie tout l'univers en SIMULATION (NELYQOR_REAL_TRADING_ALLOWED=false).
+# - Un runner GitHub n'est PAS le serveur définitif (région inconnue) et l'exécution des ordres n'est PAS vérifiée :
+#   voir nelyqor-trading/docs/INFRASTRUCTURE.md.
+# - Artefact : le JSON des mesures seulement (données de marché publiques, aucune donnée sensible), 14 jours.
+name: nelyqor-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Durée du banc en minutes (budget total du job : 15 min)"
+        type: choice
+        options: ["3", "6", "9"]
+        default: "9"
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "nelyqor-trading/scripts/bench_bitvavo.py"
+      - "nelyqor-trading/tests/test_bench_bitvavo.py"
+      - ".github/workflows/nelyqor-bench.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+env:
+  NELYQOR_REAL_TRADING_ALLOWED: "false"
+  NELYQOR_ROLE: lab
+
+jobs:
+  banc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - name: Tests hors ligne du banc
+        run: python -m pytest tests/test_bench_bitvavo.py -q -p no:cacheprovider
+      - name: Banc (API publique Bitvavo)
+        env:
+          BENCH_MINUTES: ${{ inputs.minutes || '9' }}
+        run: |
+          mkdir -p ../bench
+          case "$BENCH_MINUTES" in 3|6|9) ;; *) echo "durée refusée"; exit 1 ;; esac
+          set +e
+          python scripts/bench_bitvavo.py --minutes "$BENCH_MINUTES" --out ../bench/bench_bitvavo.json > ../bench.log 2>&1
+          echo "$?" > ../bench_code
+          tail -c 20000 ../bench.log
+          exit 0
+      - name: Résumé
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          p = "../bench/bench_bitvavo.json"
+          lines = ["## Banc Bitvavo (données publiques)", ""]
+          if not os.path.exists(p):
+              lines.append("Aucun résultat JSON produit : voir le journal du job.")
+          else:
+              r = json.load(open(p))
+              lines.append(f"- code de sortie : {r.get('code_sortie')} ; arrêt : {r.get('arret') or 'aucun'}")
+              lines.append(f"- machine : {r['environnement'].get('cpus')} CPU, {r['environnement'].get('memoire_go')} Go")
+              for k, v in (r.get("rest", {}).get("points") or {}).items():
+                  lat = v["latence_ms"]
+                  lines.append(f"- REST {k} : médiane {lat['mediane']} ms, p90 {lat['p90']} ms, p99 {lat['p99']} ms (n={lat['n']})")
+              m = r.get("moteur") or {}
+              if "decision_univers" in m:
+                  lines.append(f"- univers : {m['univers']} ; décision : {m['decision_univers']['premiere']}")
+                  lines.append(f"- périmés avant décision : {m['perimes_avant_decision']['part_perimes']}")
+              ws = r.get("websocket") or {}
+              lines.append(f"- WebSocket : {ws.get('connexions')} connexions, reprise {ws.get('reprise_premiere_donnee_ms')}")
+              lines.append(f"- limites : {r.get('limites_api')}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nelyqor-bench-bitvavo
+          path: bench/bench_bitvavo.json
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Code de sortie du banc
+        run: |
+          code=$(cat ../bench_code 2>/dev/null || echo 1)
+          echo "code de sortie du banc : $code (3 = arrêt sur limite d'API, 4 = aucune mesure)"
+          exit "$code"
