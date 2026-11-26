@@ -91,7 +91,9 @@ jobs:
         id: garde
         run: |
           now=$(date +%s); last=0
-          [ -f data/prospective/derniere_evaluation_ok ] && last=$(cat data/prospective/derniere_evaluation_ok)
+          [ -f data/prospective/derniere_evaluation_ok ] && last=$(head -c 20 data/prospective/derniere_evaluation_ok | tr -d '[:space:]')
+          # contenu venant du cache ou d'un artefact importé : DONNÉE non fiable -> entier strict, sinon 0 (journal perdu)
+          case "$last" in ''|*[!0-9]*) echo "::warning::horodatage de réussite invalide : ignoré"; last=0;; esac
           age_h=$(( (now - last) / 3600 ))
           echo "dernière évaluation réussie il y a ${age_h} h"
           echo "last=$last" >> "$GITHUB_OUTPUT"
@@ -147,9 +149,11 @@ jobs:
         run: python scripts/prospective_corrige.py || echo "::warning::diagnostic indisponible"
       - name: Contrôle (échec => alerte)
         if: steps.garde.outputs.skip != 'true'
+        env:
+          LAST_OK: ${{ steps.garde.outputs.last }}
         run: |
           ARCH=""; [ "$IS_DEFAULT" = "true" ] && ARCH="../archive"
-          python scripts/prospective_check.py --v1 ../v1.log --v2 ../v2.log --v3 ../v3.log --e1 ../e1.log --archive "$ARCH" --last-ok "${{ steps.garde.outputs.last }}" --out ../resultats.json
+          python scripts/prospective_check.py --v1 ../v1.log --v2 ../v2.log --v3 ../v3.log --e1 ../e1.log --archive "$ARCH" --last-ok "$LAST_OK" --out ../resultats.json
       - name: Horodatage de réussite
         if: steps.garde.outputs.skip != 'true'
         run: mkdir -p data/prospective && date +%s > data/prospective/derniere_evaluation_ok && du -sh data/market data/prospective || true
