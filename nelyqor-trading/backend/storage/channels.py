@@ -105,37 +105,130 @@ class ReadOnlyView:
             self._db = None
 
 
+MAX_CHANNEL_BYTES = 8 * 1024 * 1024  # fichier de commandes au-delà : ignoré (aucune lecture)
+MAX_NEW_PER_CYCLE = 5  # quota de commandes NOUVELLES prises par cycle (anti-remplissage du disque du moteur)
+SQL_STEP_BUDGET = 2_000_000  # instructions de la VM SQLite par lecture (anti-boucle : vue récursive, etc.)
+_EXPECTED_TABLE = " ".join(COMMANDS_MIGRATIONS[0].split()).replace("( ", "(").replace(" )", ")")
+
+
+def _norm(sql: str | None) -> str:
+    return " ".join((sql or "").split()).replace("( ", "(").replace(" )", ")")
+
+
+def read_channel_bytes(path: Path) -> bytes | None:
+    """Lecture BORNÉE et non bloquante du fichier de commandes : fichier régulier uniquement (ni lien symbolique,
+    ni FIFO, ni périphérique), taille ≤ MAX_CHANNEL_BYTES. Aucune ouverture SQLite du fichier partagé : aucun verrou
+    de l'API ne peut bloquer le moteur (contre-expertise sécurité phase 5, failles 1, 6, 7)."""
+    import os
+    import stat
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_CHANNEL_BYTES:
+        log.error("canal de commandes refusé (type ou taille)", extra={"data": {"mode": st.st_mode, "taille": st.st_size}})
+        return None
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st2 = os.fstat(fd)
+        if not stat.S_ISREG(st2.st_mode) or st2.st_size > MAX_CHANNEL_BYTES:
+            return None
+        chunks, total = [], 0
+        while total <= MAX_CHANNEL_BYTES:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                break
+            chunks.append(b)
+            total += len(b)
+        return None if total > MAX_CHANNEL_BYTES else b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def channel_writable(path: Path) -> bool:
+    """Le moteur peut-il écrire le canal de commandes ? En production, le volume est monté `:ro` dans le moteur
+    (drapeau ST_RDONLY du système de fichiers) : sinon la séparation n'est pas effective."""
+    import os
+    d = path.parent if path.parent.exists() else path.parent.parent
+    try:
+        return not (os.statvfs(d).f_flag & os.ST_RDONLY)
+    except OSError:
+        return True
+
+
 class CommandInbox:
-    """Côté moteur : lecture SEULE des commandes déposées par l'API. Tout le contenu est non fiable ; la prise
-    (anti double exécution, anti-rejeu par remise à « pending ») se fait dans le journal de la base du MOTEUR."""
+    """Côté moteur : lecture des commandes déposées par l'API. Tout le contenu est NON FIABLE.
+
+    Le fichier est lu en octets (borné), puis chargé dans une base SQLite EN MÉMOIRE privée (`deserialize`) :
+    schéma exigé à l'identique (une seule table, ni vue, ni déclencheur), `trusted_schema=OFF`, budget
+    d'instructions, filtres de taille dans le SQL. L'arrêt d'urgence est lu en PRIORITÉ ; au plus
+    `MAX_NEW_PER_CYCLE` commandes nouvelles par cycle (les identifiants déjà pris sont exclus)."""
 
     def __init__(self, path: Path | str) -> None:
-        self.view = ReadOnlyView(path)
+        self.path = Path(path)
 
     @property
-    def path(self) -> Path:
-        return self.view.path
+    def available(self) -> bool:
+        return self.path.exists()
 
-    def candidates(self, since_ts: int, always_valid: set[str]) -> list[dict[str, Any]]:
-        marks = ",".join("?" for _ in always_valid) or "''"
+    def _load(self) -> sqlite3.Connection | None:
+        data = read_channel_bytes(self.path)
+        if not data:
+            return None
+        c = sqlite3.connect(":memory:")
+        c.row_factory = sqlite3.Row
+        c.deserialize(data)
+        c.execute("PRAGMA trusted_schema=OFF")
+        steps = {"n": 0}
+
+        def guard() -> int:
+            steps["n"] += 1000
+            return 1 if steps["n"] > SQL_STEP_BUDGET else 0
+        c.set_progress_handler(guard, 1000)
+        objs = c.execute("SELECT type, name, sql FROM sqlite_master").fetchall()
+        tables = [o for o in objs if o["type"] == "table"]
+        others = [o for o in objs if o["type"] != "table" and not (o["type"] == "index" and o["sql"] is None)]
+        if others or len(tables) != 1 or tables[0]["name"] != "control_commands" or _norm(tables[0]["sql"]) != _EXPECTED_TABLE:
+            log.error("canal de commandes refusé : schéma inattendu", extra={"data": {"objets": [o["name"] for o in objs][:10]}})
+            c.close()
+            return None
+        return c
+
+    def candidates(self, since_ts: int, always_valid: set[str], taken: set[str] | None = None,
+                   always_valid_since: int | None = None) -> list[dict[str, Any]]:
         try:
-            rows = self.view.q(
-                f"SELECT id, ts, command, payload FROM control_commands WHERE ts >= ? OR command IN ({marks}) "  # noqa: S608
-                f"ORDER BY ts, rowid LIMIT {MAX_COMMANDS_PER_READ}", (since_ts, *sorted(always_valid)))
-        except sqlite3.Error as e:  # base de commandes corrompue/verrouillée : jamais bloquant pour le moteur
-            log.error("lecture des commandes impossible", extra={"data": {"err": repr(e)}})
+            c = self._load()
+        except Exception as e:  # noqa: BLE001 — base piégée/corrompue, mémoire : jamais bloquant pour le moteur
+            log.error("lecture des commandes impossible", extra={"data": {"err": repr(e)[:200]}})
             return []
-        out = []
-        for r in rows:
-            cid, ts, cmd, payload = r["id"], r["ts"], r["command"], r["payload"]
-            if not isinstance(cid, str) or not cid or len(cid) > MAX_COMMAND_ID:
-                continue
-            if not isinstance(ts, int) or not isinstance(cmd, str) or len(cmd) > 64:
-                continue
-            if payload is not None and (not isinstance(payload, str) or len(payload.encode()) > MAX_PAYLOAD_BYTES):
-                payload = "__invalide__"
-            out.append({"id": cid, "ts": ts, "command": cmd, "payload": payload})
-        return out
+        if c is None:
+            return []
+        try:
+            c.execute("CREATE TEMP TABLE pris(id TEXT PRIMARY KEY)")
+            c.executemany("INSERT OR IGNORE INTO temp.pris VALUES(?)", [(x,) for x in (taken or set())])
+            av = sorted(always_valid)
+            marks = ",".join("?" for _ in av) or "''"
+            ok = ("typeof(id)='text' AND length(id) BETWEEN 1 AND ? AND typeof(ts)='integer' AND typeof(command)='text' "
+                  "AND length(command) <= 64 AND id NOT IN (SELECT id FROM temp.pris)")
+            base = (MAX_PAYLOAD_BYTES, MAX_COMMAND_ID)
+            # charge utile invalide ou trop grande : remplacée DANS LE SQL (jamais copiée en Python) -> refus journalisé
+            cols = ("id, ts, command, CASE WHEN payload IS NULL THEN NULL WHEN typeof(payload)='text' AND "
+                    "length(CAST(payload AS BLOB)) <= ? THEN payload ELSE '__invalide__' END AS payload")
+            av_since = since_ts if always_valid_since is None else always_valid_since
+            sql_urgent = (f"SELECT {cols} FROM control_commands WHERE {ok} AND command='emergency_stop' "  # noqa: S608
+                          "ORDER BY ts DESC LIMIT ?")
+            sql_other = (f"SELECT {cols} FROM control_commands WHERE {ok} AND command != 'emergency_stop' AND "  # noqa: S608
+                         f"(ts >= ? OR (command IN ({marks}) AND ts >= ?)) ORDER BY ts DESC LIMIT ?")
+            rows = c.execute(sql_urgent, (*base, 2)).fetchall()  # arrêt d'urgence : toute date, prioritaire
+            rows += c.execute(sql_other, (*base, since_ts, *av, av_since, MAX_NEW_PER_CYCLE)).fetchall()
+            out = [{"id": r["id"], "ts": int(r["ts"]), "command": r["command"], "payload": r["payload"]} for r in rows]
+        except Exception as e:  # noqa: BLE001
+            log.error("lecture des commandes impossible", extra={"data": {"err": repr(e)[:200]}})
+            return []
+        finally:
+            c.close()
+        out.sort(key=lambda x: (x["command"] != "emergency_stop", x["ts"]))  # urgence d'abord, puis chronologique
+        return out[:MAX_NEW_PER_CYCLE]
 
 
 # tables publiées vers l'affichage : (requête de sélection dans la base du moteur)

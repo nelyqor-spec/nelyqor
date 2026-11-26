@@ -158,7 +158,7 @@ async def test_command_taken_once_by_concurrent_loops(tmp_path):
     stale = eng_a.inbox.candidates(0, {"emergency_stop"})  # lu par B avant que A ne le prenne
     await eng_a.process_commands()
     eng_b, db_b = make_engine(tmp_path, clock)  # seconde boucle sur la même base du moteur
-    eng_b.inbox.candidates = lambda since, always: stale  # type: ignore[method-assign]
+    eng_b.inbox.candidates = lambda since, always, **kw: stale  # type: ignore[method-assign]
     await eng_b.process_commands()
     n = db.one("SELECT COUNT(*) n FROM audit WHERE action='arret_urgence'")["n"]
     assert n == 1

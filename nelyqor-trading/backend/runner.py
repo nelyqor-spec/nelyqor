@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import os
 from decimal import Decimal
@@ -43,7 +44,7 @@ from .market_data.universe import MarketState, check_eligibility, diff_markets, 
 from .notify.notifier import Notifier
 from .portfolio.decision import DecisionEngine, HeldPosition
 from .research.registry import Registry
-from .storage.channels import CommandInbox, DisplayPublisher
+from .storage.channels import MAX_NEW_PER_CYCLE, CommandInbox, DisplayPublisher, channel_writable
 from .storage.db import Database
 from .strategies.base import build_strategies
 
@@ -55,6 +56,8 @@ ALWAYS_VALID_COMMANDS = {"pause", "emergency_stop"}
 ENTRY_LIMIT_TTL_MS = 15 * 60_000
 RECON_OVERLAP_MS = 7 * 86_400_000
 COMMAND_FUTURE_TOLERANCE_MS = 60_000  # commande datée du futur (horloge de l'API) : refusée au-delà
+ALWAYS_VALID_MAX_AGE_MS = 7 * 86_400_000  # pause / arrêt d'urgence : ignorés au-delà de 7 jours (anti-remplissage)
+COMMAND_JOURNAL_RETENTION_MS = 8 * 86_400_000  # journal des commandes prises (moteur) : purge au-delà
 COMMAND_SCAN_MS = 86_400_000  # fenêtre de lecture du canal : au-delà du TTL, la commande est journalisée « expirée »
 AUTH_REFRESH_MS = 5_000  # soldes relus chez Bitvavo à chaque cycle de décision (au plus une fois par 5 s)
 KNOWN_COMMANDS = {"pause", "emergency_stop", "resume", "activate_real", "deactivate_real", "liquidation_estimate",
@@ -361,20 +364,40 @@ class Engine:
         return out
 
     # ------------------------------------------------------------ commandes de contrôle (depuis l'API)
+    async def _safe_commands(self) -> None:
+        try:
+            await self.process_commands()
+        except Exception as e:  # noqa: BLE001
+            log.error("canal de commandes : échec isolé", extra={"data": {"err": repr(e)[:200]}})
+            self.notifier.notify("securite", f"Canal de commandes en échec ({type(e).__name__}) : positions gérées, "
+                                 "canal SSH disponible", dedup_key=f"canal-err-{self.clock.now_ms() // 3_600_000}")
+
     async def process_commands(self) -> None:
         """Commandes déposées par l'API dans `commandes.db` (lecture SEULE, contenu non fiable). La prise se fait
         dans le journal de la base du MOTEUR (INSERT OR IGNORE sur l'identifiant) : une commande n'est exécutée
         qu'une fois, même si l'API la remet « pending », la ré-insère ou si deux boucles la lisent."""
         now = self.clock.now_ms()
         processed = 0
-        for cmd in self.inbox.candidates(now - COMMAND_SCAN_MS, ALWAYS_VALID_COMMANDS):
+        av_since = now - ALWAYS_VALID_MAX_AGE_MS
+        taken = {r["id"] for r in self.db.q("SELECT id FROM control_commands WHERE ts >= ? OR command='emergency_stop'",
+                                            (min(av_since, now - COMMAND_SCAN_MS),))}
+        cands = self.inbox.candidates(now - COMMAND_SCAN_MS, ALWAYS_VALID_COMMANDS, taken=taken, always_valid_since=av_since)
+        if len(cands) >= MAX_NEW_PER_CYCLE:
+            self.notifier.notify("securite", "Canal de commandes saturé : au plus quelques commandes prises par cycle "
+                                 "(arrêt d'urgence prioritaire ; canal SSH disponible)", dedup_key=f"canal-{now // 3_600_000}")
+        if now - getattr(self, "_cmd_purge_ms", 0) > 3_600_000:
+            self._cmd_purge_ms = now
+            self.db.exec("DELETE FROM control_commands WHERE ts < ? AND status='done' AND command != 'emergency_stop'", (now - COMMAND_JOURNAL_RETENTION_MS,))
+        for cmd in cands:
             # marquage « processing » AVANT exécution : en cas de crash, la commande n'est pas rejouée ;
             # prise atomique : si une autre boucle/instance l'a déjà prise, elle n'est jamais exécutée deux fois
             with self.db.tx() as cx:
-                taken = cx.execute("INSERT OR IGNORE INTO control_commands(id,ts,command,payload,status) "
-                                   "VALUES(?,?,?,?,'processing')",
-                                   (cmd["id"], cmd["ts"], cmd["command"], cmd["payload"])).rowcount
-            if taken != 1:
+                # journal du moteur : empreinte de la charge utile seulement (borne la croissance du disque)
+                digest = "sha256:" + hashlib.sha256((cmd["payload"] or "").encode()).hexdigest()
+                got = cx.execute("INSERT OR IGNORE INTO control_commands(id,ts,command,payload,status) "
+                                 "VALUES(?,?,?,?,'processing')",
+                                 (cmd["id"], cmd["ts"], cmd["command"], digest)).rowcount
+            if got != 1:
                 continue
             processed += 1
             c = cmd["command"]
@@ -473,7 +496,9 @@ class Engine:
         r = self.db.one("SELECT * FROM external_flows WHERE id=?", (flow_id,))
         if r is None:
             return {"ok": False, "reasons": ["flux inconnu"]}
-        if r["mode"] == "real" and self.command_key is not None:
+        if r["mode"] == "real" and self.command_key is None:
+            return {"ok": False, "reasons": ["rapprochement d'un flux réel : clé de vérification des commandes absente"]}
+        if r["mode"] == "real":
             # rapprocher un flux RÉEL modifie la comptabilité du compte : signature du propriétaire exigée
             why = self._verify_signed("ack_flow", payload or {})
             signed = (payload or {}).get("sig_fields") or {}
@@ -512,10 +537,15 @@ class Engine:
         return pf
 
     def bases_separated(self) -> bool:
+        """Trois fichiers distincts et canal de commandes NON inscriptible par le
+        moteur (montage :ro) ; un lien symbolique est refusé (contre-expertise sécurité phase 5, failles 5 et 7)."""
         if self.db.path == ":memory:":
             return False
-        paths = {Path(self.db.path).resolve(), self.inbox.path.resolve(), self.display.path.resolve()}
-        return len(paths) == 3
+        files = [Path(self.db.path), self.inbox.path, self.display.path]
+        if any(f.is_symlink() for f in files):
+            return False
+        paths = {f.resolve() for f in files}
+        return len(paths) == 3 and not channel_writable(self.inbox.path)
 
     # ------------------------------------------------------------ capital authentifié (phase 5)
     async def authenticated_capital(self) -> AuthCapital:
@@ -926,8 +956,9 @@ class Engine:
         # Arrêt d'urgence par SSH : fichier déposé dans le répertoire d'état du MOTEUR (l'API ne peut ni le
         # créer ni le neutraliser, contrairement à une ligne de control_commands)
         self._check_emergency_file()
-        # Les commandes de contrôle (arrêt d'urgence, pause) passent AVANT tout accès réseau.
-        await self.process_commands()
+        # Les commandes de contrôle (arrêt d'urgence, pause) passent AVANT tout accès réseau. Un échec du canal
+        # (API compromise) ne doit JAMAIS empêcher la gestion des positions et des protections.
+        await self._safe_commands()
         if not self.guardian.verify_integrity():
             self.notifier.notify("securite", "Falsification de l'état du Guardian détectée : INCIDENT")
         try:
@@ -938,7 +969,7 @@ class Engine:
             self.heartbeat(data_ok=False)
             raise
         self.last_data_ms = now
-        await self.process_commands()
+        await self._safe_commands()
         for ex in self.execs():
             await ex.recover()
             await ex.refresh_open()

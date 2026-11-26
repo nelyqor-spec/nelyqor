@@ -20,6 +20,14 @@ from backend.storage.db import Database  # noqa: E402
 
 STATE_KEY = b"cle-de-test-integrite-etat-0123456789"
 
+
+@pytest.fixture(autouse=True)
+def _canal_monte_ro(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Les répertoires temporaires des tests sont inscriptibles : on SIMULE le montage `:ro` du canal de commandes
+    dans le moteur (production : drapeau ST_RDONLY réel). Le cas inscriptible est testé explicitement."""
+    import backend.runner as runner
+    monkeypatch.setattr(runner, "channel_writable", lambda p: False)
+
 BTC_RAW = {"market": "BTC-EUR", "status": "trading", "base": "BTC", "quote": "EUR", "pricePrecision": 5,
            "minOrderInBaseAsset": "0.0001", "minOrderInQuoteAsset": "5", "maxOrderInQuoteAsset": "1000000",
            "quantityDecimals": 8, "notionalDecimals": 2, "orderTypes": ["market", "limit", "stopLoss", "stopLossLimit"]}

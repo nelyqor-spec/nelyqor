@@ -65,3 +65,18 @@ SSH par clé uniquement (`PasswordAuthentication no`).
 - Un attaquant ayant le mot de passe ET l'accès à l'API peut tout faire : protéger le mot de passe (12+ caractères).
 - (Corrigé en phase 4) `acceptance_tests_ok` non signé : remplacé par une preuve signée liée au code.
 - Le global anti-bruteforce (200 / 15 min) peut être saturé par un attaquant distribué : arrêt d'urgence SSH.
+
+## Phase 5 — durcissement du canal de commandes (contre-expertise adversariale)
+
+Hypothèse : l'API est compromise et écrit ce qu'elle veut dans `commandes.db`.
+- Lecture en OCTETS, bornée (≤ 8 Mo), fichier régulier uniquement (`lstat`, `O_NOFOLLOW`, `O_NONBLOCK`) : ni FIFO, ni
+  lien symbolique, ni verrou SQLite partagé ; chargement dans une base EN MÉMOIRE privée (`deserialize`).
+- Schéma exigé à l'identique (une table, aucune vue ni déclencheur), `trusted_schema=OFF`, budget d'instructions
+  SQLite, filtres de type et de taille dans le SQL (charge utile > 16 Ko remplacée avant toute copie en Python).
+- Arrêt d'urgence lu en priorité ; au plus 5 commandes nouvelles par cycle ; pause/arrêt valables 7 jours ; journal
+  du moteur : empreinte sha256 de la charge utile seulement, purge à 8 jours (sauf arrêts d'urgence).
+- Un échec du canal est isolé : la gestion des positions et des protections a toujours lieu.
+- `bases_separees` exige un canal NON inscriptible par le moteur (montage `:ro`, drapeau ST_RDONLY) et aucun lien.
+- Rapprocher un flux RÉEL exige la clé de vérification des commandes et une signature du propriétaire.
+Risques acceptés : une API compromise peut supprimer, retenir ou saturer (> 8 Mo) les commandes de l'iPhone et
+mentir à l'affichage ; l'arrêt d'urgence par SSH (`/state/ARRET_URGENCE`) reste indépendant.

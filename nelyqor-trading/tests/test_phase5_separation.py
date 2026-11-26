@@ -215,7 +215,6 @@ async def test_engine_survives_missing_or_corrupt_command_channel(tmp_path):
     await eng.process_commands()  # canal pas encore créé par l'API : aucune erreur
     eng.inbox.path.parent.mkdir(parents=True, exist_ok=True)
     eng.inbox.path.write_bytes(b"ceci n'est pas une base SQLite" * 100)
-    eng.inbox.view.close()
     await eng.step()  # canal corrompu : le moteur continue (canal SSH /state toujours disponible)
     (tmp_path / "state" / "ARRET_URGENCE").touch()
     await eng.step()

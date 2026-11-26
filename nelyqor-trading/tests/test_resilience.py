@@ -179,10 +179,11 @@ async def test_unidentified_manual_flow_pauses_entries(tmp_path):
     assert len(db.q("SELECT * FROM external_flows WHERE identified=0")) == 1
     assert eng.guardian.state == State.PAUSE
     assert db.one("SELECT COUNT(*) n FROM notifications WHERE kind='flux_non_identifie'")["n"] == 1
-    # rapprochement manuel : valorisé à l'acceptation (pas à 0 €), puis rapprochement propre
-    assert eng.ack_flow("unk-EUR", "virement oublié")["ok"]
-    assert db.one("SELECT value_eur FROM external_flows WHERE id='unk-EUR'")["value_eur"] == "7"
-    assert await eng._reconcile_real()
+    # rapprochement manuel d'un flux RÉEL sans clé de vérification des commandes : REFUSÉ (contre-expertise
+    # sécurité phase 5, faille 8) ; le parcours signé est couvert par test_phase5_separation
+    r = eng.ack_flow("unk-EUR", "virement oublié")
+    assert not r["ok"] and "clé" in r["reasons"][0]
+    assert db.one("SELECT identified FROM external_flows WHERE id='unk-EUR'")["identified"] == 0
 
 
 def valid_proof(now_ms):
