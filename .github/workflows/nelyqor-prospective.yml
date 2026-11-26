@@ -72,7 +72,7 @@ jobs:
           if git ls-remote --exit-code --heads origin "$ARCHIVE_BRANCH" >/dev/null; then
             git fetch origin "$ARCHIVE_BRANCH"
             git archive "origin/$ARCHIVE_BRANCH" | tar -x -C ../archive
-            for f in journal.jsonl journal_v2.jsonl journal_v3.jsonl; do
+            for f in journal.jsonl journal_v2.jsonl journal_v3.jsonl journal_e1.jsonl; do
               [ -f "../archive/$f" ] && cp "../archive/$f" "data/prospective/$f"
             done
             echo "archive restaurée"; ls -la ../archive
@@ -132,6 +132,16 @@ jobs:
         if: steps.garde.outputs.skip != 'true'
         run: |
           if [ -f reports/prospective/v3/candidats_figes_v3.json ]; then python scripts/prospective_v3.py run | tee ../v3.log; else echo "aucun candidat v3 figé"; fi
+      - uses: actions/cache/restore@v4
+        if: steps.garde.outputs.skip != 'true'
+        with:
+          path: nelyqor-trading/data/events
+          key: events-v1-${{ github.run_id }}
+          restore-keys: events-v1-
+      - name: Génération expérimentale E1 (directionnel + événementiel, simulation, non déployable)
+        if: steps.garde.outputs.skip != 'true'
+        run: |
+          if [ -f reports/prospective/e1/candidats_figes_e1.json ]; then python scripts/prospective_e1.py run --events-dir data/events | tee ../e1.log; else echo "aucune génération E1 figée"; fi
       - name: Diagnostic HORS GEL (n'affecte pas les évaluations officielles)
         if: steps.garde.outputs.skip != 'true'
         run: python scripts/prospective_corrige.py || echo "::warning::diagnostic indisponible"
@@ -139,7 +149,7 @@ jobs:
         if: steps.garde.outputs.skip != 'true'
         run: |
           ARCH=""; [ "$IS_DEFAULT" = "true" ] && ARCH="../archive"
-          python scripts/prospective_check.py --v1 ../v1.log --v2 ../v2.log --v3 ../v3.log --archive "$ARCH" --last-ok "${{ steps.garde.outputs.last }}" --out ../resultats.json
+          python scripts/prospective_check.py --v1 ../v1.log --v2 ../v2.log --v3 ../v3.log --e1 ../e1.log --archive "$ARCH" --last-ok "${{ steps.garde.outputs.last }}" --out ../resultats.json
       - name: Horodatage de réussite
         if: steps.garde.outputs.skip != 'true'
         run: mkdir -p data/prospective && date +%s > data/prospective/derniere_evaluation_ok && du -sh data/market data/prospective || true
@@ -156,7 +166,7 @@ jobs:
           else
             git worktree add --detach ../archive-wt && cd ../archive-wt && git checkout --orphan "$ARCHIVE_BRANCH" && git rm -rqf . || true
           fi
-          for f in journal.jsonl journal_v2.jsonl journal_v3.jsonl; do
+          for f in journal.jsonl journal_v2.jsonl journal_v3.jsonl journal_e1.jsonl; do
             [ -f "$GITHUB_WORKSPACE/nelyqor-trading/data/prospective/$f" ] && cp "$GITHUB_WORKSPACE/nelyqor-trading/data/prospective/$f" .
           done
           mkdir -p resultats && cp "$GITHUB_WORKSPACE/resultats.json" "resultats/$(date -u +%Y-%m-%dT%H%M%SZ).json"

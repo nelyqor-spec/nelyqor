@@ -68,6 +68,7 @@ def main() -> None:
     ap.add_argument("--v1", required=True)
     ap.add_argument("--v2", required=True)
     ap.add_argument("--v3", default="")
+    ap.add_argument("--e1", default="")
     ap.add_argument("--last-ok", type=int, default=-1, help="horodatage (s) de la dernière réussite connue avant ce run ; 0 = aucun")
     ap.add_argument("--cutoff-ms", type=int, default=CUTOFF_MS)
     ap.add_argument("--archive", default="")
@@ -81,23 +82,29 @@ def main() -> None:
         pb += [p.replace("v1", "v3", 1) for p in problems(v3, None) if p.startswith("v1")]
         if not (v3.get("journal") or {}).get("chaine_intacte", False):
             pb.append("v3 : chaîne du journal rompue")
+    e1 = extract(a.e1, "PROSPECTIF_E1") if a.e1 and Path(a.e1).exists() else None
+    if e1 is not None:
+        pb += [p.replace("v1", "e1", 1) for p in problems(e1, None) if p.startswith("v1")]
+        if not (e1.get("journal") or {}).get("chaine_intacte", False):
+            pb.append("e1 : chaîne du journal rompue")
     jd = Path(a.journal_dir)
     now = int(time.time() * 1000)
     if a.last_ok == 0 and now > a.cutoff_ms + 86_400_000:
         pb.append("aucun état antérieur (ni archive, ni cache) plus de 24 h après le départ prospectif : journal perdu "
                   "ou non importé — relancer avec seed_run_id")
-    for f in ("journal.jsonl", "journal_v2.jsonl", "journal_v3.jsonl"):
+    for f in ("journal.jsonl", "journal_v2.jsonl", "journal_v3.jsonl", "journal_e1.jsonl"):
         if a.archive:
             why = append_only(Path(a.archive) / f, jd / f)
             if why:
                 pb.append(why)
     summary = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "problemes": pb,
-               "v1": v1, "v2": v2, "v3": v3}
+               "v1": v1, "v2": v2, "v3": v3, "e1": e1}
     Path(a.out).write_text(json.dumps(summary, ensure_ascii=False, default=str, indent=1))
     lines = ["## Évaluation prospective", "", f"- v1 : {v1.get('validite') if v1 else 'absente'}",
              f"- v2 : {v2.get('validite') if v2 else 'absente'} ; journal {((v2 or {}).get('journal') or {})}",
              f"- v3 : {v3.get('validite') if v3 else 'absente'} ; journal {((v3 or {}).get('journal') or {})} ; "
-             f"rejeu {((v3 or {}).get('rejeu') or {}).get('n_divergences', '—')} divergence(s)", ""]
+             f"rejeu {((v3 or {}).get('rejeu') or {}).get('n_divergences', '—')} divergence(s)",
+             f"- e1 (expérimental) : {e1.get('validite') if e1 else 'absente'} ; journal {((e1 or {}).get('journal') or {})}", ""]
     lines += [f"- ❌ {p}" for p in pb] or ["- ✅ aucun problème détecté"]
     text = "\n".join(lines)
     print(text)
