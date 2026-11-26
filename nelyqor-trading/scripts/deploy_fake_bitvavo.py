@@ -20,7 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# monté en lecture seule dans le conteneur de test (non livré dans l'image de production) : code dans /app
+sys.path.insert(0, "/app" if Path("/app/backend").is_dir() else str(Path(__file__).resolve().parents[1]))
 
 from backend.research.synthetic import synthetic_candles  # noqa: E402
 

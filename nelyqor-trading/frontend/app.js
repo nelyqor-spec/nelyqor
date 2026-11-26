@@ -34,10 +34,17 @@ async function signed(command, fields, phrase, password) {
   if (demo) return {};
   if (!phrase) throw new Error("phrase de signature requise");
   if (password && phrase === password) throw new Error("la phrase de signature doit différer du mot de passe");
-  // sel servi par Caddy depuis un fichier en lecture seule (hors de portée de l'API) ; repli API en dev
+  // sel servi par Caddy depuis un fichier en lecture seule (hors de portée de l'API). Phase 6 (contre-expertise
+  // D3) : AUCUN repli silencieux sur l'API en production — un sel fourni par une API compromise permettrait de
+  // dériver une autre clé ; repli toléré seulement en développement local (serveur de l'API, sans Caddy).
   let salt = "";
-  try { const r = await fetch("/meta/command_salt", { cache: "no-store" }); if (r.ok) salt = (await r.text()).trim(); } catch (_) { /* dev */ }
-  if (!salt) salt = (await api("/api/command_salt")).salt;
+  try { const r = await fetch("/meta/command_salt", { cache: "no-store" }); if (r.ok) salt = (await r.text()).trim(); } catch (_) { /* réseau */ }
+  if (!salt) {
+    const dev = ["localhost", "127.0.0.1"].includes(location.hostname) && location.protocol === "http:";
+    if (!dev) throw new Error("ALERTE SÉCURITÉ : sel de signature indisponible via /meta/command_salt (Caddy) — signature refusée");
+    console.warn("sel de signature lu via l'API (développement local uniquement)");
+    salt = (await api("/api/command_salt")).salt;
+  }
   const iterations = 600000;
   if (!salt) return {}; // le moteur refusera alors les commandes sensibles réelles
   return signCommand(command, fields, phrase, salt, iterations);

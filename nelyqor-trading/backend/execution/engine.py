@@ -170,9 +170,11 @@ class ExecutionEngine:
         m = self.markets.get(req.market)
         if m is None:
             return SubmitResult("", "REFUSED", False, ["marché inconnu"])
-        if self._has_unresolved():
+        if req.side == "buy" and self._has_unresolved():
+            # phase 6 (D6) : un ordre inconnu bloque les ENTRÉES seulement ; ventes et stops de protection restent
+            # possibles (l'anti-vente dupliquée compte déjà les ventes UNKNOWN dans la quantité réservée)
             self.g.pause("execution", "ordre à l'état inconnu non résolu")
-            return SubmitResult("", "REFUSED", False, ["un ordre est à l'état inconnu : aucune nouvelle soumission"])
+            return SubmitResult("", "REFUSED", False, ["un ordre est à l'état inconnu : aucune nouvelle entrée"])
         self._round(req, m)
         ref_price = req.price or req.trigger_amount or req.ref_price or ZERO
         est_quote = req.amount_quote if req.amount_quote is not None else (req.amount or ZERO) * ref_price

@@ -120,10 +120,14 @@ async def test_unknown_status_blocks_new_orders(engine, sim, db, guardian):
     r = await engine.submit(OrderRequest("BTC-EUR", "buy", "market", amount_quote=D("20"), check=chk("20")), D(100))
     assert r.status == "UNKNOWN"
     assert guardian.state == State.PAUSE
-    r2 = await engine.submit(OrderRequest("BTC-EUR", "sell", "market", amount=D("0.0001"), is_entry=False,
-                                          check=chk("5", entry=False, side="sell")), D(100))
+    r2 = await engine.submit(OrderRequest("BTC-EUR", "buy", "market", amount_quote=D("5"), check=chk("5")), D(100))
     assert not r2.accepted and "inconnu" in r2.reasons[0]
     assert sim.create_calls == 1
+    # phase 6 (contre-expertise D6) : une VENTE n'est plus bloquée par l'ordre inconnu (refusée ici pour une
+    # autre raison : quantité de position absente), jamais « un ordre est à l'état inconnu »
+    r3 = await engine.submit(OrderRequest("BTC-EUR", "sell", "market", amount=D("0.0001"), is_entry=False,
+                                          check=chk("5", entry=False, side="sell")), D(100))
+    assert not any("inconnu" in x for x in r3.reasons)
 
 
 async def test_cancel_fill_race(engine, sim, db):

@@ -19,5 +19,7 @@
   "auth_divergence_tolerance_eur": "0.50",
   "auth_divergence_tolerance_fraction": "0.005",
   "_comment_phase6": "Au plus max_active_entry_orders achats actifs simultanément par mode (ordres limites en attente compris) ; les ordres en attente comptent dans l'exposition totale et dans la position de leur marché. Ventes et protections jamais bornées.",
-  "max_active_entry_orders": 3
+  "max_active_entry_orders": 3,
+  "_comment_phase6_sortie": "Vente de PROTECTION au marché (sortie, liquidation) : âge des données toléré jusqu'à max_stale_ms_protective_exit (une position ne doit jamais rester sans stop ni sortie possible) ; les achats restent bornés par max_stale_ms.",
+  "max_stale_ms_protective_exit": 120000
 }

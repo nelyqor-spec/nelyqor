@@ -40,7 +40,14 @@ from .features import indicators as ind
 from .guardian.guardian import Guardian, IntentCheck, State
 from .market_data.bitvavo_rest import BitvavoError, BitvavoREST
 from .market_data.models import Candle, MarketInfo
-from .market_data.universe import MarketState, check_eligibility, data_age_ms, diff_markets, spread_bps
+from .market_data.universe import (
+    MarketState,
+    check_eligibility,
+    data_age_ms,
+    diff_markets,
+    parse_exchange_ts,
+    spread_bps,
+)
 from .notify.notifier import Notifier
 from .portfolio.decision import DecisionEngine, HeldPosition
 from .research.registry import Registry
@@ -59,6 +66,12 @@ COMMAND_FUTURE_TOLERANCE_MS = 60_000  # commande datée du futur (horloge de l'A
 ALWAYS_VALID_MAX_AGE_MS = 7 * 86_400_000  # pause / arrêt d'urgence : ignorés au-delà de 7 jours (anti-remplissage)
 COMMAND_JOURNAL_RETENTION_MS = 8 * 86_400_000  # journal des commandes prises (moteur) : purge au-delà
 COMMAND_SCAN_MS = 86_400_000  # fenêtre de lecture du canal : au-delà du TTL, la commande est journalisée « expirée »
+CLOCK_SKEW_ALERT_MS = 5_000  # dérive d'horloge hôte/échange au-delà : alerte et réel refusé (D2)
+CLOCK_SYNC_EVERY_MS = 600_000
+PURGE_EVERY_MS = 86_400_000
+PURGE_BATCH = 50_000  # lignes supprimées au plus par table et par purge (borne la durée du verrou)
+OFFICIAL_REST_URL = "https://api.bitvavo.com/v2"
+OFFICIAL_WS_PREFIX = "wss://ws.bitvavo.com/"
 AUTH_REFRESH_MS = 5_000  # soldes relus chez Bitvavo à chaque cycle de décision (au plus une fois par 5 s)
 KNOWN_COMMANDS = {"pause", "emergency_stop", "resume", "activate_real", "deactivate_real", "liquidation_estimate",
                   "liquidation_confirm", "ack_flow"}
@@ -108,6 +121,12 @@ class Engine:
         self.last_data_ms = 0
         self.last_snapshot_ms = 0
         self.last_fee_refresh_ms = 0
+        self.clock_skew_ms = 0  # heure de l'échange − heure locale (D2) ; 0 tant que non mesuré
+        self.clock_skew_known = False
+        self.last_clock_sync_ms = -CLOCK_SYNC_EVERY_MS
+        self.last_purge_ms = 0
+        self._last_px: dict[str, Decimal] = {}  # dernier prix connu par actif (D5)
+        self._open_orders_checked = False
         self.command_key = command_key  # vérifie les commandes sensibles signées par le propriétaire
 
     def _check_emergency_file(self) -> None:
@@ -235,7 +254,7 @@ class Engine:
             st.best_bid = D(b["bid"]) if b.get("bid") else None
             st.best_ask = D(b["ask"]) if b.get("ask") else None
             st.ts_received_ms = now
-            st.ts_market_ms = int(b.get("timestamp", now))
+            st.ts_market_ms = parse_exchange_ts(b.get("timestamp"))  # nul/non entier : inconnu (D9)
             if st.best_bid and st.best_ask and self.paper:
                 self.paper.set_book(b["market"], [(st.best_bid, b.get("bidSize") or "0")],
                                     [(st.best_ask, b.get("askSize") or "0")])
@@ -335,6 +354,7 @@ class Engine:
                 px = st.best_bid or st.last_price
                 if px:
                     out[st.info.base] = px
+                    self._last_px[st.info.base] = px
         return out
 
     def _first_fill_ts(self, mode: str, market: str) -> int:
@@ -516,7 +536,7 @@ class Engine:
 
     async def preflight(self, for_real: bool) -> dict[str, bool]:
         now = self.clock.now_ms()
-        fresh = [st for st in self.states.values() if data_age_ms(st, now) <= self.limits.max_stale_ms]
+        fresh = [st for st in self.states.values() if data_age_ms(st, now, self.clock_skew_ms) <= self.limits.max_stale_ms]
         pf = {
             "donnees_marche_fraiches": bool(fresh),
             "aucun_ordre_inconnu": self.db.one("SELECT 1 FROM intents WHERE status IN ('UNKNOWN','SUBMITTING')") is None,
@@ -526,6 +546,9 @@ class Engine:
         if for_real:
             # phase 5 : le réel exige que la base du moteur, le canal de commandes et l'affichage soient distincts
             pf["bases_separees"] = self.bases_separated()
+            pf["horloge_synchronisee"] = self.clock_skew_known and abs(self.clock_skew_ms) <= CLOCK_SKEW_ALERT_MS
+            pf["point_acces_bitvavo_officiel"] = self.official_endpoints()
+            pf["aucun_ordre_ouvert_inconnu"] = not (self.db.kv_get("ordres_ouverts_rapprochement") or {}).get("inconnus")
             pf["cles_api_presentes"] = self.real_exchange is not None and getattr(self.real_exchange, "has_credentials", False)
             from .core.attest import verify_proof
             from .core.config import ROOT
@@ -535,6 +558,80 @@ class Engine:
             pf["tests_acceptation_ok"] = not why_t
             pf["reconciliation_ok"] = await self._reconcile_real() if self.real_exchange else False
         return pf
+
+    def official_endpoints(self) -> bool:
+        """Réel : uniquement contre l'API OFFICIELLE de Bitvavo (D9) — une URL détournée par l'environnement
+        enverrait les requêtes signées ailleurs."""
+        return (self.s.bitvavo_rest_url.rstrip("/") == OFFICIAL_REST_URL
+                and self.s.bitvavo_ws_url.startswith(OFFICIAL_WS_PREFIX))
+
+    async def measure_clock_skew(self) -> None:
+        """Décalage heure de l'échange − heure locale, mesuré sur /v2/time PUBLIC (D2). Au-delà de 5 s : alerte ;
+        le réel est refusé (pré-requis `horloge_synchronisee`). Utilisé dans le calcul de l'âge des données."""
+        timer = getattr(self.rest, "time", None)
+        if timer is None:
+            return
+        t0 = self.clock.now_ms()
+        try:
+            server = int(await timer())
+        except Exception as e:  # noqa: BLE001 — mesure impossible : jamais bloquant pour la boucle
+            log.warning("mesure du décalage d'horloge impossible", extra={"data": {"err": repr(e)[:200]}})
+            return
+        t1 = self.clock.now_ms()
+        self.clock_skew_ms = server - (t0 + t1) // 2
+        self.clock_skew_known = True
+        self.last_clock_sync_ms = t1
+        self.db.kv_set("decalage_horloge", {"ms": self.clock_skew_ms, "ts": t1,
+                                            "alerte": abs(self.clock_skew_ms) > CLOCK_SKEW_ALERT_MS}, t1)
+        if abs(self.clock_skew_ms) > CLOCK_SKEW_ALERT_MS:
+            self.notifier.notify("incident", f"Horloge du serveur décalée de {self.clock_skew_ms / 1000:.1f} s par "
+                                 "rapport à Bitvavo : vérifier NTP (réel refusé)", dedup_key="decalage_horloge")
+
+    async def check_open_orders(self, ex: ExecutionEngine) -> dict[str, Any]:
+        """Rapproche les ordres OUVERTS chez l'échange (/ordersOpen) et le journal (D7) : un ordre inconnu du
+        journal (créé hors du moteur, ou journal restauré trop ancien) est compté, signalé et bloque le réel."""
+        now = self.clock.now_ms()
+        orders = await ex.ex.open_orders()
+        known = {r["exchange_order_id"] for r in self.db.q(
+            "SELECT exchange_order_id FROM intents WHERE mode=? AND exchange_order_id IS NOT NULL", (ex.mode,))}
+        unknown = [str(o.get("orderId")) for o in orders if str(o.get("orderId")) not in known]
+        row = self.db.one("SELECT COUNT(*) n FROM intents WHERE mode=? AND status IN "
+                          "('new','partiallyFilled','awaitingTrigger')", (ex.mode,))
+        active = row["n"] if row else 0
+        rep = {"ts": now, "mode": ex.mode, "ouverts_echange": len(orders), "actifs_journal": int(active),
+               "inconnus": unknown[:50]}
+        self.db.kv_set("ordres_ouverts_rapprochement", rep, now)
+        if unknown:
+            self.notifier.notify("ordre_inconnu", f"{len(unknown)} ordre(s) ouvert(s) chez Bitvavo inconnu(s) du "
+                                 "journal : vérifier avant toute reprise du réel", dedup_key="ordres-ouverts-inconnus")
+            if ex.mode == "real":
+                self.guardian.pause("engine", "ordres ouverts inconnus du journal chez l'échange")
+        return rep
+
+    def purge_history(self) -> dict[str, int]:
+        """Purge BORNÉE de engine.db (D8) : décisions, intentions VETOED, instantanés d'equity (au-delà de la
+        rétention : un par jour conservé, pour les exports), bougies. Jamais les fills, flux, ordres actifs."""
+        now = self.clock.now_ms()
+        days = self.s.retention_days
+        cut = {k: now - int(v) * 86_400_000 for k, v in days.items()}
+        out: dict[str, int] = {}
+        with self.db.tx() as c:
+            out["decisions"] = c.execute(
+                "DELETE FROM decisions WHERE rowid IN (SELECT rowid FROM decisions WHERE ts < ? LIMIT ?)",
+                (cut["decisions"], PURGE_BATCH)).rowcount
+            out["intents_vetoed"] = c.execute(
+                "DELETE FROM intents WHERE rowid IN (SELECT rowid FROM intents WHERE status='VETOED' AND ts < ? LIMIT ?)",
+                (cut["intents_vetoed"], PURGE_BATCH)).rowcount
+            out["equity"] = c.execute(
+                "DELETE FROM equity_snapshots WHERE rowid IN (SELECT rowid FROM equity_snapshots WHERE ts < ? AND "
+                "ts NOT IN (SELECT MAX(ts) FROM equity_snapshots WHERE ts < ? GROUP BY mode, ts / 86400000) LIMIT ?)",
+                (cut["equity"], cut["equity"], PURGE_BATCH)).rowcount
+            out["candles"] = c.execute(
+                "DELETE FROM candles WHERE rowid IN (SELECT rowid FROM candles WHERE ts < ? LIMIT ?)",
+                (cut["candles"], PURGE_BATCH)).rowcount
+        self.last_purge_ms = now
+        self.db.kv_set("purge_historique", {"ts": now, "lignes": out, "retention_jours": days}, now)
+        return out
 
     def bases_separated(self) -> bool:
         """Trois fichiers distincts et canal de commandes NON inscriptible par le
@@ -719,24 +816,19 @@ class Engine:
                              reasons=[f"réallocation au profit de {realloc[mk]['au_profit_de']}"])
                 realloc.pop(mk)
             if p is not None and p.action == "vendre" and p.amount_base > 0:
-                ok, why = await pm.release_for_exit(mk)
-                if not ok:
-                    self._record_decision(mode, p, False, p.reasons + [why], False)
-                    continue
-                h2 = self.held_positions(mode).get(mk)
-                if h2 is None:
+                status, accepted, reasons = await self._protective_exit(ex, mk, st, h.strategy, "sortie", equity,
+                                                                        cash, h.stop)
+                self._record_decision(mode, p, accepted, p.reasons + reasons, False)
+                if accepted or status == "DEJA_VENDUE":
                     meta.pop(mk, None)
                     continue
-                qty = st.info.round_amount(h2.qty)
-                r = await ex.submit(OrderRequest(mk, "sell", "market", amount=qty, strategy=h.strategy, is_entry=False,
-                                                 is_protective=True, position_qty=h2.qty, purpose="sortie",
-                                                 ref_price=st.best_bid,
-                                                 check=self._check(st, "sell", qty * (st.best_bid or ZERO), False,
-                                                                   equity, cash, ZERO, mode)), cash)
-                self._record_decision(mode, p, r.accepted, p.reasons + r.reasons, False)
-                if r.accepted:
-                    meta.pop(mk, None)
-                continue
+                if mk not in self.held_positions(mode):
+                    continue
+                # sortie impossible : la position reste protégée (stop conservé ou REPOSÉ ci-dessous)
+                if h.stop <= 0:
+                    statuses[mk] = {"protege": False, "etat": "SORTIE_REFUSEE", "declencheur": None,
+                                    "quantite_couverte": "0", "raison": "; ".join(reasons)[:300]}
+                    continue
             if h.stop > 0:
                 ps = await pm.ensure(mk, h.qty, h.stop)
                 statuses[mk] = {"protege": ps.protected, "etat": ps.state, "declencheur": fmt(ps.trigger) if ps.trigger
@@ -744,7 +836,7 @@ class Engine:
         self._kv_set(f"position_meta_{mode}", meta, mode)
         self.db.kv_set(f"protections_{mode}", statuses, self.clock.now_ms())
         unprotected = [m for m, s in statuses.items() if not s["protege"]]
-        if mode == "real" and unprotected:
+        if unprotected and (mode == "real" or any(statuses[m].get("etat") == "SORTIE_REFUSEE" for m in unprotected)):
             self.notifier.notify("arret_protection", f"Positions réelles NON protégées : {unprotected}",
                                  dedup_key=f"unprot-{','.join(sorted(unprotected))}")
 
@@ -769,7 +861,7 @@ class Engine:
         returns = {m: df["close"].pct_change() for m, df in self.candles.items()}
         scanner = []
         for mk, st in self.states.items():
-            el = check_eligibility(st, self.limits, now, self.s.quote_currency)
+            el = check_eligibility(st, self.limits, now, self.s.quote_currency, self.clock_skew_ms)
             row: dict[str, Any] = {"market": mk, "eligible": el.eligible, "reasons": el.reasons,
                                    "spread_bps": float(spread_bps(st.best_bid, st.best_ask) or 0),
                                    "volume_24h_eur": float(st.quote_volume_24h)}
@@ -821,8 +913,13 @@ class Engine:
         self.last_decision_ms = now
 
     def _exposure(self, mode: str, px: dict[str, Decimal]) -> Decimal:
-        """Valeur des positions DÉTENUES (journal des fills), hors ordres en attente."""
-        return sum((h.qty * px.get(h.market.split("-")[0], ZERO) for h in self.held_positions(mode).values()), ZERO)
+        """Valeur des positions DÉTENUES (journal des fills), hors ordres en attente. Position sans prix actuel
+        (marché suspendu, absent du ticker) : dernier prix connu, sinon coût moyen — jamais 0 (D5)."""
+        total = ZERO
+        for h in self.held_positions(mode).values():
+            base = h.market.split("-")[0]
+            total += h.qty * (px.get(base) or self._last_px.get(base) or h.avg_cost)
+        return total
 
     def _consider_reallocation(self, mode: str, p: Any, held: dict[str, HeldPosition]) -> None:
         """Opportunité bloquée faute de liquidités : libérer la position la plus faible si le gain net
@@ -858,10 +955,54 @@ class Engine:
         held = self.held_positions(mode).get(st.info.market)
         pos_after = (held.qty * (st.best_bid or ZERO) if held else ZERO) + (amount_q if entry else ZERO)
         return IntentCheck(st.info.market, side, "market", amount_q, entry, not entry,
-                           data_age_ms=data_age_ms(st, self.clock.now_ms()), market_trading=st.info.is_trading,
+                           data_age_ms=data_age_ms(st, self.clock.now_ms(), self.clock_skew_ms), market_trading=st.info.is_trading,
                            spread_bps=spread_bps(st.best_bid, st.best_ask), anomaly=st.anomaly_score,
                            min_order_quote=st.info.min_order_quote, available_quote=cash, equity=equity,
                            exposure_after=exposure_after, position_after=pos_after, mode=mode)
+
+    async def _protective_exit(self, ex: ExecutionEngine, mk: str, st: MarketState, strategy: str, purpose: str,
+                               equity: Decimal, cash: Decimal, stop: Decimal) -> tuple[str, bool, list[str]]:
+        """Vente de protection au marché SANS jamais laisser la position nue (contre-expertise phase 6, D1) :
+        1. la vente est évaluée par le Guardian AVANT d'annuler le stop hébergé : refusée => stop conservé ;
+        2. le stop est annulé (annulation confirmée), puis la vente est soumise ;
+        3. vente refusée ou en échec après l'annulation => stop REPOSÉ immédiatement et notification."""
+        mode = ex.mode
+        h = self.held_positions(mode).get(mk)
+        if h is None:
+            return "DEJA_VENDUE", False, ["position déjà soldée"]
+        qty = st.info.round_amount(h.qty)
+
+        def check() -> IntentCheck:
+            c = self._check(st, "sell", qty * (st.best_bid or ZERO), False, equity, cash, ZERO, mode)
+            c.order_type = "market"
+            c.order_type_supported = st.info.supports("market")
+            c.min_order_base = st.info.min_order_base
+            c.sell_amount_base = qty
+            return c
+        pre = self.guardian.check(check())
+        if not pre.allowed:
+            return "NON_TENTEE", False, ["sortie refusée AVANT annulation du stop (stop conservé)", *pre.reasons]
+        ok, why = await self.protect[mode].release_for_exit(mk)
+        if not ok:
+            return "REPORTEE", False, [why]
+        h2 = self.held_positions(mode).get(mk)
+        if h2 is None:
+            return "DEJA_VENDUE", False, ["le stop a été exécuté pendant l'annulation"]
+        qty = st.info.round_amount(h2.qty)
+        r = await ex.submit(OrderRequest(mk, "sell", "market", amount=qty, strategy=strategy, is_entry=False,
+                                         is_protective=True, position_qty=h2.qty, purpose=purpose,
+                                         ref_price=st.best_bid, check=check()), cash)
+        if r.accepted:
+            return r.status, True, r.reasons
+        h3 = self.held_positions(mode).get(mk)
+        reasons = list(r.reasons)
+        if h3 is not None:
+            if stop > 0:
+                ps = await self.protect[mode].ensure(mk, h3.qty, stop)
+                reasons.append(f"stop reposé : {ps.state}" if ps.protected else f"stop NON reposé : {ps.reason}")
+            self.notifier.notify("arret_protection", f"Sortie {mode} {mk} refusée après annulation du stop : "
+                                 f"{'; '.join(r.reasons)[:200]}", dedup_key=f"sortie-{mode}-{mk}")
+        return r.status, False, reasons
 
     # ------------------------------------------------------------ liquidation manuelle
     def _liq_mode(self) -> str:
@@ -919,20 +1060,10 @@ class Engine:
             st = self.states.get(mk)
             if st is None:
                 continue
-            ok, why = await self.protect[mode].release_for_exit(mk)
-            if not ok:
-                results.append({"market": mk, "status": "REPORTÉ", "reasons": [why]})
-                continue
-            h2 = self.held_positions(mode).get(mk)
-            if h2 is None:
-                continue
-            qty = st.info.round_amount(h2.qty)
-            r = await ex.submit(OrderRequest(mk, "sell", "market", amount=qty, strategy="liquidation_manuelle",
-                                             is_entry=False, is_protective=True, position_qty=h2.qty,
-                                             purpose="liquidation", ref_price=st.best_bid,
-                                             check=self._check(st, "sell", qty * (st.best_bid or ZERO), False,
-                                                               ZERO, ZERO, ZERO, mode)), ZERO)
-            results.append({"market": mk, "status": r.status, "reasons": r.reasons})
+            h = self.held_positions(mode).get(mk)
+            status, _, reasons = await self._protective_exit(ex, mk, st, "liquidation_manuelle", "liquidation",
+                                                             ZERO, ZERO, h.stop if h else ZERO)
+            results.append({"market": mk, "status": status, "reasons": reasons})
         return {"ok": True, "mode": mode, "resultats": results}
 
     # ------------------------------------------------------------ snapshot / santé
@@ -969,6 +1100,8 @@ class Engine:
         await self._safe_commands()
         if not self.guardian.verify_integrity():
             self.notifier.notify("securite", "Falsification de l'état du Guardian détectée : INCIDENT")
+        if now - self.last_clock_sync_ms >= CLOCK_SYNC_EVERY_MS:
+            await self.measure_clock_skew()
         try:
             if now - self.last_markets_ms > 600_000:
                 await self.refresh_markets()
@@ -978,6 +1111,14 @@ class Engine:
             raise
         self.last_data_ms = now
         await self._safe_commands()
+        if self.real_exec is not None and not self._open_orders_checked:
+            try:  # premier cycle après démarrage : ordres ouverts chez l'échange vs journal (D7)
+                await self.check_open_orders(self.real_exec)
+                self._open_orders_checked = True
+            except Exception as e:  # noqa: BLE001
+                log.warning("rapprochement des ordres ouverts impossible", extra={"data": {"err": repr(e)[:200]}})
+        if now - self.last_purge_ms >= PURGE_EVERY_MS:
+            self.purge_history()
         for ex in self.execs():
             await ex.recover()
             await ex.refresh_open()
@@ -985,7 +1126,8 @@ class Engine:
         if self.real_exec is not None and now - self.last_fee_refresh_ms > 3_600_000:
             await self.refresh_fees()
         if now - self.last_decision_ms >= 60_000:
-            eligible = [m for m, st in self.states.items() if check_eligibility(st, self.limits, now).eligible]
+            eligible = [m for m, st in self.states.items()
+                        if check_eligibility(st, self.limits, now, clock_skew_ms=self.clock_skew_ms).eligible]
             held = set(self.held_positions("simulation"))
             if self.real_exec is not None:
                 held |= set(self.held_positions("real"))
@@ -1035,6 +1177,9 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
     if tg_token and tg_chat:
         register_secret(tg_token)
         eng.notifier = Notifier(db, eng.clock.now_ms, tg_token, tg_chat)
+    if key and secret and not eng.official_endpoints():
+        log.error("clés présentes mais BITVAVO_REST_URL/WS_URL ne sont pas les points d'accès officiels : réel désactivé")
+        key = secret = None
     if key and secret:
         real = BitvavoREST(s.bitvavo_rest_url, key, secret)
         try:

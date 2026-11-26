@@ -12,6 +12,7 @@ on:
     paths:
       - "nelyqor-trading/compose.yaml"
       - "nelyqor-trading/Dockerfile"
+      - "nelyqor-trading/.dockerignore"
       - "nelyqor-trading/Caddyfile"
       - "nelyqor-trading/requirements.lock"
       - "nelyqor-trading/scripts/deploy_check.sh"

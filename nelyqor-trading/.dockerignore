@@ -9,3 +9,6 @@ docs
 .mypy_cache
 .ruff_cache
 .pytest_cache
+scripts/deploy_fake_bitvavo.py
+scripts/deploy_probe.py
+scripts/deploy_check.sh

@@ -55,6 +55,9 @@ class HardLimits:
     # Phase 6 — nombre maximal d'ordres d'ENTRÉE (achats) actifs simultanément par mode (ordres limites en
     # attente compris). Les ventes et protections ne sont jamais bornées par ce plafond.
     max_active_entry_orders: int = 3
+    # Phase 6 (contre-expertise D1) : âge maximal des données pour une VENTE DE PROTECTION au marché (sortie,
+    # liquidation). Plus large que `max_stale_ms` : ne jamais laisser une position sans stop ni sortie possible.
+    max_stale_ms_protective_exit: int = 120_000
     sha256: str = ""
 
     @classmethod
@@ -80,6 +83,7 @@ class HardLimits:
             auth_divergence_tolerance_eur=D(d["auth_divergence_tolerance_eur"]),
             auth_divergence_tolerance_fraction=D(d["auth_divergence_tolerance_fraction"]),
             max_active_entry_orders=int(d.get("max_active_entry_orders", 3)),
+            max_stale_ms_protective_exit=int(d.get("max_stale_ms_protective_exit", 120_000)),
             sha256=file_sha256(p),
         )
 
@@ -91,6 +95,8 @@ class HardLimits:
             raise ValueError("Retraits automatiques et martingale sont interdits")
         if not (Decimal(0) < self.max_order_fraction_of_authenticated_equity <= Decimal(1)):
             raise ValueError("max_order_fraction_of_authenticated_equity doit être dans ]0, 1]")
+        if not (self.max_stale_ms <= self.max_stale_ms_protective_exit <= 600_000):
+            raise ValueError("max_stale_ms_protective_exit doit être dans [max_stale_ms, 10 min]")
         if not (1 <= self.max_active_entry_orders <= 20):
             raise ValueError("max_active_entry_orders doit être dans [1, 20]")
         if not (0 < self.auth_balance_max_age_ms <= 600_000):
@@ -119,6 +125,10 @@ class Settings:
     monthly_hosting_eur: Decimal = field(default_factory=lambda: D(os.environ.get("NELYQOR_HOSTING_EUR", "7.19")))
     telegram_enabled: bool = field(default_factory=lambda: bool(os.environ.get("TELEGRAM_CHAT_ID")))
     cookie_secure: bool = field(default_factory=lambda: os.environ.get("NELYQOR_COOKIE_SECURE", "true") == "true")
+    # Phase 6 (D8) — rétention de engine.db, en jours (purge quotidienne bornée, docs/DEPLOIEMENT.md § 11)
+    retention_days: dict[str, int] = field(default_factory=lambda: {
+        k: int(os.environ.get(f"NELYQOR_RETENTION_{k.upper()}_DAYS", v))
+        for k, v in {"decisions": 90, "intents_vetoed": 90, "equity": 730, "candles": 400}.items()})
 
     def __post_init__(self) -> None:
         base = Path(self.db_path).parent

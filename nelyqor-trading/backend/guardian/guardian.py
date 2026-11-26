@@ -334,6 +334,10 @@ class Guardian:
             r.append("marge/levier interdits")
         if it.side not in ("buy", "sell"):
             r.append("sens invalide")
+        if it.side == "buy" and not it.is_entry:
+            # phase 6 (D4) : au comptant, tout achat augmente l'exposition ; un achat « non-entrée » échapperait
+            # aux plafonds (fonds, position, exposition, nombre d'ordres)
+            r.append("achat non marqué comme entrée : refusé (tout achat est une entrée)")
         if conditional and it.side != "sell":
             r.append("ordres conditionnels autorisés uniquement en vente (protection)")
         if not it.order_type_supported:
@@ -341,7 +345,10 @@ class Guardian:
         if not it.market_trading:
             r.append("marché non actif")
         # Poser un stop hébergé sur des données anciennes reste prudent ; acheter/vendre au marché non.
-        if it.data_age_ms > L.max_stale_ms and not conditional:
+        # Phase 6 (contre-expertise D1) : une SORTIE de protection tolère un âge plus grand
+        # (`max_stale_ms_protective_exit`) — rester exposé sans stop est pire que vendre sur un carnet de 20 s.
+        stale_limit = L.max_stale_ms_protective_exit if (it.is_protective and it.side == "sell") else L.max_stale_ms
+        if it.data_age_ms > stale_limit and not conditional:
             r.append(f"donnée périmée ({it.data_age_ms} ms)")
         if it.side == "sell":
             if it.sell_amount_base is not None and it.base_free_for_sale is not None \

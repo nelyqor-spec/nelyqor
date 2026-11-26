@@ -9,10 +9,12 @@
 #
 # Aucune clé Bitvavo (fichiers vides), NELYQOR_REAL_TRADING_ALLOWED=false, aucun ordre réel possible.
 # Usage : scripts/deploy_check.sh [--no-build] [--keep]
-#   --no-build : utilise l'image nelyqor-trading:local déjà construite
+#   --no-build : utilise l'image de test déjà construite (DEPLOY_CHECK_IMAGE)
 #   --keep     : laisse la pile en marche à la fin (sinon : docker compose down -v)
 # Variables : DEPLOY_CHECK_PROJECT (nelyqor-check), DEPLOY_CHECK_PORT (18080), DEPLOY_CHECK_OUT
-#             (reports/deploy_check), DEPLOY_CHECK_E2E (auto|0|1).
+#             (reports/deploy_check), DEPLOY_CHECK_E2E (auto|0|1),
+#             DEPLOY_CHECK_IMAGE (nelyqor-trading:deploy-check : JAMAIS le tag de production nelyqor-trading:local).
+# Garde-fous : refuse le projet « nelyqor » (production) et refuse de tourner si la pile de production est active.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT_DIR=$(pwd)
@@ -28,6 +30,17 @@ PROJ=${DEPLOY_CHECK_PROJECT:-nelyqor-check}
 PORT=${DEPLOY_CHECK_PORT:-18080}
 OUT=${DEPLOY_CHECK_OUT:-reports/deploy_check}
 E2E=${DEPLOY_CHECK_E2E:-auto}
+IMAGE=${DEPLOY_CHECK_IMAGE:-nelyqor-trading:deploy-check}
+# ---- garde-fous (contre-expertise phase 6, D9) : ne jamais toucher la production
+case "$PROJ" in
+  nelyqor|"") echo "REFUS : projet « $PROJ » = production (volumes réels) ; choisir un autre DEPLOY_CHECK_PROJECT" >&2; exit 2 ;;
+esac
+[ "$IMAGE" = nelyqor-trading:local ] && { echo "REFUS : $IMAGE est le tag de l'image de production" >&2; exit 2; }
+if [ -n "$(docker ps -q --filter label=com.docker.compose.project=nelyqor 2>/dev/null)" ]; then
+  echo "REFUS : la pile de production « nelyqor » tourne sur cet hôte (même réseau 172.30.57.0/24, ressources) ;" \
+       "lancer la vérification sur une autre machine ou en CI" >&2
+  exit 2
+fi
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 WORK=$(mktemp -d)
@@ -54,7 +67,7 @@ check() {  # check NOM commande... : PASS si la commande réussit
 }
 dc() { docker compose "$@"; }
 cid() { dc ps -q "$1" | head -1; }
-probe() { dc exec -T "$1" python scripts/deploy_probe.py "$2"; }
+probe() { dc exec -T "$1" python - "$2" < "$ROOT_DIR/scripts/deploy_probe.py"; }  # sonde NON livrée dans l'image
 jget() {  # jget CLÉ : valeur d'une clé du dernier objet JSON lu sur l'entrée (vide si absent ou illisible)
   python3 -c '
 import json, sys
@@ -91,13 +104,13 @@ expect_json() {  # expect_json JSON CLÉ VALEUR_ATTENDUE
 }
 
 export -f dc cid probe jget state st fresh health_json engine_alive_http api_down_http container_health restarts running
-export PORT
+export PORT ROOT_DIR
 
 cleanup() {
   dc logs --no-color --timestamps > "$OUT/compose_logs.txt" 2>&1 || true
   for s in engine api caddy fakebitvavo; do dc logs --no-color "$s" > "$OUT/log_$s.txt" 2>&1 || true; done
   if [ "$KEEP" = 0 ]; then dc down -v --remove-orphans > /dev/null 2>&1 || true; fi
-  docker run --rm --user 0 -v "$WORK:/w" nelyqor-trading:local sh -c 'rm -rf /w/secrets' > /dev/null 2>&1 || true
+  docker run --rm --user 0 -v "$WORK:/w" "$IMAGE" sh -c 'rm -rf /w/secrets' > /dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -105,16 +118,16 @@ trap cleanup EXIT
 # ------------------------------------------------------------------ 0. image et secrets FACTICES
 if [ "$BUILD" = 1 ]; then
   log "construction de l'image (Dockerfile du dépôt)"
-  if docker build -t nelyqor-trading:local . > "$OUT/build.txt" 2>&1; then record PASS "construction de l'image" "Dockerfile"
+  if docker build -t "$IMAGE" . > "$OUT/build.txt" 2>&1; then record PASS "construction de l'image" "Dockerfile → $IMAGE"
   else record FAIL "construction de l'image" "voir build.txt"; tail -30 "$OUT/build.txt"; exit 1; fi
 else
-  docker image inspect nelyqor-trading:local > /dev/null 2>&1 || { echo "image nelyqor-trading:local absente" >&2; exit 1; }
+  docker image inspect "$IMAGE" > /dev/null 2>&1 || { echo "image $IMAGE absente" >&2; exit 1; }
   record SKIP "construction de l'image" "--no-build : image existante utilisée"
 fi
 mkdir -p "$WORK/secrets"
 PW="faux-mdp-$(openssl rand -hex 8)"
 PHRASE="fausse-phrase-de-signature-$(openssl rand -hex 8)"
-docker run --rm -e NELYQOR_ROLE=lab -e PW="$PW" -e PHRASE="$PHRASE" nelyqor-trading:local python -c '
+docker run --rm -e NELYQOR_ROLE=lab -e PW="$PW" -e PHRASE="$PHRASE" "$IMAGE" python -c '
 import os, sys
 sys.path.insert(0, "/app")
 from backend.api.auth import hash_password
@@ -131,24 +144,30 @@ rm -f "$WORK/gen.txt"
 # Permissions EXACTES de docs/DEPLOIEMENT.md : fichiers en 600, propriétaire = uid 10001 des conteneurs
 # (chown fait par un conteneur root jetable : fonctionne aussi sans sudo sur le runner CI)
 chmod 600 "$WORK/secrets"/*
-docker run --rm --user 0 -v "$WORK/secrets:/s" nelyqor-trading:local chown 10001:10001 \
+docker run --rm --user 0 -v "$WORK/secrets:/s" "$IMAGE" chown 10001:10001 \
   /s/bitvavo_api_key /s/bitvavo_api_secret /s/owner_password_hash /s/engine_state_key /s/owner_command_key \
   /s/owner_command_salt || { echo "chown des secrets factices impossible" >&2; exit 1; }
+chmod 644 "$WORK/secrets/owner_command_salt"   # sel PUBLIC : lisible par Caddy sans capacités (D3)
 
 cat > "$WORK/override.yaml" <<EOF
 # Surcharge de TEST (générée par deploy_check.sh) : faux Bitvavo, secrets factices, Caddy en HTTP local.
 services:
   engine:
+    image: $IMAGE
     environment:
       BITVAVO_REST_URL: http://fakebitvavo:8080/v2
     depends_on: [fakebitvavo]
+  api:
+    image: $IMAGE
   caddy:
     ports: !override ["127.0.0.1:${PORT}:80"]
     volumes:
       - $WORK/secrets/owner_command_salt:/srv/meta/owner_command_salt:ro
   fakebitvavo:
-    image: nelyqor-trading:local
-    command: ["python", "scripts/deploy_fake_bitvavo.py", "8080"]
+    image: $IMAGE
+    command: ["python", "/fake/deploy_fake_bitvavo.py", "8080"]   # monté : non livré dans l'image
+    volumes:
+      - $ROOT_DIR/scripts/deploy_fake_bitvavo.py:/fake/deploy_fake_bitvavo.py:ro
     read_only: true
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
@@ -163,6 +182,8 @@ secrets:
   owner_command_salt: {file: $WORK/secrets/owner_command_salt}
 EOF
 check "configuration compose valide" dc config -q
+check "image : outils de test NON livrés (faux Bitvavo, sondes)" \
+  docker run --rm "$IMAGE" sh -c 'test ! -e scripts/deploy_fake_bitvavo.py && test ! -e scripts/deploy_probe.py && echo absents'
 
 # ------------------------------------------------------------------ 1. démarrage
 dc down -v --remove-orphans > /dev/null 2>&1 || true
@@ -178,6 +199,11 @@ check "moteur : état SIMULATION au démarrage" expect_json "$(state)" etat SIMU
 check "moteur : aucun journal « NON distincts » (bases séparées au démarrage)" \
   bash -c "! docker logs $(cid engine) 2>&1 | grep -q 'NON distincts'"
 check "moteur : aucun exécuteur réel (aucune clé, drapeau serveur faux)" expect_json "$(state)" real_exec false
+SALT_HTTP=$(curl -s -o "$WORK/salt.txt" -w '%{http_code}' "http://localhost:$PORT/meta/command_salt")
+check "caddy : /meta/command_salt servi (200, sel exact) sans capacités" \
+  bash -c "[ '$SALT_HTTP' = 200 ] && cmp -s '$WORK/salt.txt' '$WORK/secrets/owner_command_salt' && echo 200"
+check "caddy : adresse fixe 172.30.57.10 (seule source X-Forwarded-For acceptée par l'API)" bash -c \
+  "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(cid caddy) | grep -qx 172.30.57.10"
 
 # ------------------------------------------------------------------ 2. montages et durcissement
 E=$(probe engine engine | tail -1); A=$(probe api api | tail -1)

@@ -31,6 +31,7 @@ chmod 600 secrets/*
 # secret de type fichier) : sans ce chown, moteur et API s'arrêtent (« secret … illisible par l'uid 10001 »).
 chown 10001:10001 secrets/bitvavo_api_key secrets/bitvavo_api_secret secrets/owner_password_hash \
   secrets/engine_state_key secrets/owner_command_key secrets/owner_command_salt
+chmod 644 secrets/owner_command_salt   # sel PUBLIC : Caddy (sans capacités, sans DAC_OVERRIDE) doit pouvoir le lire
 docker compose up -d --build
 scripts/deploy_check.sh            # facultatif, AVANT la mise en service : pile de test séparée (voir § 10)
 ```
@@ -68,8 +69,11 @@ restent consultables via `/api/incidents`. Web Push iOS : non implémenté en V1
 
 ## 8. État du moteur et arrêt d'urgence (phase 4)
 - Le moteur conserve son état autoritaire dans le volume `engine_state` (`/state`), jamais monté dans l'API ni le LAB.
-  Le sauvegarder : `NELYQOR_ENGINE_STATE_HOST_DIR=/var/lib/docker/volumes/nelyqor_engine_state/_data scripts/backup.sh`.
-  Sans lui, après restauration, le moteur passe en INCIDENT (levée par une reprise signée).
+  `scripts/backup.sh` (root) sauvegarde par défaut les VOLUMES : `engine.db`, le magasin d'état (obligatoire) et
+  `api.db` ; une cible absente est refusée. `scripts/restore.sh backups/engine-<horodatage>.db.enc` (moteur et API
+  ARRÊTÉS, sinon refus) restaure la base, le magasin d'état du même horodatage et `api.db`, avec le propriétaire
+  10001. Au premier cycle en réel, les ordres ouverts chez Bitvavo sont rapprochés du journal (`/ordersOpen`) : un
+  ordre inconnu du journal est compté, notifié, met en pause et bloque le pré-requis `aucun_ordre_ouvert_inconnu`.
 - Arrêt d'urgence sans l'iPhone : `scripts/emergency_stop.sh` (dépose `/state/ARRET_URGENCE`).
 - Après un arrêt d'urgence ou une pause, attendre 30 s avant de signer une reprise (tolérance d'horloge).
 
@@ -87,11 +91,13 @@ Migration depuis une installation phase 4 (volume `data`, `nelyqor.db`), moteur 
 docker compose stop engine api
 docker compose run --rm --no-deps -v nelyqor_data:/old engine python -c \
   "import sqlite3; s=sqlite3.connect('/old/nelyqor.db'); d=sqlite3.connect('/engine/engine.db'); s.backup(d); print(d.execute('PRAGMA integrity_check').fetchone())"
-docker compose up -d && docker volume rm nelyqor_data   # après vérification
+docker compose up -d
 ```
+Ne supprimer l'ancien volume qu'APRÈS vérification (intégrité « ok », PWA cohérente, première réconciliation sans
+écart si le réel a été activé), et après une sauvegarde : `docker volume rm nelyqor_data`.
 L'ancienne base était modifiable par l'API : si le réel a été activé, vérifier la première réconciliation (aucun
 écart, sinon pause) avant toute reprise. Sauvegardes : `NELYQOR_DB=/var/lib/docker/volumes/nelyqor_engine_data/_data/engine.db
-scripts/backup.sh` (`commandes.db`/`affichage.db` sont dérivées et non sauvegardées).
+scripts/backup.sh` (`commandes.db`/`affichage.db` sont dérivées et non sauvegardées ; `api.db` l'est).
 
 En mode réel, la PWA affiche `capital_authentifie` (`/api/status`) : si `ok=false`, les achats réels sont suspendus
 (écart journal/soldes, soldes Bitvavo illisibles ou périmés) ; ventes et protections continuent. Rapprocher un flux
@@ -110,3 +116,23 @@ des données périmées : aucun achat, aucun plantage, reprise propre), arrêt d
 (`scripts/e2e_pwa.cjs`, si Node + Playwright sont installés). Résumé et journaux : `reports/deploy_check/`.
 Le même script tourne sur GitHub Actions (`.github/workflows/nelyqor-deploy-check.yml`). Ne vérifie PAS :
 le certificat Let's Encrypt (domaine réel), le pare-feu du VPS, ni l'accès réel à Bitvavo.
+
+## 11. Paramètres d'exploitation (phase 6, contre-expertise)
+- **Rétention de `engine.db`** (purge quotidienne, au plus 50 000 lignes par table et par passage) : décisions
+  90 j, intentions VETOED 90 j, instantanés d'equity 730 j (au-delà : un par jour conservé, pour les exports),
+  bougies 400 j. Variables du service `engine` : `NELYQOR_RETENTION_DECISIONS_DAYS`,
+  `NELYQOR_RETENTION_INTENTS_VETOED_DAYS`, `NELYQOR_RETENTION_EQUITY_DAYS`, `NELYQOR_RETENTION_CANDLES_DAYS`.
+  Jamais purgés : fills, flux externes, ordres actifs.
+- **Horloge** : le moteur mesure le décalage avec Bitvavo (`/v2/time`, toutes les 10 min) ; au-delà de 5 s :
+  notification et pré-requis réel `horloge_synchronisee` faux. L'âge des données de marché est calculé en heure
+  de l'échange (le décalage mesuré est soustrait). Installer NTP (`timedatectl set-ntp true`).
+- **Ventes de protection** (sortie, liquidation) : âge des données toléré jusqu'à `max_stale_ms_protective_exit`
+  (120 s, `config/hard_limits.json`) contre 15 s pour un achat. La vente est évaluée AVANT l'annulation du stop ;
+  refusée après l'annulation, le stop est reposé aussitôt et une alerte « protection » est émise.
+- **Réel** : uniquement avec `BITVAVO_REST_URL=https://api.bitvavo.com/v2` et `BITVAVO_WS_URL=wss://ws.bitvavo.com/…`
+  (sinon clés ignorées et pré-requis `point_acces_bitvavo_officiel` faux).
+- **Réseau** : sous-réseau Compose fixe `172.30.57.0/24`, Caddy en `172.30.57.10` : l'API n'accepte
+  `X-Forwarded-For` que de cette adresse. Changer les deux ensemble en cas de conflit d'adresses sur l'hôte.
+- `scripts/deploy_check.sh` refuse le projet `nelyqor` et refuse de tourner si la pile de production est active ;
+  il construit l'image sous le tag `nelyqor-trading:deploy-check` (jamais celui de la production). Le faux
+  Bitvavo et les sondes ne sont pas livrés dans l'image (`.dockerignore`).

@@ -19,6 +19,10 @@ class FakePublic:
     def _px(self) -> float:
         return float(self.df["close"].iloc[-1])
 
+    async def time(self) -> int:
+        self._maybe_fail()
+        return int(self.clock.now_ms()) + int(getattr(self, "skew_ms", 0))
+
     async def markets(self) -> list[dict[str, Any]]:
         self._maybe_fail()
         return self.markets_raw

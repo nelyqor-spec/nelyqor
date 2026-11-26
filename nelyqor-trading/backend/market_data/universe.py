@@ -33,24 +33,39 @@ def spread_bps(bid: Decimal | None, ask: Decimal | None) -> Decimal | None:
     return (ask - bid) / ((ask + bid) / 2) * 10000
 
 
-def data_age_ms(st: MarketState, now_ms: int) -> int:
+def data_age_ms(st: MarketState, now_ms: int, clock_skew_ms: int = 0) -> int:
     """Âge de la donnée de marché : le PLUS ANCIEN de l'heure de réception et de l'horodatage de l'échange.
-    Une réponse reçue à l'instant mais horodatée d'il y a une heure (cache, flux figé) est PÉRIMÉE (phase 6)."""
+    Une réponse reçue à l'instant mais horodatée d'il y a une heure (cache, flux figé) est PÉRIMÉE (phase 6).
+    `clock_skew_ms` = heure de l'échange − heure locale (mesurée sur /v2/time) : l'horodatage de l'échange est
+    comparé à l'heure de l'ÉCHANGE, une dérive de l'horloge de l'hôte ne vieillit pas les données (D2)."""
     age = now_ms - st.ts_received_ms
     if st.ts_market_ms:
-        age = max(age, now_ms - st.ts_market_ms)
+        age = max(age, now_ms + clock_skew_ms - st.ts_market_ms)
     return age
 
 
-def check_eligibility(st: MarketState, limits: HardLimits, now_ms: int, quote: str = "EUR") -> Eligibility:
+def parse_exchange_ts(raw: object) -> int:
+    """Horodatage d'une réponse de l'échange en ms ; 0 (inconnu) si absent, nul ou non entier : jamais une
+    exception qui ferait échouer la lecture de TOUS les marchés (D9)."""
+    if isinstance(raw, bool):
+        return 0
+    try:
+        v = int(raw) if isinstance(raw, int | str) else 0
+    except ValueError:
+        return 0
+    return v if v > 0 else 0
+
+
+def check_eligibility(st: MarketState, limits: HardLimits, now_ms: int, quote: str = "EUR",
+                      clock_skew_ms: int = 0) -> Eligibility:
     r: list[str] = []
     if not st.info.is_trading:
         r.append(f"statut {st.info.status}")
     if st.info.quote != quote:
         r.append(f"devise de cotation {st.info.quote}")
-    if data_age_ms(st, now_ms) > limits.max_stale_ms:
+    if data_age_ms(st, now_ms, clock_skew_ms) > limits.max_stale_ms:
         r.append("donnée périmée")
-    if st.ts_market_ms and st.ts_market_ms - st.ts_received_ms > 5000:
+    if st.ts_market_ms and st.ts_market_ms - (st.ts_received_ms + clock_skew_ms) > 5000:
         r.append("horodatage marché incohérent (futur)")
     sp = spread_bps(st.best_bid, st.best_ask)
     if sp is None:

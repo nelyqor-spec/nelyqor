@@ -20,7 +20,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# exécuté par `python - < scripts/deploy_probe.py` (non livré dans l'image de production) : code dans /app
+sys.path.insert(0, "/app" if Path("/app/backend").is_dir() else str(Path(__file__).resolve().parents[1]))
 
 
 def _write_errno(path: str) -> int:
