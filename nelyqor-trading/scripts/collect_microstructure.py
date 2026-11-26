@@ -143,7 +143,7 @@ async def live(rest: BitvavoREST, root: Path, markets: list[str], minutes: float
                     fh.write(json.dumps({"ts": ts, "nonce": b.get("nonce"), "bids": b.get("bids", []),
                                          "asks": b.get("asks", [])}) + "\n")
                 n_books[m] += 1
-                tr = await rest.public_trades(m, limit=1000, start=last_ts[m])
+                tr = await rest.public_trades(m, limit=1000, start=last_ts[m] + 1, end=int(time.time() * 1000))  # start et end ensemble (exigence API)
                 if tr:
                     buf[m].extend(tr)
                     last_ts[m] = max(int(t["timestamp"]) for t in tr)

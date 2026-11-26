@@ -95,7 +95,9 @@ def main() -> None:
                "v1": v1, "v2": v2, "v3": v3}
     Path(a.out).write_text(json.dumps(summary, ensure_ascii=False, default=str, indent=1))
     lines = ["## Évaluation prospective", "", f"- v1 : {v1.get('validite') if v1 else 'absente'}",
-             f"- v2 : {v2.get('validite') if v2 else 'absente'} ; journal {((v2 or {}).get('journal') or {})}", ""]
+             f"- v2 : {v2.get('validite') if v2 else 'absente'} ; journal {((v2 or {}).get('journal') or {})}",
+             f"- v3 : {v3.get('validite') if v3 else 'absente'} ; journal {((v3 or {}).get('journal') or {})} ; "
+             f"rejeu {((v3 or {}).get('rejeu') or {}).get('n_divergences', '—')} divergence(s)", ""]
     lines += [f"- ❌ {p}" for p in pb] or ["- ✅ aucun problème détecté"]
     text = "\n".join(lines)
     print(text)
