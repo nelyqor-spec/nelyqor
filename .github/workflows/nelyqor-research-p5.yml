@@ -1,0 +1,64 @@
+# Nelyqor Trading — PHASE 5 : réévaluation sur le moteur v4 corrigé + pouvoir prédictif des signaux élémentaires
+# après coûts. API publique uniquement (données déjà en cache), aucune clé, aucun ordre. Données <= 25/11/2026 =
+# RECHERCHE déjà consultée : aucun résultat ici n'est une validation.
+name: nelyqor-research-p5
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: ["nelyqor-trading/scripts/research_phase5.py", "nelyqor-trading/backend/research/xsection_v4.py",
+            "nelyqor-trading/backend/research/strategies_v4.py", "nelyqor-trading/scripts/research_signals.py",
+            "nelyqor-trading/backend/research/signals.py", ".github/workflows/nelyqor-research-p5.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-research-p5-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+env:
+  NELYQOR_MARKET_DATA: data/market
+
+jobs:
+  moteur_v4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        intervals: ["1h", "4h", "8h,1d"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - uses: actions/cache/restore@v4
+        with: {path: nelyqor-trading/data/market, key: "bitvavo-market-v1-${{ github.run_id }}", restore-keys: bitvavo-market-v1-}
+      - name: Moteur v4 (${{ matrix.intervals }})
+        run: python scripts/research_phase5.py --intervals ${{ matrix.intervals }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "phase5-${{ strategy.job-index }}", path: nelyqor-trading/reports-ci, retention-days: 30}
+
+  signaux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - uses: actions/cache/restore@v4
+        with: {path: nelyqor-trading/data/market, key: "bitvavo-market-v1-${{ github.run_id }}", restore-keys: bitvavo-market-v1-}
+      - name: Signaux élémentaires après coûts
+        run: |
+          if [ -f scripts/research_signals.py ]; then python scripts/research_signals.py; else echo "script de signaux absent"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: signaux-p5, path: nelyqor-trading/reports-ci, retention-days: 30}
