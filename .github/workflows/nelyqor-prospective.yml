@@ -1,10 +1,14 @@
 # Nelyqor Trading — évaluation PROSPECTIVE périodique des candidats figés (API publique, aucune clé, aucun ordre).
-# - v1 : candidats figés le 25/11/2026 (commit 9003293), évalués par scripts/prospective.py — INCHANGÉ.
-# - v2 : candidats phase 4, scripts/prospective_v2.py (prédictions horodatées + notation + rétrospectif séparé).
-# Planification : deux créneaux par jour. Le second ne fait qu'un RATTRAPAGE : il sort immédiatement si une
-# évaluation complète a déjà réussi depuis moins de 20 h (le cron de GitHub peut retarder ou sauter un créneau).
-# Les déclenchements planifiés ne s'exécutent que lorsque ce fichier est sur la branche PAR DÉFAUT (règle GitHub).
-# Ce n'est PAS un serveur de trading ni une exécution continue : une évaluation par jour au plus.
+# - v1 : candidats figés le 25/11/2026 (commit 9003293), scripts/prospective.py — INCHANGÉ.
+# - v2 : candidats phase 4, scripts/prospective_v2.py ; v3 (phase 5) : scripts/prospective_v3.py s'il est figé.
+# - Diagnostic HORS GEL : scripts/prospective_corrige.py (défauts connus des évaluations figées).
+# Conservation DURABLE : sur la branche par défaut, les journaux sont restaurés depuis la branche
+# `prospective-journal` puis y sont ajoutés (AJOUT SEUL vérifié, un commit par évaluation, tête de chaîne dans le
+# message). Le cache n'est qu'une accélération. Sur les autres branches : cache + artefact (90 j) seulement.
+# Alerte : le job ÉCHOUE (et une issue « Évaluation prospective en échec » est ouverte/mise à jour) si une
+# évaluation est invalide, un candidat en erreur, une chaîne rompue, un journal réécrit ou perdu.
+# Planification : uniquement depuis la branche par défaut (règle GitHub) ; second créneau = rattrapage.
+# Ce n'est PAS un serveur de trading ni une exécution continue : au plus une évaluation complète par jour.
 name: nelyqor-prospective
 
 on:
@@ -15,10 +19,16 @@ on:
     inputs:
       force:
         description: "Forcer l'évaluation même si une évaluation récente existe"
-        default: "false"
+        type: boolean
+        default: false
+      seed_run_id:
+        description: "Facultatif : identifiant d'un run dont l'artefact journal-prospectif initialise l'archive (une seule fois)"
+        type: string
+        default: ""
   push:
     branches: ["claude/**"]
-    paths: ["nelyqor-trading/reports/prospective/**", ".github/workflows/nelyqor-prospective.yml"]
+    paths: ["nelyqor-trading/reports/prospective/**", ".github/workflows/nelyqor-prospective.yml",
+            "nelyqor-trading/scripts/prospective_check.py"]
 
 permissions:
   contents: read
@@ -33,30 +43,64 @@ defaults:
 
 env:
   NELYQOR_MARKET_DATA: data/market
+  ARCHIVE_BRANCH: prospective-journal
 
 jobs:
   evaluer:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: write   # uniquement pour la branche d'archive `prospective-journal` (branche par défaut seulement)
+      issues: write     # alerte en cas d'échec
+      actions: read     # import ponctuel d'un artefact (seed_run_id)
+    env:
+      INPUT_FORCE: ${{ inputs.force }}
+      INPUT_SEED: ${{ inputs.seed_run_id }}
+      IS_DEFAULT: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
       - uses: actions/cache/restore@v4
         with:
           path: nelyqor-trading/data/prospective
           key: prospective-v1-${{ github.run_id }}
           restore-keys: prospective-v1-
+      - name: Restauration de l'archive durable (branche par défaut)
+        if: env.IS_DEFAULT == 'true'
+        run: |
+          mkdir -p data/prospective ../archive
+          if git ls-remote --exit-code --heads origin "$ARCHIVE_BRANCH" >/dev/null; then
+            git fetch origin "$ARCHIVE_BRANCH"
+            git archive "origin/$ARCHIVE_BRANCH" | tar -x -C ../archive
+            for f in journal.jsonl journal_v2.jsonl journal_v3.jsonl; do
+              [ -f "../archive/$f" ] && cp "../archive/$f" "data/prospective/$f"
+            done
+            echo "archive restaurée"; ls -la ../archive
+          else
+            echo "::notice::branche d'archive absente : elle sera créée"
+          fi
+      - name: Import ponctuel d'un journal (seed_run_id)
+        if: env.INPUT_SEED != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: journal-prospectif
+          path: nelyqor-trading/data/prospective
+          run-id: ${{ inputs.seed_run_id }}
+          github-token: ${{ github.token }}
       - name: Rattrapage — évaluation récente déjà faite ?
         id: garde
         run: |
           now=$(date +%s); last=0
           [ -f data/prospective/derniere_evaluation_ok ] && last=$(cat data/prospective/derniere_evaluation_ok)
           age_h=$(( (now - last) / 3600 ))
-          echo "derniere evaluation reussie il y a ${age_h} h"
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$age_h" -lt 20 ] && [ "${{ inputs.force }}" != "true" ]; then
+          echo "dernière évaluation réussie il y a ${age_h} h"
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$age_h" -lt 20 ] && [ "$INPUT_FORCE" != "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"; echo "évaluation récente : rien à faire (quota économisé)"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            [ "$age_h" -gt 30 ] && [ "$last" -gt 0 ] && echo "::warning::RATTRAPAGE : dernière évaluation il y a ${age_h} h (créneaux de prédiction manqués comptés, jamais reconstitués)" || true
+            if [ "$last" -eq 0 ]; then echo "::warning::aucun horodatage de réussite : premier run, ou journal perdu (contrôlé plus loin)"; fi
+            if [ "$last" -gt 0 ] && [ "$age_h" -gt 30 ]; then echo "::warning::RATTRAPAGE : dernière évaluation il y a ${age_h} h (créneaux de prédiction manqués comptés, jamais reconstitués)"; fi
           fi
       - uses: actions/setup-python@v5
         if: steps.garde.outputs.skip != 'true'
@@ -71,29 +115,69 @@ jobs:
           restore-keys: bitvavo-market-v1-
       - name: Mise à jour incrémentale (1 h, EUR + USDC, budget 25 min)
         if: steps.garde.outputs.skip != 'true'
-        run: python scripts/download_candles.py --universe --quotes EUR,USDC --interval 1h --days 1100 --time-budget 1500 --pause 0.02 || echo "code=$?"
+        run: |
+          set +e
+          python scripts/download_candles.py --universe --quotes EUR,USDC --interval 1h --days 1100 --time-budget 1500 --pause 0.02
+          code=$?
+          [ "$code" -ne 0 ] && echo "::warning::téléchargement incomplet (code $code) : certains marchés non mis à jour (radiés ou erreur)"
+          exit 0
       - name: Évaluation des candidats figés v1 (inchangée)
         if: steps.garde.outputs.skip != 'true'
-        run: python scripts/prospective.py run
+        run: python scripts/prospective.py run | tee ../v1.log
       - name: Évaluation des candidats figés v2 (prédictions, notation, rétrospectif)
         if: steps.garde.outputs.skip != 'true'
         run: |
-          if [ -f reports/prospective/v2/candidats_figes_v2.json ]; then python scripts/prospective_v2.py run; else echo "aucun candidat v2 figé"; fi
-      - name: Diagnostic HORS GEL (correction de fin d'échantillon, n'affecte pas les évaluations officielles)
-        if: steps.garde.outputs.skip != 'true'
-        run: python scripts/prospective_corrige.py || echo "diagnostic indisponible"
-      - name: Horodatage de réussite + consommation
+          if [ -f reports/prospective/v2/candidats_figes_v2.json ]; then python scripts/prospective_v2.py run | tee ../v2.log; else echo "aucun candidat v2 figé"; fi
+      - name: Évaluation des candidats figés v3 (décisions complètes)
         if: steps.garde.outputs.skip != 'true'
         run: |
-          mkdir -p data/prospective && date +%s > data/prospective/derniere_evaluation_ok
-          du -sh data/market data/prospective || true
-          echo "durée du job : voir l'en-tête GitHub ; dépôt public : minutes des runners standards non décomptées"
+          if [ -f reports/prospective/v3/candidats_figes_v3.json ]; then python scripts/prospective_v3.py run | tee ../v3.log; else echo "aucun candidat v3 figé"; fi
+      - name: Diagnostic HORS GEL (n'affecte pas les évaluations officielles)
+        if: steps.garde.outputs.skip != 'true'
+        run: python scripts/prospective_corrige.py || echo "::warning::diagnostic indisponible"
+      - name: Contrôle (échec => alerte)
+        if: steps.garde.outputs.skip != 'true'
+        run: |
+          ARCH=""; [ "$IS_DEFAULT" = "true" ] && ARCH="../archive"
+          python scripts/prospective_check.py --v1 ../v1.log --v2 ../v2.log --v3 ../v3.log --archive "$ARCH" --last-ok "${{ steps.garde.outputs.last }}" --out ../resultats.json
+      - name: Horodatage de réussite
+        if: steps.garde.outputs.skip != 'true'
+        run: mkdir -p data/prospective && date +%s > data/prospective/derniere_evaluation_ok && du -sh data/market data/prospective || true
+      - name: Archive durable (ajout seul, branche par défaut uniquement)
+        if: steps.garde.outputs.skip != 'true' && env.IS_DEFAULT == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "nelyqor-prospectif"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf ../archive-wt
+          if git ls-remote --exit-code --heads origin "$ARCHIVE_BRANCH" >/dev/null; then
+            git worktree add ../archive-wt "origin/$ARCHIVE_BRANCH"
+            cd ../archive-wt && git checkout -B "$ARCHIVE_BRANCH"
+          else
+            git worktree add --detach ../archive-wt && cd ../archive-wt && git checkout --orphan "$ARCHIVE_BRANCH" && git rm -rqf . || true
+          fi
+          for f in journal.jsonl journal_v2.jsonl journal_v3.jsonl; do
+            [ -f "$GITHUB_WORKSPACE/nelyqor-trading/data/prospective/$f" ] && cp "$GITHUB_WORKSPACE/nelyqor-trading/data/prospective/$f" .
+          done
+          mkdir -p resultats && cp "$GITHUB_WORKSPACE/resultats.json" "resultats/$(date -u +%Y-%m-%dT%H%M%SZ).json"
+          tete=$(tail -n1 journal_v2.jsonl 2>/dev/null | python3 -c "import sys,json; print(json.loads(sys.stdin.read() or '{}').get('hash',''))" || true)
+          git add -A && git commit -q -m "Évaluation prospective $(date -u +%FT%TZ) — tête v2 ${tete:-aucune}" && git push origin "$ARCHIVE_BRANCH"
       - uses: actions/cache/save@v4
-        if: always() && steps.garde.outputs.skip != 'true'
+        if: success() && steps.garde.outputs.skip != 'true'
         with: {path: nelyqor-trading/data/market, key: "bitvavo-market-v1-${{ github.run_id }}"}
       - uses: actions/cache/save@v4
-        if: always() && steps.garde.outputs.skip != 'true'
+        if: success() && steps.garde.outputs.skip != 'true'
         with: {path: nelyqor-trading/data/prospective, key: "prospective-v1-${{ github.run_id }}"}
       - uses: actions/upload-artifact@v4
         if: always() && steps.garde.outputs.skip != 'true'
         with: {name: journal-prospectif, path: nelyqor-trading/data/prospective, retention-days: 90}
+      - name: Alerte (issue) en cas d'échec
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          titre="Évaluation prospective en échec"
+          corps="Run : $RUN_URL ($(date -u +%FT%TZ)). Voir le résumé du job. Aucune donnée n'a été archivée pour ce run."
+          num=$(gh issue list --state open --search "$titre in:title" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$num" ]; then gh issue comment "$num" --body "$corps"; else gh issue create --title "$titre" --body "$corps"; fi

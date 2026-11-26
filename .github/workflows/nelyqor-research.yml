@@ -45,7 +45,11 @@ jobs:
           key: bitvavo-market-v1-${{ github.run_id }}
           restore-keys: bitvavo-market-v1-
       - name: Univers EUR + USDC en 1 h (incrémental, budget 40 min)
-        run: python scripts/download_candles.py --universe --quotes EUR,USDC --interval 1h --days 1100 --max-markets ${{ inputs.max_markets || '0' }} --time-budget 2400 --pause 0.02 || echo "code=$?"
+        env:
+          MAX_MARKETS: ${{ inputs.max_markets || '0' }}
+        run: |
+          case "$MAX_MARKETS" in ''|*[!0-9]*) echo "::error::max_markets doit être un entier"; exit 1;; esac
+          python scripts/download_candles.py --universe --quotes EUR,USDC --interval 1h --days 1100 --max-markets "$MAX_MARKETS" --time-budget 2400 --pause 0.02 || echo "::warning::téléchargement incomplet (code $?)"
       - name: 15 min sur les 30 marchés les plus actifs (budget 12 min)
         run: python scripts/download_candles.py --universe --quotes EUR --interval 15m --days 730 --max-markets 30 --time-budget 720 --pause 0.02 || echo "code=$?"
       - name: 4 h natif sur 5 marchés (contrôle de l'agrégation causale)
