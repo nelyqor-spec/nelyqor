@@ -54,6 +54,7 @@ def aggregate(df: pd.DataFrame, interval: str, asof_ms: int | None = None) -> pd
     if df.empty:
         return df.assign(n_sources=pd.Series(dtype=int))
     df = df[~df.index.duplicated(keep="last")].sort_index()  # doublons : dernière version ; ordre chronologique
+    df = sanitize(df)  # une heure invalide (prix nul/NaN) est ignorée AVANT agrégation (contre-expertise n° 2)
     idx = np.asarray(df.index, dtype=np.int64)
     asof = int(asof_ms if asof_ms is not None else idx.max() + 3_600_000)
     bins = (idx // step) * step
@@ -267,8 +268,9 @@ class Engine:
         s = self.cfg.amount_step
         return math.floor(q / s + 1e-9) * s if s > 0 else q
 
-    def _fill(self, j: int, i: int, side: str, px: float, eur: float | None, qty: float | None, maker: bool, why: str) -> float:
-        """Exécute ; renvoie la quantité échangée (0 si rien)."""
+    def _fill(self, j: int, i: int, side: str, px: float, eur: float | None, qty: float | None, maker: bool, why: str,
+              cap_qty: float | None = None) -> float:
+        """Exécute ; renvoie la quantité échangée (0 si rien). `cap_qty` : plafond de participation (vente limitée)."""
         c = self.cfg
         if not (np.isfinite(px) and px > 0):
             return 0.0  # prix invalide : refus (D7)
@@ -287,11 +289,20 @@ class Engine:
             if self.entry_i[j] < 0:
                 self.entry_i[j] = i
         else:
-            q = min(self.qty[j], qty if qty is not None else self.qty[j])
-            if (self.qty[j] - q) * px < c.min_order_eur:
-                q = self.qty[j]  # jamais de reliquat invendable (la position entière est déjà au pas)
-            else:
+            held = self.qty[j]
+            q = min(held, qty if qty is not None else held)
+            capped = cap_qty is not None and cap_qty < q
+            if capped:
+                q = float(cap_qty)  # type: ignore[arg-type]
+            if (held - q) * px < c.min_order_eur:
+                if capped:  # plafond de volume : on laisse un reste ≥ minimum plutôt que de dépasser le plafond
+                    q = max(0.0, held - c.min_order_eur / px)
+                else:
+                    q = held  # jamais de reliquat invendable (la position entière est déjà au pas)
+            if q < held:
                 q = self._floor_qty(q)  # vente partielle : quantité arrondie vers le bas au pas (D8)
+                if q * px < c.min_order_eur:
+                    return 0.0  # une vente PARTIELLE sous le minimum d'ordre est impossible sur la plateforme
             if q <= 0:
                 return 0.0
             notional = q * px
@@ -340,19 +351,21 @@ class Engine:
             lp = float(od.limit_px or 0.0)
             through = (self.L[i, j] < lp * (1 - c.through_bps / 1e4)) if od.side == "buy" else (self.H[i, j] > lp * (1 + c.through_bps / 1e4))
             cap = self.V[i, j] * lp * c.max_volume_share  # plafond de participation, achats ET ventes (D4)
+            q = 0.0
             if through and cap >= c.min_order_eur:
                 if od.side == "buy":
-                    eur = min(od.eur, cap)
-                    q = self._fill(j, i, "buy", lp, eur, None, True, od.reason)
+                    q = self._fill(j, i, "buy", lp, min(od.eur, cap), None, True, od.reason)
                     rest_eur = od.eur - q * lp
-                    partial = q > 0 and rest_eur >= c.min_order_eur
+                    partial = rest_eur >= c.min_order_eur
                     rest = Order(od.market, "buy", rest_eur, None, "limit", lp, od.ttl_bars - 1, od.decided_i, od.reason, od.cancel)
                 else:
                     want = od.qty if od.qty is not None else self.qty[j]
-                    q = self._fill(j, i, "sell", lp, None, min(want, cap / lp), True, od.reason)
+                    q = self._fill(j, i, "sell", lp, None, want, True, od.reason, cap_qty=cap / lp)
                     rest_q = min(want - q, self.qty[j])
-                    partial = rest_q > 0 and self.qty[j] > 0
+                    # reliquat d'une RÉDUCTION sous le minimum : abandonné (inexécutable) ; une sortie totale reste due
+                    partial = self.qty[j] > 0 and rest_q > 0 and (rest_q * lp >= c.min_order_eur or rest_q >= self.qty[j])
                     rest = Order(od.market, "sell", rest_q * lp, rest_q, "limit", lp, od.ttl_bars - 1, od.decided_i, od.reason, od.cancel)
+            if q > 0:  # compteurs : seulement si une quantité a réellement été échangée (contre-expertise n° 2)
                 self.counts["limite_remplis"] += 1
                 if not partial:
                     continue
@@ -363,6 +376,8 @@ class Engine:
                 elif c.mode == "hybrid" or od.side == "sell":
                     self.counts["repli_marche"] += 1
                     still.append(Order(od.market, od.side, od.eur, od.qty, "market", None, 1, i, od.reason + "_repli"))
+                else:
+                    self.counts["limite_manques"] += 1
                 continue
             od.ttl_bars -= 1
             if od.ttl_bars > 0:
@@ -441,12 +456,14 @@ def simulate(grid: np.ndarray, data: dict[str, pd.DataFrame], strategy: Strategy
         eng.step_bar(i, strategy, start)
         eq[i] = eng.equity()
         inv[i] = 1 - eng.cash / eq[i] if eq[i] > 0 else 0.0
-    if liquidate_at_end:  # fin d'échantillon : vente au dernier prix connu, frais taker, AUCUNE décote
+    if liquidate_at_end and len(grid):  # fin d'échantillon : vente au dernier prix connu, frais taker, AUCUNE décote
         n = len(grid) - 1
         for j in np.flatnonzero(eng.qty > 0):
             px = float(eng.last_px[j]) * (1 - eng.cfg.slippage_bps / 1e4)
             eng._fill(int(j), n, "sell", px, None, None, False, "fin")
         eq[-1] = eng.equity()
+    if not len(grid):
+        return SimResult(pd.Series(eq, index=grid), [], 0.0, [], eng.state, 0, {"exposition_reelle_moy": 0.0, **eng.counts}), eng
     res = SimResult(pd.Series(eq, index=grid), eng.trades, eng.fees, eng.orders_log, eng.state, int(eng.outage.sum()),
                     {"etats": {STATE_NAMES[s]: int((eng.state == s).sum()) for s in STATE_NAMES}, **eng.counts,
                      "exposition_reelle_moy": float(inv[start:].mean()) if len(inv) > start else 0.0})

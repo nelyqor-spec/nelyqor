@@ -26,7 +26,10 @@ def prepare(raw_1h: dict[str, pd.DataFrame], interval: str, asof_ms: int | None 
     if not raw_1h:
         return np.array([], dtype=np.int64), {}
     asof = asof_ms if asof_ms is not None else max(int(d.index.max()) for d in raw_1h.values() if len(d)) + 3_600_000
-    agg = {m: aggregate(d, interval, asof) if interval != "1h" else d[d.index + 3_600_000 <= asof] for m, d in raw_1h.items()}
+    def clean(d: pd.DataFrame) -> pd.DataFrame:  # même dédoublonnage/tri que `aggregate` (contre-expertise n° 2)
+        d = d[~d.index.duplicated(keep="last")].sort_index()
+        return d[d.index + 3_600_000 <= asof]
+    agg = {m: aggregate(d, interval, asof) if interval != "1h" else clean(d) for m, d in raw_1h.items()}
     agg = {m: d for m, d in agg.items() if len(d)}
     return align(agg, RULE_MS[interval])
 
@@ -95,13 +98,17 @@ class Rotation:
         kept: list[str] = []
         for m in eng.held():
             held_bars = i - int(eng.entry_i[eng.j[m]])
+            if eng.state[i, eng.j[m]] != ACTIF:  # bougie absente : position conservée, aucune cible (contre-expertise n° 2)
+                kept.append(m)
+                continue
             if held_bars >= p.min_hold_bars and (m not in keep_zone or (p.exit_on_risk_off and e <= 0)):
                 targets[m] = 0.0
                 continue
             kept.append(m)
             # S4 : réduction SEULEMENT (jamais de renfort) d'une position conservée dont le risque dépasse 45/100
-            if held_bars >= p.min_hold_bars and self.risk(i, m) > p.risk_cut:
-                w_t = self.size(i, m, max(e, 0.0))
+            # taille SANS le facteur de régime (la sortie par régime relève de exit_on_risk_off), seulement si e > 0
+            if e > 0 and held_bars >= p.min_hold_bars and self.risk(i, m) > p.risk_cut:
+                w_t = self.size(i, m, 1.0)
                 if eng.weight(m) > w_t + 0.02:
                     targets[m] = w_t
         if e > 0:
