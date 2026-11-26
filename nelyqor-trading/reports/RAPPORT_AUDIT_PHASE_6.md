@@ -309,7 +309,7 @@ Le réseau de cet environnement bloque `bitvavo.com`, `docs.bitvavo.com` et `amf
   - CI run 45854773632 : **vert** ;
   - run 45859884345 (`854a041`) : **échec**, 99 sur 100 (§ 11.1) ;
   - run 45861154677 (`a7ee622`) : **vert, 100 sur 100, 0 non exécuté**, recette 14/14 ;
-  - run sur le commit final : § 11.1.
+  - run 45893311540 (`ae0aa49`, commit final) : **vert, 100 sur 100**, recette 14/14.
 
 ## 9. Fonctionnalités : opérationnelles et expérimentales
 
@@ -354,7 +354,8 @@ marge n'est pas disponible pour l'exécution d'ordres par API. **Le Short reste 
   - Sel servi par Caddy (200, sel exact).
   - Recette PWA 14/14.
   - Montages, permissions, redémarrages, `kill -9`, coupures réseau, échange en panne ou périmé, arrêt d'urgence SSH.
-- **Run déclenché sur le commit final** `ae0aa49`, après les corrections de protection : résultat consigné en § 11.7.
+- **Run 45893311540 sur le commit final** `ae0aa49`, après les corrections de protection : **SUCCÈS, 100 PASS, 0 FAIL,
+  0 SKIP**, recette PWA 14/14, sel servi (200).
 
 ### 11.2 Les deux tests rouges de l'auditeur, réexaminés de façon indépendante
 
@@ -490,7 +491,7 @@ Empreintes de code et de candidats **recalculées sur l'arbre courant** : aucune
 | `pytest` (suite complète) | **616 réussis** |
 | `ruff check .` / `mypy` | sans erreur / sans erreur (81 fichiers) |
 | Vérification Docker en CI, run 45861154677 | **100/100**, recette PWA 14/14 |
-| Vérification Docker en CI sur `ae0aa49` | voir la description de la PR (consignée à réception) |
+| Vérification Docker en CI sur le commit final `ae0aa49`, run 45893311540 | **100/100, 0 FAIL, 0 SKIP**, recette PWA 14/14 |
 | Prospectif, runs 15 à 17 | succès (v1, v2, v3 et E1 valides avant départ) |
 | Empreintes v1, v2, v3, E1 | intactes (test automatique) |
 | Short | non intégrable par API (Bitvavo, confirmé par le propriétaire le 16/11/2026), expérimental |
