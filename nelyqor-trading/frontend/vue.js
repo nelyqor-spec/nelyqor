@@ -83,10 +83,23 @@ export function riskSummary(markets) {
   return best;
 }
 
+// Cohérence du bénéfice : total (valorisation) = réalisé + latent (frais déjà déduits de chacun). Un écart n'est jamais
+// masqué : celui publié par le serveur (avec sa cause), sinon celui constaté ici sur les chiffres reçus.
+export function pnlCoherence(pf) {
+  pf = pf || {};
+  const n = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+  const tot = n(pf.pnl_trading_eur), r = n(pf.pnl_realise_eur), l = n(pf.pnl_latent_eur);
+  if (pf.pnl_ecart_eur !== null && pf.pnl_ecart_eur !== undefined) return { ok: false, ecart: n(pf.pnl_ecart_eur), raison: pf.pnl_ecart_raison || "sources divergentes" };
+  if (tot === null || r === null || l === null || ![tot, r, l].every(Number.isFinite)) return { ok: true, ecart: null, raison: null };
+  const gap = Math.round((tot - (r + l)) * 100) / 100;
+  // tolérance : arrondis au centime de chaque composante
+  return Math.abs(gap) > 0.02 ? { ok: false, ecart: gap, raison: "le total (valorisation du robot) ne correspond pas à réalisé + latent" } : { ok: true, ecart: null, raison: null };
+}
+
 export const HELP = {
   mode: ["Simulation ou réel ?", "En SIMULATION (bandeau bleu), le robot fait « comme si » : l'argent est fictif et aucun ordre n'est envoyé à Bitvavo. En RÉEL (bandeau ROUGE et cadre rouge autour de l'écran), chaque ordre utilise votre argent. Le réel ne s'active jamais tout seul : il faut une demande signée par vous."],
   capital: ["Capital fictif", "En simulation, le robot part d'un capital FICTIF (100 € par défaut) pour s'entraîner. Ces euros n'existent pas : vous ne pouvez ni les gagner ni les perdre. Seul le mode réel utilise votre argent."],
-  pnl: ["Bénéfice ou perte", "Différence entre la valeur actuelle et l'argent de départ (hors dépôts et retraits). Vert = gain, rouge = perte."],
+  pnl: ["Bénéfice ou perte", "Différence entre la valeur actuelle et l'argent de départ (hors dépôts et retraits). Il est égal à « réalisé » + « latent » : les frais sont DÉJÀ retirés de ces deux montants (ils ne sont pas retirés une seconde fois). Si les deux calculs ne concordent pas, l'écart et sa cause sont affichés. Vert = gain, rouge = perte."],
   realise: ["Réalisé", "Gains ou pertes DÉFINITIFS : ceux des positions déjà revendues, frais déduits."],
   latent: ["Latent", "Gains ou pertes « sur le papier » des positions encore ouvertes. Ils changent avec le prix et ne deviennent définitifs qu'à la vente."],
   frais: ["Frais cumulés", "Total des commissions payées (ou simulées) à Bitvavo depuis le début. Ils sont déjà déduits des résultats."],

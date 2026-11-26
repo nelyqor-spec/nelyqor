@@ -1,7 +1,7 @@
 // Nelyqor Trading — PWA de contrôle. Aucune clé d'échange ici : uniquement l'API authentifiée du serveur.
 import { DEMO } from "./demo.js";
 import { signCommand } from "./sig.js";
-import { HELP, RISK_CUT, alertsFrom, modeInfo, positionRows, riskSummary } from "./vue.js";
+import { HELP, RISK_CUT, alertsFrom, modeInfo, pnlCoherence, positionRows, riskSummary } from "./vue.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -102,6 +102,15 @@ function chart(points) {
   <div class="row mute"><span>${eur(mn)}</span><span>${eur(mx)}</span></div>`;
 }
 
+// total puis composantes ; un écart entre les deux calculs est AFFICHÉ avec sa cause, jamais un total faux en silence
+function pnlRows(pf, p) {
+  const c = pnlCoherence(pf);
+  return `<div class="row"><span>Bénéfice / perte total ${q("pnl")}</span><b class="${cls(pf.pnl_trading_eur)}" id="${p}pnl-total">${eur(pf.pnl_trading_eur)}</b></div>
+    <div class="row sub"><span>dont réalisé ${q("realise")}</span><b class="${cls(pf.pnl_realise_eur)}" id="${p}pnl-realise">${eur(pf.pnl_realise_eur)}</b></div>
+    <div class="row sub"><span>dont latent ${q("latent")}</span><b class="${cls(pf.pnl_latent_eur)}" id="${p}pnl-latent">${eur(pf.pnl_latent_eur)}</b></div>
+    ${c.ok ? "" : `<div class="alert orange" id="${p}pnl-ecart"><div class="alert-t">Attention — écart de ${eur(c.ecart)} entre le total et réalisé + latent</div><div class="alert-x">${esc(c.raison)}</div></div>`}`;
+}
+
 function alertsCard(st, pf, inc) {
   const al = alertsFrom(st, pf);
   const day = Date.now() - 86_400_000;
@@ -192,11 +201,9 @@ const views = {
       <div class="cap-label">${reel ? "Capital RÉEL (votre argent)" : "Capital FICTIF (simulation)"} ${q(reel ? "mode" : "capital")}</div>
       <div class="big">${eur(pf.equity_eur)}</div>
       ${reel ? `<p class="reason bad">Argent réel : il peut être perdu en totalité.</p>` : `<p class="reason">Ces euros n'existent pas : c'est un entraînement, aucun ordre réel n'est envoyé.</p>`}
-      <div class="row"><span>Bénéfice / perte total ${q("pnl")}</span><b class="${cls(pf.pnl_trading_eur)}">${eur(pf.pnl_trading_eur)}</b></div>
-      <div class="row sub"><span>dont réalisé ${q("realise")}</span><b class="${cls(pf.pnl_realise_eur)}" id="pnl-realise">${eur(pf.pnl_realise_eur)}</b></div>
-      <div class="row sub"><span>dont latent ${q("latent")}</span><b class="${cls(pf.pnl_latent_eur)}" id="pnl-latent">${eur(pf.pnl_latent_eur)}</b></div>
+      ${pnlRows(pf, "")}
       <div class="row"><span>Frais cumulés ${q("frais")}</span><span id="frais">${eur(pf.frais_eur)}</span></div>
-      <div class="row"><span>Rendement ${q("twr")}</span><b class="${cls(pf.twr)}">${pct(pf.twr)}</b></div>
+      <div class="row"><span>Rendement ${q("twr")}</span><b class="${cls(pf.twr)}" id="twr">${pct(pf.twr)}</b></div>
       <div class="row"><span>Hébergement estimé ${q("hebergement")}</span><span>${eur(pf.cout_hebergement_estime_eur)}</span></div>
       <div class="row"><span>Résultat économique</span><b class="${cls(pf.resultat_economique_eur)}">${eur(pf.resultat_economique_eur)}</b></div>
       ${pf.pnl_note ? `<p class="reason">${esc(pf.pnl_note)}${pf.valorisation_ts ? ` (valorisation : ${esc(pf.valorisation_ts)})` : ""}</p>` : ""}
@@ -243,8 +250,7 @@ const views = {
     return `<h1>Capital</h1>
     <div class="card capital ${pf.mode === "real" ? "real" : "sim"}"><div class="cap-label">${pf.mode === "real" ? "Capital RÉEL" : "Capital FICTIF (simulation)"}</div>
       <div class="row"><span>Valeur</span><b>${eur(pf.equity_eur)}</b></div>
-      <div class="row"><span>Réalisé ${q("realise")}</span><b class="${cls(pf.pnl_realise_eur)}">${eur(pf.pnl_realise_eur)}</b></div>
-      <div class="row"><span>Latent ${q("latent")}</span><b class="${cls(pf.pnl_latent_eur)}">${eur(pf.pnl_latent_eur)}</b></div>
+      ${pnlRows(pf, "cap-")}
       <div class="row"><span>Frais cumulés ${q("frais")}</span><span>${eur(pf.frais_eur)}</span></div></div>
     ${positionsCard(pf)}
     <div class="card"><b>Protections chez l'échange</b>${Object.entries(prot).map(protRow).join("") || `<p class="mute">Aucune position à protéger.</p>`}

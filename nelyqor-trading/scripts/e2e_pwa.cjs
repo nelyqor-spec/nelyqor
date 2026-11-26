@@ -85,6 +85,17 @@ const contrast = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - 
 const isRed = (rgb) => { const [r, g, bl] = rgb.match(/\d+/g).map(Number); return r > 150 && g < 110 && bl < 130; };
 const isBlue = (rgb) => { const [r, , bl] = rgb.match(/\d+/g).map(Number); return bl > 150 && r < 100; };
 const TABS = ["accueil", "marches", "ia", "capital", "reglages"];
+const num = (t) => { const v = t.replace(/[\s\u00a0\u202f€%]/g, "").replace("−", "-").replace(",", "."); return v === "—" || v === "" ? null : Number(v); };
+// total affiché = réalisé + latent (à 2 centimes près) ou écart explicitement affiché ; rendement de même signe que le total
+async function pnlCoherent(p, pre = "") {
+  const g = async (id) => ((await p.$(`#${pre}${id}`)) ? num(await p.innerText(`#${pre}${id}`)) : null);
+  const [tot, r, l] = [await g("pnl-total"), await g("pnl-realise"), await g("pnl-latent")];
+  const gapShown = !!(await p.$(`#${pre}pnl-ecart`));
+  const sumOk = tot === null || r === null || l === null || Math.abs(tot - (r + l)) <= 0.02;
+  const twr = pre ? null : await g("twr");
+  const signOk = twr === null || tot === null || Math.abs(tot) < 0.01 || Math.sign(twr) === Math.sign(tot);
+  return { coherent: sumOk && !gapShown && signOk, gapShown, sumOk, signOk, tot, r, l, twr };
+}
 const p7errors = [];
 const watch = (page) => { page.on("pageerror", (e) => p7errors.push(String(e))); return page; };
 
@@ -119,6 +130,8 @@ async function phase7(b, ctx, pg, checks, outDir, url) {
   const cap = await pg.innerText("#capital-card");
   checks.push(["capital FICTIF clairement libellé", /Capital FICTIF/i.test(cap) && cap.includes("n'existent pas")]);
   checks.push(["résultats réalisé et latent + frais cumulés", /réalisé/.test(cap) && /latent/.test(cap) && /Frais cumulés/.test(cap) && (await pg.innerText("#pnl-realise")) !== "—"]);
+  const pc = await pnlCoherent(pg);
+  checks.push([`bénéfice total = réalisé + latent, rendement cohérent (ou écart affiché) — ${JSON.stringify(pc)}`, pc.coherent || (pc.gapShown && !pc.sumOk)]);
   const robot = await pg.innerText("#robot");
   checks.push(["état du robot : vivant, données, Guardian", /Robot/.test(robot) && (process.env.EXPECT_STALE === "1" ? /silencieux|périmées/.test(robot) : /vivant/.test(robot)) && /Guardian/.test(robot) && /Données de marché/.test(robot)]);
   checks.push(["positions ouvertes et alertes affichées", (await pg.isVisible("#positions")) && (await pg.isVisible("#alerts"))]);
@@ -151,7 +164,7 @@ async function phase7(b, ctx, pg, checks, outDir, url) {
       protections: { "BTC-EUR": { protege: true, etat: "ACTIF", declencheur: "81000", raison: "stop confirmé" },
         "ETH-EUR": { protege: false, etat: "REFUSE", declencheur: "2500", raison: "stop refusé par l'échange (test)" } },
       positions_detail: { "BTC-EUR": { quantite: "0.001", cout_moyen_eur: "85000" } },
-      pnl_realise_eur: "1.23", pnl_latent_eur: "-0.45",
+      pnl_trading_eur: "0.78", twr: "0.0078", pnl_realise_eur: "1.23", pnl_latent_eur: "-0.45", pnl_ecart_eur: null,
     });
     await route.fulfill({ response: r, json: j });
   });
@@ -167,12 +180,28 @@ async function phase7(b, ctx, pg, checks, outDir, url) {
   checks.push(["stop actif jamais confondu : seule la position confirmée est « Stop actif »",
     !al.some((a) => a.m === "BTC-EUR") && pb.s === "actif" && /Stop actif/.test(pb.t) && !/NON/.test(pb.t)
     && pe.s === "non_protegee" && /NON PROTÉGÉE/.test(pe.t) && !/Stop actif/.test(pe.t) && ps.s === "inconnue" && !/Stop actif/.test(ps.t)]);
+  const ipc = await pnlCoherent(ip);
+  checks.push(["injecté cohérent : total 0,78 = 1,23 − 0,45, aucun écart signalé", ipc.coherent && ipc.tot === 0.78]);
   await shot2(ip, outDir, "10_alerte_non_protegee", true);
   await ip.click("[data-tab=capital]"); await ip.waitForSelector("#historique");
   const hist = await ip.innerText("#historique");
   checks.push(["historique : achats/ventes avec frais", (await ip.$$("#historique tr[data-fill]")).length === 2 && /Achat/.test(hist) && /Vente/.test(hist)]);
   await shot2(ip, outDir, "11_historique");
   await ic.close();
+  // sources divergentes (total de la valorisation ≠ réalisé + latent) : l'écart DOIT être affiché, accueil et Capital
+  const gc = await b.newContext({ ...devices["iPhone 14"], storageState: state });
+  await gc.route("**/api/control/**", (r) => r.abort());
+  await gc.route("**/api/portfolio", async (route) => { const r = await route.fetch(); const j = await r.json();
+    await route.fulfill({ response: r, json: { ...j, pnl_trading_eur: "0", twr: "0", pnl_realise_eur: "1.23", pnl_latent_eur: "-0.45",
+      pnl_ecart_eur: "-0.78", pnl_ecart_raison: "valorisation du moteur antérieure à la dernière exécution (mise à jour attendue)" } }); });
+  const gp = watch(await gc.newPage()); await gp.goto(url); await gp.waitForSelector("#capital-card");
+  const gtxt = (await gp.$("#pnl-ecart")) ? await gp.innerText("#pnl-ecart") : "";
+  await gp.click("[data-tab=capital]"); await gp.waitForSelector("#historique");
+  const gcap = !!(await gp.$("#cap-pnl-ecart")) && !!(await gp.$("#cap-pnl-total"));
+  checks.push(["sources divergentes : écart et cause affichés (accueil et Capital), jamais un total faux en silence",
+    /écart de/.test(gtxt) && /antérieure/.test(gtxt) && gcap]);
+  await gp.click("[data-tab=accueil]"); await gp.waitForSelector("#pnl-ecart"); await shot2(gp, outDir, "10b_ecart_affiche");
+  await gc.close();
 
   // ---- affichage RÉEL (statut injecté ; toute commande est bloquée dans ce contexte)
   const rc = await b.newContext({ ...devices["iPhone 14"], storageState: state });
@@ -185,6 +214,8 @@ async function phase7(b, ctx, pg, checks, outDir, url) {
   checks.push(["mode RÉEL : bandeau rouge « ARGENT RÉEL », cadre rouge, capital RÉEL, jamais « FICTIF »",
     /ARGENT RÉEL/.test(rm) && !/SIMULATION/.test(rm) && isRed(rbg) && (await rp.evaluate(() => document.body.classList.contains("mode-real")))
     && /Capital RÉEL/i.test(rv) && !/FICTIF/i.test(rv)]);
+  const rpc = await pnlCoherent(rp);
+  checks.push(["mode RÉEL : même contrôle de cohérence du bénéfice (total = réalisé + latent ou écart affiché)", rpc.coherent || (rpc.gapShown && !rpc.sumOk)]);
   await shot2(rp, outDir, "12_mode_reel_simule");
   await rc.close();
 

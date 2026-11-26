@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from backend.api.app import create_app
 from backend.api.auth import AuthManager, hash_password
 from backend.core.config import ROOT, Settings
+from backend.core.num import D
 from backend.storage.channels import DisplayPublisher
 from backend.storage.db import Database
 
@@ -104,6 +105,21 @@ def test_mode_never_ambiguous_and_risk_rule():
     assert {a["cle"] for a in r["al"]} == {"robot_silencieux", "ordres_inconnus", "incident"}
 
 
+@pytest.mark.skipif(NODE is None, reason="node absent")
+def test_pnl_coherence_never_silent():
+    r = run_vue("""console.log(JSON.stringify([
+      V.pnlCoherence({pnl_trading_eur: "0.78", pnl_realise_eur: "1.23", pnl_latent_eur: "-0.45"}),
+      V.pnlCoherence({pnl_trading_eur: "0", pnl_realise_eur: "1.23", pnl_latent_eur: "-0.45"}),
+      V.pnlCoherence({pnl_trading_eur: "0", pnl_realise_eur: "1.23", pnl_latent_eur: "-0.45", pnl_ecart_eur: "-0.78", pnl_ecart_raison: "x"}),
+      V.pnlCoherence({pnl_trading_eur: "5", pnl_realise_eur: "5", pnl_latent_eur: null}),
+      V.HELP.pnl[1]]));""")
+    assert r[0]["ok"] is True
+    assert r[1]["ok"] is False and r[1]["ecart"] == -0.78  # l'ancien défaut (0,00 € avec 1,23 / −0,45) est signalé
+    assert r[2] == {"ok": False, "ecart": -0.78, "raison": "x"}
+    assert r[3]["ok"] is True  # latent inconnu : rien à comparer, jamais estimé
+    assert "réalisé" in r[4] and "DÉJÀ" in r[4]
+
+
 def test_help_texts_are_plain_french():
     js = (FE / "vue.js").read_text()
     for k in ("mode", "capital", "realise", "latent", "frais", "risque", "robot", "arret", "labo", "short", "protection"):
@@ -119,7 +135,7 @@ def client(tmp_path):
     return c
 
 
-def _publish(s, fills, snap):
+def _publish(s, fills, snap, snap_before_fills=False):
     now = 1_770_000_000_000
     eng = Database(s.db_path)
     eng.kv_set("engine_heartbeat", {"ts": now, "mode": "simulation", "data_ok": True, "last_data_ms": now}, now)
@@ -128,21 +144,41 @@ def _publish(s, fills, snap):
                  "taker,mode) VALUES(?,?,?,?,'BTC-EUR',?,?,?,?,'EUR',?,1,'simulation')",
                  (f"f{i}", f"i{i}", f"o{i}", now - 1000 + i, side, amt, px, fee, fee))
     if snap:
-        eng.exec("INSERT INTO equity_snapshots VALUES(?,?,?,?,?)", (now, "simulation", *snap))
+        eng.exec("INSERT INTO equity_snapshots VALUES(?,?,?,?,?)", (now - 5000 if snap_before_fills else now, "simulation", *snap))
     DisplayPublisher(eng, s.display_file, lambda: now).publish(force=True)
 
 
 def test_portfolio_realized_and_unrealized_split(client):
     assert client.post("/api/login", json={"password": PW}).status_code == 200
     s = client.settings
-    # achat 0,002 BTC à 50 000 (frais 0,25) puis vente 0,001 à 60 000 (frais 0,15) ; reste 0,001 valorisé 55 €
-    _publish(s, [("buy", "0.002", "50000", "0.25"), ("sell", "0.001", "60000", "0.15")], ("104.75", "49.75", "55"))
+    # 100 € fictifs. Achat 0,001 BTC à 50 000 (frais 0,125) : trésorerie 49,875, coût 50,125.
+    # Vente 0,0005 à 60 000 (frais 0,075) : +29,925 -> trésorerie 79,80 ; réalisé = 29,925 − 25,0625 = 4,8625.
+    # Reste 0,0005 valorisé 27,50 : latent = 27,50 − 25,0625 = 2,4375 ; équité 107,30 ; total 7,30 = réalisé + latent.
+    _publish(s, [("buy", "0.001", "50000", "0.125"), ("sell", "0.0005", "60000", "0.075")], ("107.30", "79.80", "27.50"))
     pf = client.get("/api/portfolio").json()
-    # réalisé = 60 - 0,15 - (100,25 / 2) = 9,725 -> 9,72 (arrondi bancaire) ; coût restant 50,125
-    assert pf["pnl_realise_eur"] == "9.72" and pf["pnl_latent_eur"] == "4.88"
-    assert pf["positions_detail"]["BTC-EUR"]["quantite"] == "0.001"
-    assert pf["equity_eur"] == "104.75" and pf["pnl_trading_eur"].startswith("4.75")
-    assert "latent" in pf["pnl_note"] and pf["positions_eur"] == "55"
+    assert pf["pnl_realise_eur"] == "4.86" and pf["pnl_latent_eur"] == "2.44"  # arrondis d'affichage
+    assert D(pf["pnl_trading_eur"]) == D("7.30") and pf["pnl_ecart_eur"] is None and pf["pnl_ecart_raison"] is None
+    assert D(pf["frais_eur"]) == D("0.2")  # frais DÉJÀ déduits du réalisé et du latent : jamais retirés deux fois
+    assert pf["positions_detail"]["BTC-EUR"]["quantite"] == "0.0005" and "réalisé + latent" in pf["pnl_note"]
+
+
+def test_portfolio_inconsistent_sources_publish_gap_never_wrong_total(client):
+    client.post("/api/login", json={"password": PW})
+    # trésorerie de la valorisation (77,50) ≠ trésorerie du journal (79,80) : total 5,00 contre 7,30 par les composantes
+    _publish(client.settings, [("buy", "0.001", "50000", "0.125"), ("sell", "0.0005", "60000", "0.075")],
+             ("105.00", "77.50", "27.50"))
+    pf = client.get("/api/portfolio").json()
+    assert D(pf["pnl_trading_eur"]) == D("5.00") and D(pf["pnl_ecart_eur"]) == D("-2.30")
+    assert "divergent" in pf["pnl_ecart_raison"]
+
+
+def test_portfolio_gap_when_valuation_older_than_last_fill(client):
+    client.post("/api/login", json={"password": PW})
+    _publish(client.settings, [("buy", "0.001", "50000", "0.125")], ("100.00", "100.00", "0"), snap_before_fills=True)
+    pf = client.get("/api/portfolio").json()
+    # total (valorisation) 0 ; composantes : réalisé 0 + latent (0 − 50,125) => écart publié, jamais un faux total
+    assert D(pf["pnl_trading_eur"]) == 0 and D(pf["pnl_ecart_eur"]) == D("50.12")  # 50,125 arrondi bancaire
+    assert "antérieure à la dernière exécution" in pf["pnl_ecart_raison"]
 
 
 def test_portfolio_without_snapshot_never_estimates_latent(client):

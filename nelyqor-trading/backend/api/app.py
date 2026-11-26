@@ -199,7 +199,7 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
         months = _months_since(int(snaps[0]["ts"])) if snaps else 0
         hosting = s.monthly_hosting_eur * D(str(round(months, 3)))
         pnl = last - initial - net
-        split = _pnl_split(database, mode, initial, snaps[-1] if snaps else None)
+        split = _pnl_split(database, mode, initial, snaps[-1] if snaps else None, last - initial - net)
         return {**split, "mode": mode, "equity_eur": str(last), "capital_initial_eur": str(initial), "apports_nets_eur": str(net),
                 "pnl_trading_eur": str(pnl), "twr": str(twr(series)) if len(series) > 1 else "0",
                 "frais_eur": f"{fees['f'] if fees else 0:.4f}", "cout_hebergement_estime_eur": str(hosting.quantize(D('0.01'))),
@@ -386,13 +386,15 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
     return app
 
 
-def _pnl_split(database: Any, mode: str, initial: Decimal, snap: dict[str, Any] | None) -> dict[str, Any]:
+def _pnl_split(database: Any, mode: str, initial: Decimal, snap: dict[str, Any] | None,
+               pnl_total: Decimal | None = None) -> dict[str, Any]:
     """Bénéfices/pertes RÉALISÉS (ventes faites, frais déduits) et LATENTS (positions encore ouvertes, à la dernière
     valorisation publiée par le moteur), recalculés depuis le journal des exécutions de la copie d'affichage, par la
     même comptabilité que le moteur (coût moyen, frais inclus). Jamais d'estimation : non calculable => None + raison."""
     from ..accounting.ledger import ExternalFlow, Fill, Ledger
 
     out: dict[str, Any] = {"pnl_realise_eur": None, "pnl_latent_eur": None, "positions_detail": {},
+                           "pnl_ecart_eur": None, "pnl_ecart_raison": None,
                            "valorisation_ts": paris_str(int(snap["ts"])) if snap else None,
                            "positions_eur": snap["positions_eur"] if snap else None,
                            "cash_eur": snap["cash_eur"] if snap else None, "pnl_note": ""}
@@ -415,8 +417,24 @@ def _pnl_split(database: Any, mode: str, initial: Decimal, snap: dict[str, Any] 
     out["positions_detail"] = {f"{s}-EUR": {"quantite": str(p.qty), "cout_eur": str(p.cost_eur.quantize(D("0.01"))),
                                             "cout_moyen_eur": str(p.avg_cost)} for s, p in held.items()}
     if snap is not None:
-        out["pnl_latent_eur"] = str((D(snap["positions_eur"]) - sum((p.cost_eur for p in held.values()), D(0))).quantize(D("0.01")))
-        out["pnl_note"] = "latent : valeur des positions à la dernière valorisation du moteur, moins leur coût d'achat (frais inclus)"
+        latent = D(snap["positions_eur"]) - sum((p.cost_eur for p in held.values()), D(0))
+        out["pnl_latent_eur"] = str(latent.quantize(D("0.01")))
+        out["pnl_note"] = ("total = réalisé + latent (frais déjà déduits de chacun) ; latent : valeur des positions à la "
+                           "dernière valorisation du moteur, moins leur coût d'achat (frais inclus)")
+        # CONTRÔLE DE COHÉRENCE : le total vient de la valorisation (équité − capital initial − apports), les composantes
+        # du journal des exécutions. Un écart n'est jamais masqué : il est publié avec sa cause probable.
+        if pnl_total is not None:
+            gap = pnl_total - (led.s.realized_eur + latent)
+            if abs(gap) >= D("0.01"):
+                last_fill = database.one("SELECT MAX(ts) t FROM fills WHERE mode=?", (mode,))
+                stale = last_fill is not None and last_fill["t"] is not None and int(last_fill["t"]) > int(snap["ts"])
+                unident = database.one("SELECT COUNT(*) n FROM external_flows WHERE mode=? AND identified=0", (mode,))
+                out["pnl_ecart_eur"] = str(gap.quantize(D("0.01")))
+                out["pnl_ecart_raison"] = (
+                    "valorisation du moteur antérieure à la dernière exécution (mise à jour attendue)" if stale else
+                    "mouvement d'argent non identifié (à rapprocher)" if unident and unident["n"] else
+                    "valorisation du moteur et journal des exécutions divergent (frais non convertis, poussière, "
+                    "flux) : vérifier l'export CSV")
     elif held:
         out["pnl_note"] = "latent non calculable : aucune valorisation publiée par le moteur"
     return out
