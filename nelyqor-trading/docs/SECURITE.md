@@ -35,6 +35,9 @@
 | Anti-rejeu par le canal (phase 5) | remettre une commande « pending », la supprimer/ré-insérer : jamais ré-exécutée ; commande inconnue, mal formée, > 16 Ko ou datée du futur refusée | `test_api_cannot_replay_processed_command_by_resetting_channel`, `test_malformed_or_future_commands_refused` |
 | Capital authentifié (phase 5, D6) | achat RÉEL dimensionné sur min(journal, soldes `balance()` lus par le moteur chez Bitvavo, relus à chaque cycle) ; écart > max(0,50 €, 0,5 % du capital authentifié), soldes illisibles ou > 3 min => aucun achat (ventes/protections permises), notification ; un ordre ≤ 35 % du capital authentifié et ≤ EUR libre authentifié (`config/hard_limits.json`) | `test_buy_sized_on_min_*`, `test_fake_deposit_in_journal_blocks_buys_but_not_sells`, `test_unexplained_balance_drop_blocks_buys`, `test_unavailable_balances_block_buys`, `test_guardian_relative_bounds_on_authenticated_capital` |
 | Rapprochement signé (phase 5) | `ack_flow` d'un flux RÉEL exige la signature du propriétaire (champ `flow_id` signé, nonce, révocation) | `test_ack_of_real_flow_requires_owner_signature` |
+| Plafonds (phase 6) | ordres d'achat EN ATTENTE comptés dans l'exposition totale et dans la position de leur marché (contrôle atomique à la soumission) ; au plus `max_active_entry_orders` (3) achats actifs par mode ; ventes/protections jamais bornées | `tests/test_phase6_plafonds.py` |
+| Données périmées (phase 6) | âge = le plus ancien de l'heure de réception et de l'horodatage de l'échange : une réponse récente d'un flux figé est périmée | `test_stale_exchange_timestamps_block_buys` |
+| Déploiement réel (phase 6) | montages, isolation, santé, redémarrages, coupures réseau, arrêt d'urgence SSH vérifiés sur la pile Docker réelle | `scripts/deploy_check.sh`, workflow `nelyqor-deploy-check.yml` |
 | Réel exige la séparation | pré-requis `bases_separees` (moteur, commandes, affichage = 3 fichiers distincts) | `test_real_activation_requires_separated_bases` |
 
 ## Configuration de la clé API Bitvavo (par le propriétaire, jamais dans le chat)
@@ -43,7 +46,9 @@
 3. Liste blanche IP : l'IPv4 fixe du VPS uniquement.
 4. 2FA activée sur le compte.
 5. Copier la clé et le secret directement sur le serveur :
-   `nano secrets/bitvavo_api_key` / `nano secrets/bitvavo_api_secret` puis `chmod 600 secrets/*`.
+   `nano secrets/bitvavo_api_key` / `nano secrets/bitvavo_api_secret` puis `chmod 600 secrets/*` et
+   `chown 10001:10001 secrets/bitvavo_api_key secrets/bitvavo_api_secret` (utilisateur du moteur ; Compose
+   n'applique pas uid/mode aux secrets de type fichier).
 6. `docker compose up -d engine` (redémarrage pour lecture des secrets).
 
 ## Pare-feu VPS

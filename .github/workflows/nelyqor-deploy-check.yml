@@ -1,0 +1,67 @@
+# Nelyqor Trading — vérification de déploiement EN CONDITIONS RÉELLES (Docker) sur ubuntu-latest.
+# - Construit l'image du VRAI Dockerfile, démarre la pile de compose.yaml (projet séparé « nelyqor-check »).
+# - SIMULATION uniquement : aucune clé Bitvavo (fichiers vides), secrets FACTICES générés par le script,
+#   NELYQOR_REAL_TRADING_ALLOWED=false, faux Bitvavo public (données synthétiques) : aucun ordre réel possible.
+# - Publie le résumé PASS/FAIL dans le résumé du job et les journaux en artefact (7 jours).
+name: nelyqor-deploy-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "nelyqor-trading/compose.yaml"
+      - "nelyqor-trading/Dockerfile"
+      - "nelyqor-trading/Caddyfile"
+      - "nelyqor-trading/requirements.lock"
+      - "nelyqor-trading/scripts/deploy_check.sh"
+      - "nelyqor-trading/scripts/deploy_probe.py"
+      - "nelyqor-trading/scripts/deploy_fake_bitvavo.py"
+      - "nelyqor-trading/scripts/emergency_stop.sh"
+      - "nelyqor-trading/scripts/e2e_pwa.cjs"
+      - ".github/workflows/nelyqor-deploy-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-deploy-check-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+jobs:
+  deploy-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - name: Playwright + Chromium (recette PWA)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null && npm install --no-audit --no-fund playwright@1
+          npx playwright install --with-deps chromium
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+      - name: Versions
+        run: docker version && docker compose version && node --version
+      - name: Vérification de déploiement
+        env:
+          DEPLOY_CHECK_E2E: "1"
+          DEPLOY_CHECK_OUT: reports/deploy_check
+        run: bash scripts/deploy_check.sh
+      - name: Résumé
+        if: always()
+        run: |
+          if [ -f reports/deploy_check/resume.md ]; then cat reports/deploy_check/resume.md >> "$GITHUB_STEP_SUMMARY";
+          else echo "Aucun résumé produit (échec avant les contrôles) : voir le journal du job." >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nelyqor-deploy-check
+          path: nelyqor-trading/reports/deploy_check/
+          retention-days: 7
+          if-no-files-found: warn

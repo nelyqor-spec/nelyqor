@@ -81,8 +81,7 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
     adb = api_db or open_api_db(s.api_file)
     cmds.exec("DELETE FROM control_commands WHERE ts < ?", (int(time.time() * 1000) - COMMAND_RETENTION_MS,))
     if auth is None:
-        hp = s.secrets_dir / "owner_password_hash"
-        auth = AuthManager(hp.read_text().strip() if hp.exists() else None)
+        auth = AuthManager(s.read_secret("owner_password_hash"))  # erreur explicite si illisible (phase 6)
     app = FastAPI(title="Nelyqor Trading", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db, app.state.commands, app.state.api_db = database, cmds, adb
     app.state.auth, app.state.settings = auth, s

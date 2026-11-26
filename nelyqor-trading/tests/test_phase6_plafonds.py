@@ -427,3 +427,57 @@ async def test_real_restart_keeps_pending_orders_and_caps(tmp_path):
     b = [x for x in real_buys(db2) if x["market"] == "BTC-EUR"]
     assert [x["status"] for x in b] == ["new", "VETOED"]
     assert "dépasse la limite par position (capital authentifié)" in json.loads(b[1]["details"])["veto"]
+
+
+# ======================================================================== 6. déploiement réel (scripts/deploy_check.sh)
+def _compose() -> dict:
+    import yaml
+
+    return yaml.safe_load((Path(__file__).resolve().parents[1] / "compose.yaml").read_text())
+
+
+def test_unreadable_secret_fails_with_explicit_message(tmp_path, monkeypatch):
+    """Défaut trouvé en conditions réelles : secrets en 600 appartenant à root => moteur et API en boucle de
+    redémarrage sur une PermissionError brute. Désormais : message explicite avec la correction (chown 10001)."""
+    from backend.core.config import Settings
+
+    (tmp_path / "engine_state_key").write_text("x")
+    (tmp_path / "owner_password_hash").write_text("x")
+
+    def denied(self, *a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(Path, "read_text", denied)
+    for role, name in (("engine", "engine_state_key"), ("api", "owner_password_hash")):
+        with pytest.raises(PermissionError, match=rf"secret {name} illisible.*chown 10001:10001"):
+            Settings(db_path=tmp_path / "e.db", role=role, secrets_dir=tmp_path).read_secret(name)
+
+
+def test_api_reads_password_hash_through_read_secret(tmp_path):
+    from backend.api.app import create_app
+    from backend.core.config import Settings
+
+    s = Settings(db_path=tmp_path / "e.db", role="api", secrets_dir=tmp_path)
+    assert create_app(s).state.db is not None  # aucun hash : démarre (connexion impossible), pas d'exception
+    (tmp_path / "owner_password_hash").write_text("")
+    create_app(Settings(db_path=tmp_path / "e2.db", role="api", secrets_dir=tmp_path))
+
+
+def test_compose_phase6_hardening_and_health():
+    c = _compose()["services"]
+    hc = c["api"]["healthcheck"]["test"]
+    assert "/api/health" in " ".join(hc)
+    cad = c["caddy"]
+    assert cad["read_only"] is True and cad["cap_drop"] == ["ALL"] and cad["cap_add"] == ["NET_BIND_SERVICE"]
+    assert "no-new-privileges:true" in cad["security_opt"]
+    assert cad["depends_on"] == {"api": {"condition": "service_healthy"}}
+    docs = (Path(__file__).resolve().parents[1] / "docs" / "DEPLOIEMENT.md").read_text()
+    assert "chown 10001:10001" in docs
+
+
+def test_deploy_check_script_restores_service_aliases_and_is_simulation_only():
+    sh = (Path(__file__).resolve().parents[1] / "scripts" / "deploy_check.sh").read_text()
+    # sans l'alias, le nom de service « api » n'est plus résolu par Caddy après reconnexion (faux échec)
+    assert 'network connect --alias api' in sh and 'network connect --alias engine' in sh
+    assert "export NELYQOR_REAL_TRADING_ALLOWED=false" in sh
+    assert ': > "$WORK/secrets/bitvavo_api_key"' in sh  # aucune clé Bitvavo
+    assert 'PROJ=${DEPLOY_CHECK_PROJECT:-nelyqor-check}' in sh  # jamais les volumes de production

@@ -152,7 +152,14 @@ class Settings:
         p = self.secrets_dir / name
         if not p.exists():
             return None
-        return p.read_text(encoding="utf-8").strip() or None
+        try:
+            return p.read_text(encoding="utf-8").strip() or None
+        except PermissionError as e:
+            # phase 6 (déploiement réel) : un secret en 600 appartenant à root est illisible par l'utilisateur
+            # des conteneurs ; échec EXPLICITE (jamais un démarrage silencieux sans clé d'intégrité)
+            raise PermissionError(f"secret {name} illisible par l'uid {os.getuid()} : sur l'hôte, "
+                                  f"`chown 10001:10001 secrets/{name} && chmod 600 secrets/{name}` "
+                                  "(docs/DEPLOIEMENT.md)") from e
 
 
 def load_strategy_params() -> dict[str, Any]:

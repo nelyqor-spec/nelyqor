@@ -55,7 +55,15 @@ check() {  # check NOM commande... : PASS si la commande réussit
 dc() { docker compose "$@"; }
 cid() { dc ps -q "$1" | head -1; }
 probe() { dc exec -T "$1" python scripts/deploy_probe.py "$2"; }
-jget() { python3 -c 'import json,sys; d=json.loads(sys.stdin.read().strip().splitlines()[-1]); print(json.dumps(d.get(sys.argv[1])) if not isinstance(d.get(sys.argv[1]), str) else d.get(sys.argv[1]))' "$1"; }
+jget() {  # jget CLÉ : valeur d'une clé du dernier objet JSON lu sur l'entrée (vide si absent ou illisible)
+  python3 -c '
+import json, sys
+try:
+    v = json.loads(sys.stdin.read().strip().splitlines()[-1]).get(sys.argv[1])
+except Exception:
+    sys.exit(0)
+print(v if isinstance(v, str) else json.dumps(v))' "$1"
+}
 state() { probe engine state 2>/dev/null | tail -1; }
 st() { state | jget "$1"; }
 fake_mode() { dc exec -T fakebitvavo python -c "import urllib.request as u; print(u.urlopen(u.Request('http://127.0.0.1:8080/control/mode/$1', method='POST')).read().decode())"; }
@@ -72,6 +80,10 @@ api_down_http() { ! curl -fsS --max-time 5 "http://localhost:$PORT/api/health" >
 container_health() { [ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$(cid "$1")")" = "healthy" ]; }
 restarts() { docker inspect -f '{{.RestartCount}}' "$(cid "$1")"; }
 running() { [ "$(docker inspect -f '{{.State.Running}}' "$(cid "$1")")" = "true" ]; }
+hardkill() {  # SIGKILL du processus principal du conteneur depuis l'hôte (panne brutale ; sudo sur le runner CI)
+  local pid; pid=$(docker inspect -f '{{.State.Pid}}' "$(cid "$1")")
+  kill -9 "$pid" 2>/dev/null || sudo -n kill -9 "$pid"
+}
 expect_json() {  # expect_json JSON CLÉ VALEUR_ATTENDUE
   local v; v=$(echo "$1" | jget "$2")
   [ "$v" = "$3" ] || { echo "$2=$v (attendu $3)"; return 1; }
@@ -85,6 +97,7 @@ cleanup() {
   dc logs --no-color --timestamps > "$OUT/compose_logs.txt" 2>&1 || true
   for s in engine api caddy fakebitvavo; do dc logs --no-color "$s" > "$OUT/log_$s.txt" 2>&1 || true; done
   if [ "$KEEP" = 0 ]; then dc down -v --remove-orphans > /dev/null 2>&1 || true; fi
+  docker run --rm --user 0 -v "$WORK:/w" nelyqor-trading:local sh -c 'rm -rf /w/secrets' > /dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -115,8 +128,12 @@ sed -n 3p "$WORK/gen.txt" > "$WORK/secrets/owner_command_key"
 openssl rand -hex 32 > "$WORK/secrets/engine_state_key"
 : > "$WORK/secrets/bitvavo_api_key"; : > "$WORK/secrets/bitvavo_api_secret"   # AUCUNE clé : simulation seule
 rm -f "$WORK/gen.txt"
-# Permissions EXACTES de docs/DEPLOIEMENT.md (secrets/ en 700, fichiers en 600, propriétaire = celui qui déploie)
-chmod 700 "$WORK/secrets"; chmod 600 "$WORK/secrets"/*
+# Permissions EXACTES de docs/DEPLOIEMENT.md : fichiers en 600, propriétaire = uid 10001 des conteneurs
+# (chown fait par un conteneur root jetable : fonctionne aussi sans sudo sur le runner CI)
+chmod 600 "$WORK/secrets"/*
+docker run --rm --user 0 -v "$WORK/secrets:/s" nelyqor-trading:local chown 10001:10001 \
+  /s/bitvavo_api_key /s/bitvavo_api_secret /s/owner_password_hash /s/engine_state_key /s/owner_command_key \
+  /s/owner_command_salt || { echo "chown des secrets factices impossible" >&2; exit 1; }
 
 cat > "$WORK/override.yaml" <<EOF
 # Surcharge de TEST (générée par deploy_check.sh) : faux Bitvavo, secrets factices, Caddy en HTTP local.
@@ -223,7 +240,7 @@ log "redémarrage de l'API (docker compose restart puis kill -9)"
 dc restart api > /dev/null 2>&1
 check "restart api : /api/health revient" wait_for 60 engine_alive_http
 R0=$(restarts api)
-kill -9 "$(docker inspect -f '{{.State.Pid}}' "$(cid api)")"
+hardkill api
 check "kill -9 api : relancée par la politique de redémarrage" wait_for 60 bash -c "[ \"\$(docker inspect -f '{{.RestartCount}}' $(cid api))\" -gt $R0 ]"
 check "kill -9 api : /api/health revient" wait_for 60 engine_alive_http
 LOGIN_HTTP=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
@@ -241,7 +258,7 @@ check "coupure moteur : processus toujours en marche, aucun redémarrage" bash -
 check "coupure moteur : heartbeat continue, données signalées périmées" expect_json "$SC" data_ok false
 check "coupure moteur : aucun achat pendant la coupure" python3 -c "import sys; t='$(echo "$SC" | jget dernier_achat_ts)'; sys.exit(0 if t in ('null','None','') or int(t) < $T_CUT else 1)"
 check "coupure moteur : arrêt d'urgence toujours applicable hors réseau (probe d'état lisible)" [ -n "$SC" ]
-docker network connect "$NET" "$(cid engine)"
+docker network connect --alias engine "$NET" "$(cid engine)"   # l'alias DNS du service est perdu à la déconnexion
 check "coupure moteur : reprise propre (données fraîches)" wait_for 120 fresh
 check "coupure moteur : toujours SIMULATION après reprise" expect_json "$(state)" etat SIMULATION
 
@@ -265,7 +282,7 @@ docker network disconnect "$NET" "$(cid api)"
 check "coupure api : Caddy ne joint plus l'API (erreur, pas de contenu)" wait_for 30 api_down_http
 check "coupure api : API toujours en marche" running api
 check "coupure api : moteur non affecté (heartbeat frais)" fresh
-docker network connect "$NET" "$(cid api)"
+docker network connect --alias api "$NET" "$(cid api)"   # sans l'alias, Caddy ne résout plus « api »
 check "coupure api : reprise via Caddy" wait_for 60 engine_alive_http
 
 # ------------------------------------------------------------------ 6. arrêt d'urgence SSH
@@ -278,7 +295,7 @@ check "arrêt d'urgence : drapeau consommé (pas de ré-application en boucle)" 
 
 log "kill -9 du moteur (panne brutale) : l'arrêt d'urgence doit survivre"
 RE1=$(restarts engine)
-kill -9 "$(docker inspect -f '{{.State.Pid}}' "$(cid engine)")"
+hardkill engine
 check "kill -9 moteur : relancé par la politique de redémarrage" wait_for 90 bash -c "[ \"\$(docker inspect -f '{{.RestartCount}}' $(cid engine))\" -gt $RE1 ]"
 check "kill -9 moteur : heartbeat repris" wait_for 120 fresh
 SK=$(state)

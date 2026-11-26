@@ -27,7 +27,12 @@ python3 scripts/set_password.py secrets/owner_password_hash   # mot de passe PUI
 openssl rand -base64 32 > secrets/backup_passphrase
 openssl rand -hex 32 > secrets/engine_state_key     # clé d'intégrité de l'état (lue par le moteur SEUL)
 chmod 600 secrets/*
+# Les conteneurs tournent sous l'uid 10001 et Compose monte les secrets TELS QUELS (uid/mode ignorés pour un
+# secret de type fichier) : sans ce chown, moteur et API s'arrêtent (« secret … illisible par l'uid 10001 »).
+chown 10001:10001 secrets/bitvavo_api_key secrets/bitvavo_api_secret secrets/owner_password_hash \
+  secrets/engine_state_key secrets/owner_command_key secrets/owner_command_salt
 docker compose up -d --build
+scripts/deploy_check.sh            # facultatif, AVANT la mise en service : pile de test séparée (voir § 10)
 ```
 Le hash scrypt et le mot de passe ne transitent jamais par le chat.
 
@@ -91,3 +96,17 @@ scripts/backup.sh` (`commandes.db`/`affichage.db` sont dérivées et non sauvega
 En mode réel, la PWA affiche `capital_authentifie` (`/api/status`) : si `ok=false`, les achats réels sont suspendus
 (écart journal/soldes, soldes Bitvavo illisibles ou périmés) ; ventes et protections continuent. Rapprocher un flux
 réel (`ack_flow`) demande la phrase de signature.
+
+## 10. Vérification de déploiement en conditions réelles (phase 6)
+`scripts/deploy_check.sh` construit l'image, démarre la pile de `compose.yaml` sous un AUTRE nom de projet
+(`nelyqor-check` : volumes distincts de la production, Caddy en HTTP sur `127.0.0.1:18080`), avec des secrets
+FACTICES générés pour l'occasion, aucune clé Bitvavo et un faux Bitvavo public (`scripts/deploy_fake_bitvavo.py`,
+données synthétiques). Il affiche PASS/FAIL pour : montages réels (`/commands` en lecture seule dans le moteur
+— écriture refusée avec EROFS —, `/display` en lecture seule dans l'API, ni `/engine` ni `/state` dans l'API,
+utilisateur non root, pas de socket Docker, `read_only`, `cap_drop`, `no-new-privileges`), isolation des bases
+(l'API ne peut pas ouvrir `engine.db` ; `bases_separees` vrai par la fonction réelle `channel_writable`), santé,
+redémarrages (`docker compose restart`, `kill -9`), coupures réseau (moteur, API, échange en panne ou renvoyant
+des données périmées : aucun achat, aucun plantage, reprise propre), arrêt d'urgence SSH et recette PWA
+(`scripts/e2e_pwa.cjs`, si Node + Playwright sont installés). Résumé et journaux : `reports/deploy_check/`.
+Le même script tourne sur GitHub Actions (`.github/workflows/nelyqor-deploy-check.yml`). Ne vérifie PAS :
+le certificat Let's Encrypt (domaine réel), le pare-feu du VPS, ni l'accès réel à Bitvavo.
