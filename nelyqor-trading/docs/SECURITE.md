@@ -25,6 +25,11 @@
 | Preuve de recette signée (phase 4) | `scripts/acceptance.sh --record` signe (clé `engine_state_key`) commit + empreintes du code `backend/**/*.py`, de `config/*` et de la sortie des tests ; le moteur la revérifie contre le code qu'il exécute (30 j max, 0 échec) | `tests/test_phase4_security.py::test_proof_*`, `test_unsigned_acceptance_flag_no_longer_sufficient` |
 | Révocation (phase 4) | retour en simulation / arrêt d'urgence => horodatage signé `auth_revoked_ms` ; toute signature antérieure est refusée | `test_signature_from_before_revocation_is_refused`, `test_revocation_timestamp_tamper_detected` |
 | Réactivation du réel (phase 4) | reprise vers le réel = signature `resume_real` du propriétaire ; l'arrêt d'urgence reste NON signé (toujours possible) | `test_emergency_stop_then_forged_resume_cannot_rearm_real` |
+| Phrase de signature (contre-expertise) | clé de signature dérivée d'une phrase DISTINCTE du mot de passe, jamais envoyée ; 600 000 itérations figées ; sel servi par Caddy | `test_C1_*`, `test_browser_signature_matches_python` |
+| Magasin d'état du moteur | état Guardian, nonces, méta réelles dans `/state` (volume moteur seul), signé, compteur monotone ; la base n'a qu'une copie d'affichage | `tests/test_phase4_engine_store.py` |
+| Intentions signées | étiquette HMAC des intentions ; une ligne étrangère ne bloque plus les protections | `test_D3_*` |
+| Arrêt d'urgence SSH | fichier `/state/ARRET_URGENCE` (canal hors de portée de l'API) | `test_D2_*` |
+| PWA hors API | PWA et sel servis par Caddy en lecture seule ; réponses `/api/*` sandboxées | revue Caddyfile |
 | Commandes : concurrence et panne | prise atomique (une seule exécution) ; commande interrompue par un crash jamais rejouée | `test_command_taken_once_by_concurrent_loops`, `test_interrupted_command_not_replayed_after_crash` |
 
 ## Configuration de la clé API Bitvavo (par le propriétaire, jamais dans le chat)
@@ -41,6 +46,9 @@
 SSH par clé uniquement (`PasswordAuthentication no`).
 
 ## Risques résiduels connus
+- (Phase 4) Base partagée API/moteur : le journal réel (`fills`, `external_flows`), `ack_flow` et deux pré-requis
+  restent modifiables par une API compromise (fenêtre ≤ 5 min jusqu'à la réconciliation) ; l'affichage peut mentir.
+  Voir reports/RAPPORT_AUDIT_PHASE_4.md § 9.
 - (Corrigé en phase 3) Les commandes sensibles (activation du réel, liquidation) sont SIGNÉES dans l'iPhone
   (PBKDF2-SHA256 600 000 itérations + HMAC-SHA256, WebCrypto) et vérifiées par le moteur avec une clé que l'API
   ne possède pas (`secrets/owner_command_key`) ; horodatage 5 min et nonce anti-rejeu. Une API compromise peut

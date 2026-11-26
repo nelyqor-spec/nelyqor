@@ -68,7 +68,7 @@ backend/research      backtest conservateur, walk-forward purgé, holdout, DSR, 
 backend/api           FastAPI (auth scrypt, cookies sécurisés, CSRF, anti-bruteforce, audit)
 backend/runner.py     service moteur (seul détenteur des clés)
 frontend/             PWA iPhone 5 onglets (sans build, CSP stricte)
-tests/                183 tests : ordres, protections, sécurité, comptabilité, données, résilience, finance,
+tests/                231 tests : ordres, protections, sécurité, comptabilité, données, résilience, finance,
                       quant, WebSocket, sources externes, API
 scripts/              lab, téléchargement bougies, mot de passe, backup/restore, bench, recette, e2e PWA
 ```

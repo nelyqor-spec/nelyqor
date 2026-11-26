@@ -20,8 +20,9 @@ Un enregistrement DNS A `NELYQOR_DOMAIN` → IPv4 du VPS (domaine du propriétai
 ```bash
 cp .env.example .env && nano .env                  # NELYQOR_DOMAIN, laisser REAL_TRADING_ALLOWED=false
 mkdir -p secrets && chmod 700 secrets
-python3 scripts/set_password.py secrets/owner_password_hash   # écrit aussi owner_command_salt (public)
-                                                            # et owner_command_key (moteur SEUL)
+python3 scripts/set_password.py secrets/owner_password_hash   # mot de passe PUIS phrase de signature (distincte,
+                                                            # 16 car. min.) : owner_command_salt (public, servi par
+                                                            # Caddy) et owner_command_key (moteur SEUL)
 : > secrets/bitvavo_api_key && : > secrets/bitvavo_api_secret   # vides au départ
 openssl rand -base64 32 > secrets/backup_passphrase
 openssl rand -hex 32 > secrets/engine_state_key     # clé d'intégrité de l'état (lue par le moteur SEUL)
@@ -59,3 +60,10 @@ Telegram (optionnel) : créer un bot (@BotFather), mettre `TELEGRAM_CHAT_ID` dan
 `secrets/telegram_bot_token`, ajouter ce secret au service `engine` dans compose.yaml, redémarrer.
 Seuls les événements critiques sont envoyés (dédupliqués 6 h, 20/jour max). Sans Telegram, les alertes
 restent consultables via `/api/incidents`. Web Push iOS : non implémenté en V1.
+
+## 8. État du moteur et arrêt d'urgence (phase 4)
+- Le moteur conserve son état autoritaire dans le volume `engine_state` (`/state`), jamais monté dans l'API ni le LAB.
+  Le sauvegarder : `NELYQOR_ENGINE_STATE_HOST_DIR=/var/lib/docker/volumes/nelyqor_engine_state/_data scripts/backup.sh`.
+  Sans lui, après restauration, le moteur passe en INCIDENT (levée par une reprise signée).
+- Arrêt d'urgence sans l'iPhone : `scripts/emergency_stop.sh` (dépose `/state/ARRET_URGENCE`).
+- Après un arrêt d'urgence ou une pause, attendre 30 s avant de signer une reprise (tolérance d'horloge).
