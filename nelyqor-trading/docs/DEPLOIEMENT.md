@@ -27,11 +27,12 @@ python3 scripts/set_password.py secrets/owner_password_hash   # mot de passe PUI
 openssl rand -base64 32 > secrets/backup_passphrase
 openssl rand -hex 32 > secrets/engine_state_key     # clé d'intégrité de l'état (lue par le moteur SEUL)
 chmod 600 secrets/*
+chmod 644 secrets/owner_command_salt   # sel PUBLIC : Caddy (sans capacités, sans DAC_OVERRIDE) doit pouvoir le lire
 # Les conteneurs tournent sous l'uid 10001 et Compose monte les secrets TELS QUELS (uid/mode ignorés pour un
 # secret de type fichier) : sans ce chown, moteur et API s'arrêtent (« secret … illisible par l'uid 10001 »).
 chown 10001:10001 secrets/bitvavo_api_key secrets/bitvavo_api_secret secrets/owner_password_hash \
   secrets/engine_state_key secrets/owner_command_key secrets/owner_command_salt
-chmod 644 secrets/owner_command_salt   # sel PUBLIC : Caddy (sans capacités, sans DAC_OVERRIDE) doit pouvoir le lire
+stat -c '%a %u %n' secrets/*   # attendu : 600 10001 pour tous, sauf owner_command_salt en 644 10001
 docker compose up -d --build
 scripts/deploy_check.sh            # facultatif, AVANT la mise en service : pile de test séparée (voir § 10)
 ```

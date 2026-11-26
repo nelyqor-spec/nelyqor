@@ -147,7 +147,11 @@ chmod 600 "$WORK/secrets"/*
 docker run --rm --user 0 -v "$WORK/secrets:/s" "$IMAGE" chown 10001:10001 \
   /s/bitvavo_api_key /s/bitvavo_api_secret /s/owner_password_hash /s/engine_state_key /s/owner_command_key \
   /s/owner_command_salt || { echo "chown des secrets factices impossible" >&2; exit 1; }
-chmod 644 "$WORK/secrets/owner_command_salt"   # sel PUBLIC : lisible par Caddy sans capacités (D3)
+# sel PUBLIC en 644 (D3) : appliqué dans le conteneur root (après le chown, l'utilisateur du runner CI n'est plus
+# propriétaire et ne peut plus changer le mode). Vérifié : échec bruyant si le mode n'est pas appliqué.
+docker run --rm --user 0 -v "$WORK/secrets:/s" "$IMAGE" chmod 644 /s/owner_command_salt \
+  || { echo "chmod 644 du sel impossible" >&2; exit 1; }
+[ "$(stat -c %a "$WORK/secrets/owner_command_salt")" = 644 ] || { echo "sel : mode 644 non appliqué" >&2; exit 1; }
 
 cat > "$WORK/override.yaml" <<EOF
 # Surcharge de TEST (générée par deploy_check.sh) : faux Bitvavo, secrets factices, Caddy en HTTP local.
