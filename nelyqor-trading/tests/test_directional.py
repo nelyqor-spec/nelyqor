@@ -460,3 +460,102 @@ def test_flags_and_real_engine_never_imports_directional():
                          env={"NELYQOR_ROLE": "lab", "PATH": "/usr/bin:/bin"})
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "False"
+
+
+# ------------------------------------------------------------------------------------------------ non-régression
+# (contre-expertise indépendante du commit 4997f75 : un test par défaut corrigé)
+def test_nr1_gap_liquidation_precedes_recall():
+    """Short 0,5 à 100, Lq = 181,82. Bougie 4 : ouverture 200 (≥ Lq) ET rappel du prêteur. La liquidation passe
+    AVANT le rappel : rachat 0,5 × 200 = 100, frais 0,25, pénalité 2 % = 2 => trésorerie 49,875 + 100 − 102,25 =
+    47,625 ; PnL = 50 − 100 − 0,25 − 2 − 0,125 = −52,375 (et non −50,375 sans pénalité)."""
+    bor = {"A": np.array([True, True, True, True, False, False])}
+    res, eng = run({"A": bars(6, {4: (200, 200, 199, 200)})}, {2: {"A": SHORT}}, borrowable=bor)
+    assert res.stats["liquidations"] == 1 and res.stats["rappels"] == 0
+    assert eng.cash == pytest.approx(47.625, abs=1e-9)
+    assert res.trades[0]["pnl"] == pytest.approx(-52.375, abs=1e-9)
+
+
+def test_nr2_stale_pending_exit_purged_when_signal_returns():
+    """Long ouvert en 3 ; CASH à la clôture 4 (sortie prévue en 5) ; bougie 5 absente (sortie reportée) ; LONG à la
+    clôture 5 : la décision la plus récente prévaut, aucune sortie « signal », la position reste ouverte."""
+    res, eng = run({"A": bars(10, {5: None})}, {2: {"A": LONG}, 4: {"A": CASH}, 5: {"A": LONG}})
+    assert [a for _, _, a in actions(res)] == ["entree_long"]
+    assert eng.pos["A"].qty == pytest.approx(0.5) and not eng.pending_exit
+
+
+def test_nr3_tp1_not_marked_when_partial_refused():
+    """Long 0,2 à 100 (20 €), TP1 104, fraction 0,2 => 0,04 × 104 = 4,16 € < 5 € (refusé ; reliquat 16,64 € ≥ 5).
+    TP1 n'est ni compté ni marqué : le stop reste à 96 (pas de seuil de rentabilité armé) et la position entière
+    survit à la bougie 5 (L = 99,9 < 100)."""
+    cfg = replace(TP, tp1_fraction=0.2, max_weight=0.2)
+    d = {"A": bars(8, {4: (100, 104.5, 99.5, 102), 5: (101, 101, 99.9, 100.5)})}
+    res, eng = run(d, {2: {"A": LONG}}, cfg)
+    assert res.stats["tp1"] == 0 and not eng.pos["A"].tp1_done
+    assert eng.pos["A"].qty == pytest.approx(0.2) and eng.pos["A"].stop == pytest.approx(96)
+
+
+def test_nr4_effective_leverage_measured_and_short_reduced():
+    """Short 0,5 à 100 (stop éloigné), clôture 4 à 170 : exposition 85, équité 100 − 50,125 + (100 − 85) = 64,875 :
+    levier EFFECTIF 85/64,875 = 1,3102 > 1 (un short sans levier à l'entrée peut dépasser 1× ensuite), rapporté
+    dans `levier_effectif_max`. Seuil 1,5 (défaut) : aucune réduction. Seuil 1,2 : réduction à l'ouverture 5 (170)
+    de la fraction f = (85 − 64,875)/(85 × (1 − 0,0025)) = 0,23736 => exposition ≤ équité à la clôture 5."""
+    d = {"A": bars(7, {4: (100, 170, 99, 170), 5: (170, 171, 169, 170), 6: (170, 171, 169, 170)})}
+    cfg = replace(BASE, stop_atr=100.0)
+    res, _ = run(d, {2: {"A": SHORT}}, cfg)
+    assert res.stats["levier_effectif_max"] == pytest.approx(85 / 64.875, abs=1e-9)
+    assert res.stats["reductions_levier"] == 0 and res.stats["levier_max_entree"] < 1
+    res2, eng2 = run(d, {2: {"A": SHORT}}, replace(cfg, max_effective_gross=1.2))
+    red = [t for t in res2.journal if t["action"] == "reduction_levier"]
+    f = (85 - 64.875) / (85 * (1 - 0.0025))
+    assert len(red) == 1 and red[0]["i"] == 5 and red[0]["qty"] == pytest.approx(0.5 * f, abs=1e-8)
+    assert eng2.effective_gross[5] <= 1.0 + 1e-6
+    with pytest.raises(ValueError):
+        DirConfig(max_effective_gross=0.9).validate()
+
+
+def test_nr5_view_holds_only_truncated_copies():
+    """La vue ne référence ni le moteur ni les tableaux complets : chaque attribut est une copie tronquée à i+1
+    bougies ; la modifier ne change pas le moteur."""
+    grid, al = align({"A": bars(6, {4: (100, 130, 99, 130)})}, H)
+    eng_box = []
+
+    def spy(i, view):
+        assert not any(isinstance(v, D.DirEngine) for v in vars(view).values())
+        for v in vars(view).values():
+            if isinstance(v, np.ndarray) and v.ndim == 2:
+                assert v.shape[0] == i + 1 and v.base is None
+        view.closes("A")[:] = -1.0
+        return {}
+
+    _, eng = simulate(grid, al, spy, BASE)
+    eng_box.append(eng)
+    assert np.nanmin(eng.C) > 0 and eng.C[4, 0] == 130
+
+
+def test_nr6_atr_uses_last_known_close_after_missing_bar():
+    """t0 (100, 101, 99, 100), t1 absente, t2 et t3 (150, 151, 149, 150). TR_2 = max(2, |151 − 100|, |149 − 100|) = 51
+    (dernière clôture connue = 100), TR_3 = 2 ; ATR(2) : t2 = NaN (t1 absente dans la fenêtre), t3 = (51 + 2)/2 = 26,5."""
+    Hh = np.array([[101.0], [np.nan], [151.0], [151.0]])
+    Ll = np.array([[99.0], [np.nan], [149.0], [149.0]])
+    Cc = np.array([[100.0], [np.nan], [150.0], [150.0]])
+    atr = D.causal_atr(Hh, Ll, Cc, 2)
+    assert np.isnan(atr[2, 0]) and atr[3, 0] == pytest.approx(26.5, abs=1e-12)
+
+
+def test_nr7_incoherent_ohlc_is_absent():
+    """Bougie 4 (O 100, H 120, L 101, C 100) : L > min(O, C) => incohérente, traitée comme ABSENTE : son haut 120
+    ne déclenche ni TP1 (104) ni TP2 (108) ; la position reste entière ; une bougie (H < O) l'est aussi."""
+    res, eng = run({"A": bars(6, {4: (100, 120, 101, 100)})}, {2: {"A": LONG}}, cfg=TP)
+    assert [a for _, _, a in actions(res)] == ["entree_long"] and eng.pos["A"].qty == pytest.approx(0.5)
+    assert res.stats["bougies_incoherentes"] == 1 and not eng.present[4, 0]
+    grid, al = align({"A": bars(4, {2: (100, 99, 98, 98.5)})}, H)
+    assert not D.DirEngine(grid, al, BASE).present[2, 0]
+
+
+def test_nr8_tp_requires_strict_trade_through():
+    """TP1 = 104 : un haut ÉGAL à 104 ne remplit pas l'objectif ; un haut de 104,01 le remplit (0,25 à 104)."""
+    r1, _ = run({"A": bars(6, {4: (100, 104, 99.5, 103)})}, {2: {"A": LONG}}, cfg=TP)
+    r2, _ = run({"A": bars(6, {4: (100, 104.01, 99.5, 103)})}, {2: {"A": LONG}}, cfg=TP)
+    assert r1.stats["tp1"] == 0 and r2.stats["tp1"] == 1
+    tp = [t for t in r2.journal if t["action"] == "tp1"]
+    assert len(tp) == 1 and tp[0]["qty"] == pytest.approx(0.25) and tp[0]["px"] == 104

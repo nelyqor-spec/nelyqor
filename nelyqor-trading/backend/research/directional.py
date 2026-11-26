@@ -5,22 +5,28 @@ l'importer (vérifié par `tests/test_directional.py`). Il n'émet aucun ordre, 
 Il ne produit ni probabilité ni score de confiance : une règle renvoie seulement LONG, SHORT ou CASH.
 
 Conventions reprises du moteur au comptant `xsection_v4` (importé en LECTURE pour `sanitize`/`align`, non modifié) :
-bougie invalide = ABSENTE (jamais un prix nul) ; décision à la CLÔTURE de t, exécution à l'OUVERTURE de t+1 ; frais
+bougie invalide = ABSENTE (jamais un prix nul) ; dans CE module, une bougie OHLC INCOHÉRENTE (il faut
+L ≤ min(O, C) ≤ max(O, C) ≤ H) est aussi traitée comme absente ; décision à la CLÔTURE de t, exécution à l'OUVERTURE de t+1 ; frais
 sur le notionnel ; quantité arrondie VERS LE BAS au pas ; minimum d'ordre 5 € (en dessous : rien, l'argent reste en
 euros) ; une sortie TOTALE n'est jamais bloquée par le minimum (jamais de reliquat invendable) ; valorisation au dernier
 prix connu ; journal de toutes les transactions ; invariant comptable contrôlé à chaque bougie.
 
 ORDRE DES OPÉRATIONS À LA BOUGIE i (documenté, PRUDENT) :
- 1. frais d'emprunt de la bougie i pour chaque short ouvert (quantité × dernier prix connu × taux annuel × durée) ;
+ 1. frais d'emprunt de la bougie i pour chaque short ouvert au début de i (quantité × dernier prix connu × taux
+    annuel × durée). CHOIX PRUDENT : toute bougie touchée est facturée ENTIÈRE, y compris la bougie d'entrée
+    (facturée à l'entrée) et la bougie de sortie (facturée même si le rachat a lieu à son ouverture) ;
  2. si la bougie i est absente : rien ne s'exécute (sorties reportées, entrées annulées), valorisation gelée ;
- 3. RAPPEL du prêteur (`borrowable[m][i]` faux alors qu'un short est ouvert) : rachat forcé à l'ouverture ;
- 4. DISCONTINUITÉS à l'ouverture : short — ouverture ≥ prix de liquidation => liquidation À L'OUVERTURE (+ pénalité) ;
-    sinon ouverture au-delà du stop (long : O ≤ stop ; short : O ≥ stop) => sortie À L'OUVERTURE, jamais au stop ;
- 5. sorties décidées à la clôture précédente (changement de signal), au marché à l'ouverture ;
+ 3. DISCONTINUITÉS à l'ouverture, AVANT le rappel : short — ouverture ≥ prix de liquidation => liquidation À
+    L'OUVERTURE (+ pénalité : une position déjà sous le seuil de santé ne peut pas échapper à la pénalité par un
+    rappel) ; sinon ouverture au-delà du stop (long : O ≤ stop ; short : O ≥ stop) => sortie À L'OUVERTURE ;
+ 4. RAPPEL du prêteur (`borrowable[m][i]` faux alors qu'un short est ouvert) : rachat forcé à l'ouverture ;
+ 5. sorties décidées à la clôture précédente (changement de signal), au marché à l'ouverture ; puis RÉDUCTION des
+    shorts si le levier effectif mesuré à la clôture précédente dépassait `max_effective_gross` ;
  6. entrées décidées à la clôture précédente, au marché à l'ouverture (contrôles levier/trésorerie/minimum refaits) ;
  7. INTRA-BOUGIE (positions anciennes ET nouvelles) : le STOP (ou la liquidation, selon le niveau atteint en premier
     sur un trajet défavorable) est TOUJOURS supposé touché AVANT tout objectif ; si stop et TP sont dans la même bougie,
-    seul le stop est exécuté. Un TP n'est exécuté que si la bougie ne touche pas le stop ;
+    seul le stop est exécuté. Un TP n'est exécuté que si la bougie ne touche pas le stop ET le DÉPASSE strictement
+    (long : H > TP ; short : L < TP) ; TP1 n'est marqué atteint que si la quantité a réellement diminué ;
  8. clôture : dernier prix connu, mise à jour CAUSALE des stops suiveurs / seuil de rentabilité (effectifs à i+1),
     contrôle d'invariant, puis décision.
 
@@ -47,8 +53,13 @@ SHORT (marge ISOLÉE par position, aucune compensation entre positions) :
  - disponibilité d'emprunt : série booléenne par marché ; indisponible => pas de short ; indisponible alors qu'un
    short est ouvert => RAPPEL (rachat forcé).
 
-AUCUN LEVIER : à chaque entrée, Σ|notionnels| (aux prix d'ouverture) + nouveau ≤ `max_gross` × équité APRÈS frais,
-avec `max_gross` ≤ 1 (refus de configuration sinon) ; un short consomme autant d'euros propres qu'un long. AUCUNE
+AUCUN LEVIER À L'ENTRÉE : à chaque entrée, Σ|notionnels| (aux prix d'ouverture) + nouveau ≤ `max_gross` × équité
+APRÈS frais, avec `max_gross` ≤ 1 (refus de configuration sinon) ; un short consomme autant d'euros propres qu'un long.
+LIMITE HONNÊTE : un short ouvert sans levier PEUT DÉPASSER 1× ENSUITE (si le prix monte, la dette q·x croît et
+l'équité baisse : short 0,5 à 100 puis prix 170 => 85 / 64,875 ≈ 1,31×). Le levier EFFECTIF Σ|notionnels| / équité
+est donc mesuré à chaque clôture (`levier_effectif_max`) ; au-delà de `max_effective_gross` (1,5 par défaut
+[HYPOTHÈSE]) les shorts sont réduits à l'ouverture suivante pour revenir à `max_gross` ; entre deux clôtures (et
+jusqu'à l'ouverture suivante), le levier effectif peut rester au-dessus du seuil. AUCUNE
 MARTINGALE : pas d'ajout à une position existante ; après un trade perdant, le notionnel des entrées suivantes est
 plafonné au notionnel initial du trade perdant (plafond levé après un trade gagnant).
 
@@ -117,7 +128,8 @@ class DirConfig:
     min_order_eur: float = 5.0
     amount_step: float = 1e-8
     allow_short: bool = True
-    max_gross: float = 1.0  # Σ|notionnels| ≤ max_gross × équité ; ≤ 1 (aucun levier)
+    max_gross: float = 1.0  # Σ|notionnels| ≤ max_gross × équité à l'ENTRÉE ; ≤ 1 (aucun levier)
+    max_effective_gross: float = 1.5  # [HYPOTHÈSE] levier effectif mesuré au-delà duquel les shorts sont réduits
     collateral_ratio: float = 1.0  # collatéral propre / notionnel du short ; ≥ 1
     # ratio de santé = (M + P) / (q·x) ; liquidation sous 1 + maintenance_margin (110 % [HYPOTHÈSE])
     maintenance_margin: float = HEALTH_LIQUIDATION - 1.0
@@ -151,6 +163,8 @@ class DirConfig:
             raise ValueError("tp1_fraction doit être dans ]0, 1]")
         if self.stop_atr <= 0:
             raise ValueError("stop_atr doit être > 0")
+        if self.max_effective_gross < self.max_gross:
+            raise ValueError("max_effective_gross doit être ≥ max_gross")
         if self.maintenance_margin < 0 or self.borrow_stress < 0:
             raise ValueError("maintenance_margin et borrow_stress doivent être ≥ 0")
 
@@ -193,33 +207,36 @@ class DirResult:
 
 
 class MarketView:
-    """Vue CAUSALE remise à la règle à la clôture de i : uniquement les bougies 0..i (copies)."""
+    """Vue CAUSALE remise à la règle à la clôture de i. Elle ne reçoit QUE des COPIES tronquées aux bougies 0..i
+    (aucune référence au moteur ni aux tableaux complets : rien du futur n'est atteignable depuis la vue)."""
 
-    def __init__(self, eng: DirEngine, i: int) -> None:
-        self._e, self.i = eng, i
-        self.markets = list(eng.markets)
-
-    def _col(self, arr: np.ndarray, m: str) -> np.ndarray:
-        return arr[: self.i + 1, self._e.j[m]].copy()
+    def __init__(self, i: int, markets: list[str], o_: np.ndarray, h_: np.ndarray, l_: np.ndarray, c_: np.ndarray,
+                 atr_row: np.ndarray, positions: Mapping[str, int]) -> None:
+        self.i = i
+        self.markets = list(markets)
+        self._j = {m: k for k, m in enumerate(self.markets)}
+        n = i + 1
+        self._O, self._H, self._L, self._C = (np.array(a[:n], copy=True) for a in (o_, h_, l_, c_))
+        self._atr = np.array(atr_row, copy=True)
+        self._pos = dict(positions)
 
     def opens(self, m: str) -> np.ndarray:
-        return self._col(self._e.O, m)
+        return self._O[:, self._j[m]].copy()
 
     def highs(self, m: str) -> np.ndarray:
-        return self._col(self._e.H, m)
+        return self._H[:, self._j[m]].copy()
 
     def lows(self, m: str) -> np.ndarray:
-        return self._col(self._e.L, m)
+        return self._L[:, self._j[m]].copy()
 
     def closes(self, m: str) -> np.ndarray:
-        return self._col(self._e.C, m)
+        return self._C[:, self._j[m]].copy()
 
     def atr(self, m: str) -> float:
-        return float(self._e.ATR[self.i, self._e.j[m]])
+        return float(self._atr[self._j[m]])
 
     def position(self, m: str) -> int:
-        p = self._e.pos.get(m)
-        return p.side if p else 0
+        return int(self._pos.get(m, 0))
 
 
 Rule = Callable[[int, MarketView], Mapping[str, str]]
@@ -238,13 +255,18 @@ def always_cash(i: int, view: MarketView) -> dict[str, str]:
 
 # --------------------------------------------------------------------------------------------- indicateurs causaux
 def causal_atr(H: np.ndarray, L: np.ndarray, C: np.ndarray, n: int) -> np.ndarray:
-    """ATR simple : moyenne des n derniers vrais intervalles TR_t = max(H−L, |H−C_{t−1}|, |L−C_{t−1}|) (TR_0 = H−L).
-    Défini à partir de t = n−1 ; toute bougie absente dans la fenêtre => NaN (abstention)."""
-    prev = np.vstack([np.full((1, C.shape[1]), np.nan), C[:-1]]) if len(C) else C
-    tr = np.fmax(H - L, np.fmax(np.abs(H - prev), np.abs(L - prev)))
+    """ATR simple : moyenne des n derniers vrais intervalles TR_t = max(H−L, |H−C_prec|, |L−C_prec|), où C_prec est
+    la DERNIÈRE CLÔTURE CONNUE avant t (l'écart accumulé pendant une bougie absente est donc compté) ; TR = H−L s'il
+    n'existe aucune clôture antérieure. Défini à partir de t = n−1 ; bougie absente dans la fenêtre => NaN."""
+    prev = np.full_like(C, np.nan)
+    last = np.full(C.shape[1] if C.ndim == 2 else 0, np.nan)
+    for t in range(len(C)):
+        prev[t] = last
+        ok = np.isfinite(C[t])
+        last = np.where(ok, C[t], last)
+    hl = H - L
+    tr = np.where(np.isfinite(prev), np.fmax(hl, np.fmax(np.abs(H - prev), np.abs(L - prev))), hl)
     tr[np.isnan(H) | np.isnan(L)] = np.nan
-    if len(tr):
-        tr[0] = H[0] - L[0]
     out = np.full_like(tr, np.nan)
     for t in range(n - 1, len(tr)):
         out[t] = tr[t - n + 1: t + 1].mean(axis=0)  # NaN propagé
@@ -284,7 +306,13 @@ class DirEngine:
             return np.column_stack([data[m][c].to_numpy(float) for m in self.markets])
 
         self.O, self.H, self.L, self.C = col("open"), col("high"), col("low"), col("close")
-        self.present = np.isfinite(self.O) & np.isfinite(self.H) & np.isfinite(self.L) & np.isfinite(self.C)
+        fin = np.isfinite(self.O) & np.isfinite(self.H) & np.isfinite(self.L) & np.isfinite(self.C)
+        with np.errstate(invalid="ignore"):
+            coherent = (self.L <= np.minimum(self.O, self.C)) & (np.maximum(self.O, self.C) <= self.H)
+        self.incoherent = fin & ~coherent
+        self.present = fin & coherent  # bougie OHLC incohérente => ABSENTE dans ce module
+        for arr in (self.O, self.H, self.L, self.C):
+            arr[~self.present] = np.nan
         self.step = int(np.median(np.diff(grid))) if n > 1 else 3_600_000
         self.dt_year = self.step / YEAR_MS
         self.ATR = causal_atr(self.H, self.L, self.C, self.cfg.atr_window)
@@ -304,9 +332,12 @@ class DirEngine:
         self.journal: list[dict[str, Any]] = []
         self.trades: list[dict[str, Any]] = []
         self.entry_gross: list[float] = []  # (Σ|notionnels| / équité) juste après chaque entrée
+        self.effective_gross: list[float] = []  # levier effectif mesuré à chaque clôture
+        self.reduce_shorts = False  # réduction des shorts demandée pour l'ouverture suivante
         self.counts = {"fees": 0.0, "borrow_fees": 0.0, "penalties": 0.0, "liquidations": 0, "rappels": 0,
                        "stops": 0, "trailing": 0, "tp1": 0, "tp2": 0, "deficits": 0, "entrees_annulees": 0,
-                       "sous_minimum": 0, "short_refuse_emprunt": 0, "gaps": 0, "alertes_sante": 0}
+                       "sous_minimum": 0, "short_refuse_emprunt": 0, "gaps": 0, "alertes_sante": 0,
+                       "reductions_levier": 0, "bougies_incoherentes": int(self.incoherent.sum())}
         self.i = -1
 
     # ---- outils
@@ -398,8 +429,9 @@ class DirEngine:
         if ratio > c.max_gross + 1e-9:
             raise AssertionError(f"levier détecté à la bougie {i} : {ratio}")
 
-    def _close(self, m: str, i: int, frac: float, px: float, maker: bool, action: str, penalty_rate: float = 0.0) -> None:
-        """Ferme la fraction `frac` (1 = tout) de la position au prix d'exécution `px` (déjà défavorisé)."""
+    def _close(self, m: str, i: int, frac: float, px: float, maker: bool, action: str, penalty_rate: float = 0.0) -> bool:
+        """Ferme la fraction `frac` (1 = tout) de la position au prix d'exécution `px` (déjà défavorisé).
+        Renvoie True si une quantité a réellement été échangée."""
         c, p = self.cfg, self.pos[m]
         if frac >= 1.0:
             q = p.qty
@@ -409,7 +441,7 @@ class DirEngine:
                 q = p.qty  # jamais de reliquat sous le minimum
             elif q * px < c.min_order_eur:
                 self.counts["sous_minimum"] += 1
-                return  # sortie partielle sous le minimum : impossible, la position reste entière
+                return False  # sortie partielle sous le minimum : impossible, la position reste entière
         share = q / p.qty
         n = q * px
         fee = n * (c.fee_maker if maker else c.fee_taker)
@@ -438,6 +470,7 @@ class DirEngine:
         self._log(i, m, action, "sell" if p.side > 0 else "buy", q, px, fee, pen, pnl)
         if p.qty <= 1e-15 or share >= 1.0 - 1e-12:
             self._finish(m, i, action)
+        return q > 0
 
     def _finish(self, m: str, i: int, why: str) -> None:
         p = self.pos.pop(m)
@@ -480,13 +513,13 @@ class DirEngine:
                 self.counts["stops"] += 1
                 self._close(m, i, 1.0, p.stop * (1 - slip), False, stop_action)
                 return
-            if p.tp1 is not None and not p.tp1_done and h >= p.tp1:
-                p.tp1_done = True
-                self.counts["tp1"] += 1
-                self._close(m, i, c.tp1_fraction, p.tp1, True, "tp1")
+            if p.tp1 is not None and not p.tp1_done and h > p.tp1:
+                if self._close(m, i, c.tp1_fraction, p.tp1, True, "tp1"):
+                    p.tp1_done = True
+                    self.counts["tp1"] += 1
                 if m not in self.pos:
                     return
-            if p.tp2 is not None and h >= p.tp2:
+            if p.tp2 is not None and h > p.tp2:
                 self.counts["tp2"] += 1
                 self._close(m, i, 1.0, p.tp2, True, "tp2")
             return
@@ -508,13 +541,13 @@ class DirEngine:
             else:
                 self._liquidate(m, i, liq * (1 + slip + c.liquidation_slippage))
             return
-        if p.tp1 is not None and not p.tp1_done and lo <= p.tp1:
-            p.tp1_done = True
-            self.counts["tp1"] += 1
-            self._close(m, i, c.tp1_fraction, p.tp1, True, "tp1")
+        if p.tp1 is not None and not p.tp1_done and lo < p.tp1:
+            if self._close(m, i, c.tp1_fraction, p.tp1, True, "tp1"):
+                p.tp1_done = True
+                self.counts["tp1"] += 1
             if m not in self.pos:
                 return
-        if p.tp2 is not None and lo <= p.tp2:
+        if p.tp2 is not None and lo < p.tp2:
             self.counts["tp2"] += 1
             self._close(m, i, 1.0, p.tp2, True, "tp2")
 
@@ -554,16 +587,16 @@ class DirEngine:
         for m in [m for m, p in self.pos.items() if p.side < 0]:
             self._borrow_fee(m, i, float(self.last_px[self.j[m]]))
         live = self.present[i]
-        # 2) rappel du prêteur
+        # 2) discontinuités à l'ouverture (liquidation AVANT rappel : la pénalité ne peut pas être évitée)
+        for m in list(self.pos):
+            if live[self.j[m]]:
+                self._gap_and_intrabar(m, i, at_open=True)
+        # 3) rappel du prêteur
         for m in [m for m, p in self.pos.items() if p.side < 0]:
             j = self.j[m]
             if not self.can_borrow(m, i) and live[j]:
                 self.counts["rappels"] += 1
                 self._close(m, i, 1.0, self.O[i, j] * (1 + self._slip(j, i)), False, "rappel")
-        # 3) discontinuités à l'ouverture
-        for m in list(self.pos):
-            if live[self.j[m]]:
-                self._gap_and_intrabar(m, i, at_open=True)
         # 4) sorties sur signal
         for m in sorted(self.pending_exit):
             j = self.j[m]
@@ -572,6 +605,8 @@ class DirEngine:
                 slip = self._slip(j, i)
                 self._close(m, i, 1.0, self.O[i, j] * (1 - slip if p.side > 0 else 1 + slip), False, "signal")
         self.pending_exit = {m for m in self.pending_exit if m in self.pos}  # sortie reportée si pas de bougie
+        if self.reduce_shorts:
+            self._reduce_shorts(i)
         # 5) entrées
         for pe in self.pending_entry:
             j = self.j[pe.market]
@@ -592,11 +627,49 @@ class DirEngine:
                 self.counts["alertes_sante"] += 1
         self._update_stops(i)
         self._check(i)
+        self._measure_leverage()
         self._decide(i, rule)
+
+    def _measure_leverage(self) -> None:
+        """Levier EFFECTIF à la clôture = Σ|notionnels| / équité (∞ si équité ≤ 0 avec positions ouvertes).
+        Au-delà de `max_effective_gross`, les shorts seront réduits à l'ouverture suivante."""
+        if not self.pos:
+            self.effective_gross.append(0.0)
+            self.reduce_shorts = False
+            return
+        e, g = self.equity(), self.gross()
+        ratio = g / e if e > 0 else math.inf
+        self.effective_gross.append(ratio)
+        self.reduce_shorts = ratio > self.cfg.max_effective_gross + 1e-12 and any(p.side < 0 for p in self.pos.values())
+
+    def _reduce_shorts(self, i: int) -> None:
+        """Rachète la même fraction f de chaque short ouvert, à l'ouverture de i, pour ramener Σ|notionnels| ≤
+        max_gross × équité : g − f S ≤ G (E − f S φ) => f = (g − G E) / (S (1 − G φ)), φ = frais + glissement ;
+        f borné à [0, 1] (équité ≤ 0 => rachat total)."""
+        self.reduce_shorts = False
+        c = self.cfg
+        shorts = [m for m, p in self.pos.items() if p.side < 0 and self.present[i, self.j[m]]]
+        if not shorts:
+            return
+        mark = np.where(self.present[i], self.O[i], self.last_px)
+        e, g = self.equity(mark), self.gross(mark)
+        if e > 0 and g <= c.max_gross * e:
+            return
+        s_tot = sum(self.pos[m].qty * self._px(m, mark) for m in shorts)
+        phi = c.fee_taker + max(self._slip(self.j[m], i) for m in shorts)
+        f = 1.0 if e <= 0 else min(1.0, max(0.0, (g - c.max_gross * e) / (s_tot * (1 - c.max_gross * phi))))
+        if f <= 0:
+            return
+        self.counts["reductions_levier"] += 1
+        for m in shorts:
+            j = self.j[m]
+            self._close(m, i, f, self.O[i, j] * (1 + self._slip(j, i)), False, "reduction_levier")
 
     def _decide(self, i: int, rule: Rule) -> None:
         c = self.cfg
-        sig = dict(rule(i, MarketView(self, i)))
+        view = MarketView(i, self.markets, self.O, self.H, self.L, self.C, self.ATR[i],
+                          {m: p.side for m, p in self.pos.items()})
+        sig = dict(rule(i, view))
         e = self.equity()
         wants: dict[str, int] = {}
         for m in self.markets:
@@ -612,6 +685,8 @@ class DirEngine:
             p = self.pos.get(m)
             if p and p.side != d:
                 self.pending_exit.add(m)
+            elif p:
+                self.pending_exit.discard(m)  # la décision la plus récente prévaut : sortie reportée annulée
         if e <= 0:
             return
         committed = self.gross(exclude=self.pending_exit)
@@ -682,7 +757,8 @@ def simulate(grid: np.ndarray, data: dict[str, pd.DataFrame], rule: Rule, cfg: D
     stats = {**eng.counts, "equity_finale": float(eq[-1]) if len(eq) else eng.cfg.initial_eur,
              "max_drawdown": max_drawdown(eq), "n_trades": len(eng.trades),
              "trades_perdants": sum(1 for t in eng.trades if t["pnl"] < 0),
-             "levier_max_entree": max(eng.entry_gross, default=0.0)}
+             "levier_max_entree": max(eng.entry_gross, default=0.0),
+             "levier_effectif_max": max(eng.effective_gross, default=0.0)}
     return DirResult(pd.Series(eq, index=grid), eng.journal, eng.trades, stats), eng
 
 
