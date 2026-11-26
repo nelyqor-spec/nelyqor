@@ -62,6 +62,9 @@ class ProtectionManager:
             o = await self.ex.ex.get_order(market, order_id=r["exchange_order_id"])
         except (BitvavoError, OrderStatusUnknown) as e:
             return ProtectionStatus(market, False, "UNCERTAIN", intent_id=r["id"], reason=f"relecture impossible : {e}")
+        except Exception as e:  # noqa: BLE001 — réseau (GET relancé puis abandonné : exception httpx brute)
+            return ProtectionStatus(market, False, "UNCERTAIN", intent_id=r["id"],
+                                    reason=f"relecture impossible : {type(e).__name__}")
         self.ex._apply_order(r["id"], o)
         if o.get("status") != "awaitingTrigger":
             return ProtectionStatus(market, False, "TRIGGERED" if o.get("status") in ("filled", "partiallyFilled", "new")
@@ -110,7 +113,12 @@ class ProtectionManager:
         for r in self._stop_rows(market):
             if not r["exchange_order_id"]:
                 return False, "stop en cours de pose : sortie reportée"
-            status = await self.ex.cancel(r["id"])
+            try:
+                status = await self.ex.cancel(r["id"])
+            except Exception as e:  # noqa: BLE001 — relecture de l'annulation impossible (réseau) : état INCONNU
+                # (phase 6, P2) : le stop a peut-être été annulé chez l'échange ; jamais de vente sur cette base,
+                # et l'appelant ne doit plus le considérer comme protégé
+                return False, f"annulation du stop non confirmée (relecture impossible : {type(e).__name__})"
             if status == "filled":
                 return False, "le stop a été exécuté pendant l'annulation : position déjà vendue"
             if status not in ("canceled", "expired", "canceledMarketProtection"):

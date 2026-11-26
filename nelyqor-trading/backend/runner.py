@@ -33,7 +33,7 @@ from .core.clock import Clock, new_id
 from .core.config import HardLimits, Settings, load_strategy_params
 from .core.logging import get_logger, register_secret, setup_logging
 from .core.num import ZERO, D, fmt
-from .execution.engine import ExecutionEngine, InstanceLock, OrderRequest
+from .execution.engine import ExecutionEngine, InstanceLock, OrderRequest, SubmitResult
 from .execution.protection import ProtectionManager
 from .execution.simulator import SimulatedExchange
 from .features import indicators as ind
@@ -794,19 +794,57 @@ class Engine:
                       int(hypothetical)))
 
     async def manage_positions(self, ex: ExecutionEngine) -> None:
-        """Protections natives + sorties pour les positions du mode de `ex` (permis même en pause)."""
+        """Protections natives + sorties pour les positions du mode de `ex` (permis même en pause).
+
+        INVARIANT (phase 6) : à la sortie, toute position détenue a un stop confirmé par l'échange, ou figure dans
+        `protections_<mode>` avec `protege: False` ET une notification `arret_protection` est émise. Une exception
+        sur un marché (réseau, réponse inattendue) le marque non protégé ; les autres marchés sont traités, puis
+        la première exception est relancée (comptage des pannes de la boucle)."""
         mode = ex.mode
         led = self._ledger(mode)
         px = self.prices_eur()
         equity = led.value_eur(px)
         cash = led.s.cash.get("EUR", ZERO)
         meta = self._kv_get(f"position_meta_{mode}", {}, mode)
-        statuses = {}
+        statuses: dict[str, dict[str, Any]] = {}
+        first_error: Exception | None = None
         for mk, h in self.held_positions(mode).items():
-            st, df = self.states.get(mk), self.candles.get(mk)
-            pm = self.protect[mode]
-            if st is None:
-                continue
+            try:
+                done = await self._manage_one(ex, mk, h, meta, statuses, equity, cash)
+            except Exception as e:  # noqa: BLE001 — P1/P2 : jamais une position laissée « protégée » par défaut
+                log.exception("gestion de position en échec", extra={"data": {"market": mk, "mode": mode}})
+                first_error = first_error or e
+                done = False
+                statuses[mk] = self._unprotected("ERREUR", f"gestion en échec ({type(e).__name__}) : état du stop "
+                                                 f"incertain ; {str(e)[:200]}")
+            if done:
+                meta.pop(mk, None)
+        self._kv_set(f"position_meta_{mode}", meta, mode)
+        self._publish_protections(mode, statuses)
+        if first_error is not None:
+            raise first_error
+
+    @staticmethod
+    def _unprotected(state: str, reason: str) -> dict[str, Any]:
+        return {"protege": False, "etat": state, "declencheur": None, "quantite_couverte": "0", "raison": reason[:300]}
+
+    def _publish_protections(self, mode: str, statuses: dict[str, dict[str, Any]]) -> None:
+        """Publie l'état des protections ; toute position non protégée est NOTIFIÉE, en simulation comme en réel
+        (P3 : la simulation n'était notifiée que pour une sortie refusée)."""
+        self.db.kv_set(f"protections_{mode}", statuses, self.clock.now_ms())
+        unprotected = sorted(m for m, s in statuses.items() if not s["protege"])
+        if unprotected:
+            label = "réelles" if mode == "real" else "simulées"
+            self.notifier.notify("arret_protection", f"Positions {label} NON protégées : {unprotected}",
+                                 dedup_key=f"unprot-{mode}-{','.join(unprotected)}")
+
+    async def _manage_one(self, ex: ExecutionEngine, mk: str, h: HeldPosition, meta: dict[str, Any],
+                          statuses: dict[str, dict[str, Any]], equity: Decimal, cash: Decimal) -> bool:
+        """Une position : sortie éventuelle, puis protection. Renvoie True si la position est soldée."""
+        mode = ex.mode
+        st, df = self.states.get(mk), self.candles.get(mk)
+        pm = self.protect[mode]
+        if st is not None:
             p = self.decider.evaluate_exit(st.info, st, df, h) if df is not None else None
             realloc = self._realloc[mode]
             if (mk in realloc and self.clock.now_ms() - int(realloc[mk].get("ts", 0)) < 3_600_000
@@ -820,25 +858,70 @@ class Engine:
                                                                         cash, h.stop)
                 self._record_decision(mode, p, accepted, p.reasons + reasons, False)
                 if accepted or status == "DEJA_VENDUE":
-                    meta.pop(mk, None)
-                    continue
+                    return True
                 if mk not in self.held_positions(mode):
-                    continue
+                    return False
                 # sortie impossible : la position reste protégée (stop conservé ou REPOSÉ ci-dessous)
                 if h.stop <= 0:
-                    statuses[mk] = {"protege": False, "etat": "SORTIE_REFUSEE", "declencheur": None,
-                                    "quantite_couverte": "0", "raison": "; ".join(reasons)[:300]}
-                    continue
-            if h.stop > 0:
-                ps = await pm.ensure(mk, h.qty, h.stop)
-                statuses[mk] = {"protege": ps.protected, "etat": ps.state, "declencheur": fmt(ps.trigger) if ps.trigger
-                                else None, "quantite_couverte": fmt(ps.covered_qty), "raison": ps.reason}
-        self._kv_set(f"position_meta_{mode}", meta, mode)
-        self.db.kv_set(f"protections_{mode}", statuses, self.clock.now_ms())
-        unprotected = [m for m, s in statuses.items() if not s["protege"]]
-        if unprotected and (mode == "real" or any(statuses[m].get("etat") == "SORTIE_REFUSEE" for m in unprotected)):
-            self.notifier.notify("arret_protection", f"Positions réelles NON protégées : {unprotected}",
-                                 dedup_key=f"unprot-{','.join(sorted(unprotected))}")
+                    statuses[mk] = self._unprotected("SORTIE_REFUSEE", "; ".join(reasons))
+                    return False
+        if mk not in ex.markets:
+            statuses[mk] = self._unprotected("MARCHE_INCONNU", "marché absent de la cote : aucun stop possible")
+            return False
+        # P5 : sans niveau de stop calculable (méta perdue, bougies indisponibles), le stop éventuel est RELU ;
+        # sinon la position est explicitement signalée (jamais ignorée en silence)
+        ps = await pm.ensure(mk, h.qty, h.stop) if h.stop > 0 else await pm.status(mk, h.qty)
+        statuses[mk] = {"protege": ps.protected, "etat": ps.state, "declencheur": fmt(ps.trigger) if ps.trigger
+                        else None, "quantite_couverte": fmt(ps.covered_qty),
+                        "raison": ps.reason if h.stop > 0 or ps.protected else
+                        f"niveau de stop inconnu (méta ou bougies absentes) ; {ps.reason}"}
+        if st is None and not ps.protected:
+            statuses[mk]["raison"] = f"aucune donnée de marché ; {statuses[mk]['raison']}"
+        return False
+
+    def _audit_protections(self) -> None:
+        """Filet de sécurité appelé à la fin de CHAQUE cycle, y compris quand il se termine par une exception
+        (P1, P4) : sans accès réseau, une position affichée « protégée » dont le stop n'est plus actif — journal
+        (réel) ou simulateur papier (absent après un redémarrage tant qu'aucun cycle n'a abouti) — est marquée
+        non protégée ; toute position non protégée est notifiée. Ne relève jamais une position en « protégée »."""
+        modes = ["simulation"] + (["real"] if self.real_exec is not None else [])
+        for mode in modes:
+            try:
+                held = self.held_positions(mode)
+                statuses = dict(self.db.kv_get(f"protections_{mode}", {}) or {})
+                changed = False
+                for mk, h in held.items():
+                    s = statuses.get(mk)
+                    if s is not None and not s.get("protege"):
+                        continue
+                    if s is not None and self._stop_live(mode, mk, h.qty):
+                        continue
+                    statuses[mk] = self._unprotected(
+                        "STOP_ABSENT" if s is not None else "NON_EVALUEE",
+                        "aucun stop actif constaté en fin de cycle" if s is not None else
+                        "position non évaluée par la gestion des protections")
+                    changed = True
+                for mk in [m for m in statuses if m not in held]:
+                    statuses.pop(mk)
+                    changed = True
+                if changed or any(not s.get("protege") for s in statuses.values()):
+                    self._publish_protections(mode, statuses)
+            except Exception:  # noqa: BLE001 — le filet ne doit jamais masquer l'erreur d'origine
+                log.exception("audit des protections impossible", extra={"data": {"mode": mode}})
+
+    def _stop_live(self, mode: str, mk: str, qty: Decimal) -> bool:
+        m = self.markets.get(mk)
+        need = (m.round_amount(qty) - m.min_order_base) if m is not None else qty
+        if mode == "simulation":
+            if self.paper is None:  # simulateur pas encore reconstruit : ses ordres n'existent plus
+                return False
+            return any(o.market == mk and o.side == "sell" and o.order_type.startswith("stopLoss")
+                       and o.status == "awaitingTrigger" and o.amount is not None and o.amount - o.filled_amount >= need
+                       for o in self.paper.orders.values())
+        rows = self.db.q("SELECT reserved_base FROM intents WHERE mode='real' AND market=? AND side='sell' AND "
+                         "order_type IN ('stopLoss','stopLossLimit') AND status='awaitingTrigger' AND "
+                         "exchange_order_id IS NOT NULL", (mk,))
+        return any(D(r["reserved_base"] or 0) >= need for r in rows)
 
     async def decide(self) -> None:
         ex = self.exec
@@ -989,19 +1072,24 @@ class Engine:
         if h2 is None:
             return "DEJA_VENDUE", False, ["le stop a été exécuté pendant l'annulation"]
         qty = st.info.round_amount(h2.qty)
-        r = await ex.submit(OrderRequest(mk, "sell", "market", amount=qty, strategy=strategy, is_entry=False,
-                                         is_protective=True, position_qty=h2.qty, purpose=purpose,
-                                         ref_price=st.best_bid, check=check()), cash)
+        try:
+            r = await ex.submit(OrderRequest(mk, "sell", "market", amount=qty, strategy=strategy, is_entry=False,
+                                             is_protective=True, position_qty=h2.qty, purpose=purpose,
+                                             ref_price=st.best_bid, check=check()), cash)
+        except Exception as e:  # noqa: BLE001 — P1 : vente en échec réseau APRÈS l'annulation du stop
+            # (intention restée SUBMITTING/UNKNOWN : reprise par `recover` au cycle suivant, jamais resoumise)
+            r = SubmitResult("", "ERREUR", False, [f"vente en échec ({type(e).__name__}) : {str(e)[:150]}"])
         if r.accepted:
             return r.status, True, r.reasons
         h3 = self.held_positions(mode).get(mk)
         reasons = list(r.reasons)
         if h3 is not None:
+            # notifiée AVANT la repose (qui peut elle-même échouer) : la position est nue à cet instant
+            self.notifier.notify("arret_protection", f"Sortie {mode} {mk} refusée après annulation du stop : "
+                                 f"{'; '.join(r.reasons)[:200]}", dedup_key=f"sortie-{mode}-{mk}")
             if stop > 0:
                 ps = await self.protect[mode].ensure(mk, h3.qty, stop)
                 reasons.append(f"stop reposé : {ps.state}" if ps.protected else f"stop NON reposé : {ps.reason}")
-            self.notifier.notify("arret_protection", f"Sortie {mode} {mk} refusée après annulation du stop : "
-                                 f"{'; '.join(r.reasons)[:200]}", dedup_key=f"sortie-{mode}-{mk}")
         return r.status, False, reasons
 
     # ------------------------------------------------------------ liquidation manuelle
@@ -1091,6 +1179,12 @@ class Engine:
         self.publish_display()  # l'API ne voit que cette copie (affichage.db, montée :ro dans l'API)
 
     async def step(self) -> None:
+        try:
+            await self._step()
+        finally:
+            self._audit_protections()  # invariant de protection, même si le cycle échoue (P1, P4)
+
+    async def _step(self) -> None:
         now = self.clock.now_ms()
         # Arrêt d'urgence par SSH : fichier déposé dans le répertoire d'état du MOTEUR (l'API ne peut ni le
         # créer ni le neutraliser, contrairement à une ligne de control_commands)

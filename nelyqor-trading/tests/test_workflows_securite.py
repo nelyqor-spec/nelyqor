@@ -1,7 +1,6 @@
 """Sécurité des workflows GitHub Actions (phase 6) : aucun secret, aucune clé Bitvavo, jamais d'activation du mode
 réel, permissions minimales, aucun déclencheur exposé aux forks, aucune entrée interpolée directement dans un script."""
 import re
-from pathlib import Path
 
 import yaml
 

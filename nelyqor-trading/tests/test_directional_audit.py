@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from backend.research import directional as D
-from backend.research.directional import LONG, SHORT, CASH, DirConfig, simulate_frames
+from backend.research.directional import CASH, LONG, SHORT, DirConfig, simulate_frames
 from backend.research.directional_rules import scripted_rule
 from backend.research.xsection_v4 import align
 
@@ -124,7 +124,9 @@ def test_A5_view_exposes_no_path_to_future_data():
                 for r in gc.get_referents(o):
                     if id(r) in seen or isinstance(r, type):
                         continue
-                    seen.add(id(r)); out.append(r); nxt.append(r)
+                    seen.add(id(r))
+                    out.append(r)
+                    nxt.append(r)
             frontier = nxt
         return out
 
