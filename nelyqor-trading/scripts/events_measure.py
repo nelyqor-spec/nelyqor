@@ -25,6 +25,19 @@ from backend.events.market import (  # noqa: E402
 )
 from backend.events.metrics import measure_reactions, source_report  # noqa: E402
 
+WINDOW_MS = 30 * 86_400_000
+
+
+def reference(cache: CandleCache, reactions: list[dict], since: int) -> dict[int, float | None]:  # type: ignore[type-arg]
+    """Référence inconditionnelle sur la MÊME période que les réactions mesurées, fenêtres d'événements exclues."""
+    t0s = sorted({int(r["t0_ms"]) for r in reactions if isinstance(r.get("t0_ms"), int) and r["t0_ms"] >= since})
+    if not t0s:
+        return dict.fromkeys(HORIZONS_H)
+    ref = cache.get("BTC-EUR", t0s[0], t0s[-1] + 25 * 3_600_000)
+    if not ref:
+        return dict.fromkeys(HORIZONS_H)
+    return {h: baseline_abs_return(ref, h, INTERVAL_MS, event_t0s=t0s, period=(t0s[0], t0s[-1])) for h in HORIZONS_H}
+
 
 def eur_markets(data_dir: Path) -> set[str]:
     st = journal.load_state(data_dir).get("bitvavo_marches") or {}
@@ -40,13 +53,15 @@ def main() -> int:
     d = Path(a.data_dir)
     now = now_ms()
     cache = CandleCache(bitvavo_candle_fetcher())
+    since = now - WINDOW_MS  # chargement borné aux 30 derniers jours (+ horizon 24 h)
     if a.action in ("reactions", "all"):
-        print("réactions :", json.dumps(measure_reactions(d, cache, now, eur_markets(d), a.max_rows)))
+        print("réactions :", json.dumps(measure_reactions(d, cache, now, eur_markets(d), a.max_rows,
+                                                          since_ms=since - 86_400_000)))
     if a.action in ("report", "all"):
-        ref = cache.get("BTC-EUR", now - 5 * 86_400_000, now)
-        baseline = {h: baseline_abs_return(ref, h, INTERVAL_MS) if ref else None for h in HORIZONS_H}
+        reactions = list(journal.read(d / "reactions.jsonl"))
+        baseline = reference(cache, reactions, since)
         rep = source_report(journal.load_observations(d), list(journal.read(d / "collectes.jsonl")),
-                            list(journal.read(d / "reactions.jsonl")), baseline)
+                            reactions, baseline)
         rep["genere_ms"] = now
         d.mkdir(parents=True, exist_ok=True)
         (d / "rapport.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")

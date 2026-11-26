@@ -5,6 +5,7 @@ data_dir/
   collectes.jsonl             une ligne par requête (disponibilité, HTTP, durée, volumes)
   reactions.jsonl             une ligne par (événement, marché, horizon) mesuré APRÈS l'horizon
   metriques.jsonl             relevés on-chain bruts
+  index.jsonl                 index « déjà vu » à LONG TERME, sans texte (source, id, groupe, signature)
   etat.json                   dernier relevé des marchés Bitvavo / métriques (référence des écarts)
 """
 from __future__ import annotations
@@ -23,7 +24,15 @@ def append(path: Path, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
     path.parent.mkdir(parents=True, exist_ok=True)
+    # une ligne tronquée par une coupure ne doit pas « avaler » la suivante : saut de ligne préalable
+    needs_nl = False
+    if path.exists() and path.stat().st_size > 0:
+        with path.open("rb") as fb:
+            fb.seek(-1, os.SEEK_END)
+            needs_nl = fb.read(1) != b"\n"
     with path.open("a", encoding="utf-8") as f:  # mode ajout : aucune ligne existante n'est modifiée
+        if needs_nl:
+            f.write("\n")
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
         f.flush()
@@ -53,16 +62,33 @@ def observations_path(data_dir: Path, ms: int) -> Path:
 
 
 def load_observations(data_dir: Path, since_ms: int | None = None) -> list[Event]:
+    """Observations VALIDÉES (types contrôlés ; une ligne fautive est ignorée, jamais fatale)."""
     out: list[Event] = []
+    min_month = None
+    if since_ms is not None:
+        min_month = f"observations-{datetime.fromtimestamp(since_ms / 1000, UTC):%Y-%m}.jsonl"
     for p in sorted(data_dir.glob("observations-*.jsonl")):
+        if min_month is not None and p.name < min_month:
+            continue  # fichier mensuel entièrement antérieur : non chargé
         for d in read(p):
-            if since_ms is not None and int(d.get("received_ms", 0)) < since_ms:
-                continue
             try:
-                out.append(Event.from_dict(d))
-            except TypeError:
+                e = Event.from_dict(d)
+            except (TypeError, ValueError):
                 continue
+            if since_ms is not None and e.received_ms < since_ms:
+                continue
+            out.append(e)
     out.sort(key=lambda e: e.received_ms)
+    return out
+
+
+def load_index(data_dir: Path) -> list[dict[str, Any]]:
+    """Index long terme (lignes {s, i, c, g, t, o}) ; lignes de types inattendus ignorées."""
+    out = []
+    for d in read(data_dir / "index.jsonl"):
+        if isinstance(d.get("s"), str) and isinstance(d.get("i"), str) and isinstance(d.get("c"), str) \
+                and isinstance(d.get("g", ""), str) and isinstance(d.get("t"), int):
+            out.append(d)
     return out
 
 

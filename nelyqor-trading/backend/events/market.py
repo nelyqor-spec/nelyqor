@@ -73,11 +73,30 @@ def reaction(candles: list[Candle], t0_ms: int, horizon_h: int, now_ms: int,
     return Reaction(horizon_h, "mesure", b[1] / a[1] - 1.0, a[1], b[1], a[0], b[0])
 
 
-def baseline_abs_return(candles: list[Candle], horizon_h: int, interval_ms: int) -> float | None:
-    """Rendement absolu moyen INCONDITIONNEL sur l'horizon (référence : « un jour sans événement »)."""
-    step = horizon_h * 3_600_000 // interval_ms
+def baseline_abs_return(candles: list[Candle], horizon_h: int, interval_ms: int,
+                        event_t0s: list[int] | None = None, period: tuple[int, int] | None = None) -> float | None:
+    """Rendement absolu moyen de RÉFÉRENCE sur l'horizon : départs pris sur la même période que les réactions
+    (`period`), en EXCLUANT toute fenêtre [départ, départ + horizon] qui recoupe une fenêtre d'événement
+    [t0, t0 + horizon] (« des instants sans événement »)."""
+    h_ms = horizon_h * 3_600_000
+    step = h_ms // interval_ms
     by_ts = {c[0]: c[1] for c in candles}
-    vals = [abs(by_ts[c[0] + step * interval_ms] / c[1] - 1) for c in candles if c[0] + step * interval_ms in by_ts]
+    t0s = sorted(event_t0s or [])
+    import bisect
+
+    vals = []
+    for c in candles:
+        end = c[0] + step * interval_ms
+        if end not in by_ts:
+            continue
+        if period is not None and not (period[0] <= c[0] <= period[1]):
+            continue
+        if t0s:
+            # recouvrement si t0 ∈ ]c0 - h, c0 + h[
+            i = bisect.bisect_right(t0s, c[0] - h_ms)
+            if i < len(t0s) and t0s[i] < c[0] + h_ms:
+                continue
+        vals.append(abs(by_ts[end] / c[1] - 1))
     return sum(vals) / len(vals) if vals else None
 
 
@@ -104,12 +123,13 @@ class CandleCache:
         return sorted({c[0]: c for c in out}.values(), key=lambda c: c[0])
 
 
-def bitvavo_candle_fetcher(timeout_s: float = 15.0) -> CandleFetcher:
+def bitvavo_candle_fetcher(timeout_s: float = 15.0, transport: Any = None) -> CandleFetcher:
     import httpx
 
-    from .collector import DEFAULT_UA
+    from .collector import user_agent
 
-    client = httpx.Client(timeout=timeout_s, headers={"User-Agent": DEFAULT_UA}, follow_redirects=False)
+    client = httpx.Client(timeout=timeout_s, headers={"User-Agent": user_agent()}, follow_redirects=False,
+                          transport=transport)
 
     def fetch(market: str, start_ms: int, end_ms: int) -> list[Candle] | None:
         if not market.replace("-", "").isalnum() or len(market) > 20:

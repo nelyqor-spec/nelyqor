@@ -46,6 +46,7 @@ def main() -> int:
         print(f"{res['ok']}/{res['sources']} sources OK, {res['new']} observations nouvelles, {res['duration_s']} s")
         for r in res["rows"]:
             etat = "OK " if r.get("ok") else "ÉCHEC"
+            etat = {"ok": "OK   ", "vide": "VIDE ", "echec": "ÉCHEC"}.get(str(r.get("statut")), etat)
             print(f"  {etat} {r['source']:<20} http={r.get('http')} {r.get('duration_ms', 0)} ms "
                   f"items={r.get('n_items', 0)} nouv={r.get('n_new', 0)} groupes={r.get('n_new_clusters', 0)} "
                   f"exact={r.get('n_exact', 0)} quasi={r.get('n_quasi', 0)} rep={r.get('n_repeat', 0)} "

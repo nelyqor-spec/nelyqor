@@ -2,8 +2,10 @@
 # gratuits (aucune clé, aucun secret, aucun ordre), puis mesure des sources et de la réaction du marché APRÈS
 # coup (bougies publiques Bitvavo, horizons 1 h / 4 h / 24 h écoulés seulement).
 # - Module autonome (backend/events) : il n'influence AUCUNE décision de trading.
-# - Journaux JSONL en ajout seul, conservés dans le cache (accélération, évictable après 7 j sans usage)
-#   et publiés en artefact (30 j). Aucune écriture dans le dépôt (permissions en lecture seule).
+# - Journaux JSONL en ajout seul, conservés dans le CACHE uniquement (évictable après 7 j sans usage).
+# - CONFORMITÉ (dépôt public) : l'artefact ne contient AUCUN texte de tiers (titres, résumés, URL d'articles) :
+#   seulement les métriques on-chain, le journal des collectes (codes HTTP, durées, compteurs) et le rapport
+#   agrégé. Les observations ne quittent jamais le cache. Aucune écriture dans le dépôt.
 # - Planification : effective uniquement depuis la branche par défaut (règle GitHub). Les tests unitaires
 #   de ce module tournent dans nelyqor-trading.yml (recette complète).
 name: nelyqor-events
@@ -35,6 +37,7 @@ jobs:
     timeout-minutes: 9
     steps:
       - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - uses: actions/cache/restore@v4
         with:
           path: nelyqor-trading/data/events
@@ -43,7 +46,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
       - name: Dépendances minimales (versions figées de requirements.lock)
-        run: pip install $(grep -E '^(httpx|httpcore|h11|anyio|idna|certifi|sniffio|typing_extensions)==' requirements.lock)
+        run: pip install $(grep -E '^(httpx|httpcore|h11|anyio|idna|certifi|typing_extensions|tzdata)==' requirements.lock)
       - name: Collecte (une requête par source, budget 4 min)
         run: |
           mkdir -p data/events
@@ -60,6 +63,14 @@ jobs:
       - uses: actions/cache/save@v4
         if: always()
         with: {path: nelyqor-trading/data/events, key: "events-v1-${{ github.run_id }}"}
+      - name: Préparation de l'artefact (sans aucun texte de tiers)
+        if: always()
+        run: |
+          rm -rf ../artefact && mkdir -p ../artefact
+          for f in rapport.json collectes.jsonl metriques.jsonl; do
+            [ -f "data/events/$f" ] && cp "data/events/$f" ../artefact/
+          done
+          ls -la ../artefact
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: journal-evenements, path: nelyqor-trading/data/events, retention-days: 30}
+        with: {name: mesures-evenements, path: artefact, retention-days: 30, if-no-files-found: ignore}

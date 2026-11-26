@@ -31,10 +31,16 @@ ENTITIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "okx": ("plateforme", ("okx",)),
     "bybit": ("plateforme", ("bybit",)),
     "bce": ("banque_centrale", ("bce", "ecb", "banque centrale europeenne", "european central bank")),
-    "fed": ("banque_centrale", ("fed", "federal reserve", "fomc", "reserve federale")),
-    "boj": ("banque_centrale", ("bank of japan", "banque du japon", "boj")),
+    # « fed » nu est un mot anglais courant (« fed up ») : uniquement en expressions, ou « Fed » en
+    # majuscule dans le texte d'origine (CASE_SENSITIVE)
+    "fed": ("banque_centrale", ("federal reserve", "fomc", "reserve federale", "the fed", "la fed", "fed chair",
+                                "fed chairman", "fed rate", "fed rates", "fed s")),
+    "boj": ("banque_centrale", ("bank of japan", "banque du japon")),
     "boe": ("banque_centrale", ("bank of england", "banque d angleterre")),
-    "sec": ("autorite", ("sec", "securities and exchange commission", "gendarme boursier americain")),
+    # « sec » est aussi un adjectif français : uniquement en expressions, ou « SEC » en capitales
+    "sec": ("autorite", ("securities and exchange commission", "gendarme boursier americain", "the sec", "la sec",
+                         "sec chair", "sec chairman", "sec charges", "sec sues", "sec approves", "sec rejects",
+                         "by the sec", "by sec")),
     "cftc": ("autorite", ("cftc",)),
     "amf": ("autorite", ("amf", "autorite des marches financiers")),
     "esma": ("autorite", ("esma",)),
@@ -50,7 +56,7 @@ CATEGORIES: dict[str, tuple[str, ...]] = {
                   "trading halted", "suspension des retraits", "withdrawals halted", "halts withdrawals"),
     "etf": ("etf", "etfs", "etp", "etps", "spot etf"),
     "reglementation": ("regulation", "regulatory", "reglementation", "regulateur", "regulator", "mica", "lawsuit",
-                       "poursuite", "poursuites", "sanction", "sanctions", "ban", "bans", "interdiction",
+                       "poursuite", "poursuites", "sanction", "sanctions", "ban on", "bans", "banned", "interdiction",
                        "enforcement", "subpoena", "wells notice", "plainte", "amende"),
     "inflation": ("inflation", "cpi", "ipc", "pce", "prix a la consommation", "consumer price"),
     "taux": ("interest rate", "interest rates", "rate cut", "rate cuts", "rate hike", "rate hikes", "taux directeur",
@@ -89,13 +95,18 @@ PLAIN_TICKERS = frozenset({"btc", "eth", "xrp", "doge", "bnb", "ltc", "usdt", "u
 RUMOR_TERMS: tuple[str, ...] = (
     # français (dont conditionnel journalistique)
     "selon des sources", "selon nos informations", "d apres des sources", "de source proche", "rumeur", "rumeurs",
-    "non confirme", "non confirmee", "aurait", "auraient", "serait", "seraient", "envisagerait", "pourrait",
-    "pourraient", "selon plusieurs medias",
+    "non confirme", "non confirmee", "aurait", "auraient", "serait", "seraient", "envisagerait",
+    "selon plusieurs medias",
     # anglais
     "rumor", "rumors", "rumour", "rumours", "reportedly", "sources say", "according to sources",
     "people familiar", "familiar with the matter", "unconfirmed", "allegedly", "is said to", "speculation",
-    "could be", "may be", "might",
 )
+# formes reconnues SEULEMENT avec leur casse d'origine (sigles)
+CASE_SENSITIVE: dict[str, re.Pattern[str]] = {
+    "sec": re.compile(r"(?<![A-Za-z0-9])SEC(?![A-Za-z0-9])"),
+    "fed": re.compile(r"(?<![A-Za-z0-9])(Fed|FED)(?![A-Za-z0-9])"),
+    "boj": re.compile(r"(?<![A-Za-z0-9])(BoJ|BOJ)(?![A-Za-z0-9])"),
+}
 
 
 def _pattern(words: tuple[str, ...]) -> re.Pattern[str]:
@@ -118,10 +129,13 @@ def _compiled() -> tuple[dict[str, re.Pattern[str]], dict[str, re.Pattern[str]],
 _CASHTAG = re.compile(r"\$([a-z]{2,6})(?![a-z0-9])")
 
 
-def detect(norm_text: str) -> tuple[list[str], list[str], list[str]]:
-    """(entités, catégories, actifs) détectés dans un texte déjà normalisé."""
+def detect(norm_text: str, raw_text: str = "") -> tuple[list[str], list[str], list[str]]:
+    """(entités, catégories, actifs) détectés dans un texte normalisé (+ sigles sensibles à la casse dans
+    `raw_text`, le texte nettoyé d'origine)."""
     ent, cat, ass, _ = _compiled()
-    entities = sorted(k for k, p in ent.items() if p.search(norm_text))
+    found = {k for k, p in ent.items() if p.search(norm_text)}
+    found |= {k for k, p in CASE_SENSITIVE.items() if raw_text and p.search(raw_text)}
+    entities = sorted(found)
     categories = sorted(k for k, p in cat.items() if p.search(norm_text))
     assets = {k for k, p in ass.items() if p.search(norm_text)}
     assets |= {m for m in _CASHTAG.findall(norm_text) if m in ASSETS}

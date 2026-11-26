@@ -91,7 +91,8 @@ def test_parse_edgar_filters_forms_and_builds_urls() -> None:
     items = parsers.parse_edgar(EDGAR, "Tesla")
     assert [i["title"].split("SEC ")[1].split(" ")[0] for i in items] == ["8-K", "10-Q"]  # formulaire 4 ignoré
     assert items[0]["url"] == "https://www.sec.gov/Archives/edgar/data/1318605/000162828026000111/tsla-8k.htm"
-    assert items[0]["published"] == ms("2026-11-24T16:05:12Z")
+    # acceptanceDateTime « 16:05:12.000Z » = heure de New York (EST, UTC-5 en novembre) -> 21:05:12 UTC
+    assert items[0]["published"] == ms("2026-11-24T21:05:12Z") and "edgar_fuseau_presume" in items[0]["flags"]
     ev = make_event(source="edgar_tesla", source_kind="depot", title=items[0]["title"], url=items[0]["url"],
                     received_ms=T0, official_domains=("sec.gov",))
     assert ev is not None and ev.official and "tesla" in ev.entities
@@ -105,15 +106,21 @@ def test_parse_dates_robust() -> None:
 
 
 def test_bitvavo_markets_diff_detects_halt_and_delisting() -> None:
+    filler = [{"market": f"F{i}-EUR", "status": "trading"} for i in range(30)]
     prev = parsers.parse_bitvavo_markets(json.dumps([{"market": "BTC-EUR", "status": "trading"},
                                                      {"market": "XYZ-EUR", "status": "trading"},
-                                                     {"market": "ABC-EUR", "status": "trading"}]))
-    cur = {"BTC-EUR": "trading", "ABC-EUR": "halted", "NEW-EUR": "auction"}
-    assert parsers.diff_markets({}, cur) == []  # premier relevé : rien d'inventé
-    d = {i["asset"]: i["title"] for i in parsers.diff_markets(prev, cur)}
-    assert set(d) == {"abc", "xyz", "new"}
-    assert "suspendu" in d["abc"] and "radiation" in d["xyz"]
-    ev = make_event(source="bitvavo_marches", source_kind="plateforme", title=d["xyz"], url=None, received_ms=T0)
+                                                     {"market": "ABC-EUR", "status": "trading"}, *filler]))
+    cur = {"BTC-EUR": "trading", "ABC-EUR": "halted", "NEW-EUR": "auction", **{m["market"]: "trading" for m in filler}}
+    raws, st, pend, why = parsers.update_markets({}, cur, {}, T0)
+    assert raws == [] and st == cur and not why  # premier relevé : rien d'inventé
+    raws, st, pend, why = parsers.update_markets(prev, cur, {}, T0)
+    d = {i["asset"]: i["title"] for i in raws}
+    assert set(d) == {"abc", "new"} and "suspendu" in d["abc"]
+    assert pend == {"XYZ-EUR": T0} and "XYZ-EUR" in st  # disparition en attente de confirmation
+    raws2, st2, pend2, _ = parsers.update_markets(st, cur, pend, T0 + H)
+    (gone,) = [i["title"] for i in raws2]
+    assert "radiation" in gone and "XYZ-EUR" not in st2 and pend2 == {}
+    ev = make_event(source="bitvavo_marches", source_kind="plateforme", title=gone, url=None, received_ms=T0)
     assert ev is not None and "radiation" in ev.categories
 
 
@@ -220,12 +227,15 @@ def test_corroboration_point_in_time_and_independence() -> None:
 
 def test_rumor_flag_and_official_confirmation() -> None:
     d = Deduplicator()
-    r = classify(_ev("cryptoast", "Selon des sources, la SEC aurait approuvé l'ETF Solana de BlackRock",
+    r = classify(_ev("cryptoast", "Rumeur : la SEC approuve l'ETF au comptant Solana de BlackRock et Fidelity",
                      "https://cryptoast.fr/r", T0), d)
-    assert r is not None and "selon des sources" in r.rumor_terms and "aurait" in r.rumor_terms
+    assert r is not None and "rumeur" in r.rumor_terms
     a = assess([r], T0)
     assert a is not None and a.rumor and not a.official
-    off = classify(_ev("sec_presse", "La SEC a approuvé l'ETF Solana de BlackRock",
+    r2 = _ev("journal_du_coin", "Selon des sources, la SEC aurait approuvé l'ETF Solana de BlackRock", "https://j.fr/1", T0)
+    assert {"selon des sources", "aurait"} <= set(r2.rumor_terms)
+    # recouvrement ≥ 0,85 avec le communiqué officiel (7 jetons sur 8) : seule cette proximité confirme
+    off = classify(_ev("sec_presse", "La SEC approuve l'ETF au comptant Solana de BlackRock et Fidelity",
                        "https://www.sec.gov/newsroom/press-releases/2026-150", T0 + H, official=("sec.gov",)), d)
     assert off is not None and off.official and off.cluster == r.cluster
     before = assess([r, off], T0 + H - 1)
@@ -270,13 +280,23 @@ def test_collect_measures_latency_availability_and_never_follows_links(tmp_path:
     assert e.processed_ms is not None and e.fetched_ms is not None and e.processed_ms > e.fetched_ms
     rep = source_report(obs, list(journal.read(tmp_path / "collectes.jsonl")))
     s = rep["sources"]
-    assert s["coindesk"]["disponibilite"] == {"requetes": 1, "succes": 0, "taux_succes": 0.0, "http": {"503": 1},
-                                              "erreurs": {"HTTP 503": 1}, "duree_ms_mediane": 50}
-    # délais 15 et 45 min (quantile « supérieur » sur deux valeurs), à la seconde près
-    assert s["gdelt_crypto"]["delai_publication_reception_min"]["mediane"] == 45.0
-    assert s["gdelt_crypto"]["delai_publication_reception_min"]["p90"] == 45.0
-    assert s["gnews_crypto_fr"]["delai_publication_reception_min"]["n"] == 2
+    assert s["coindesk"]["disponibilite"] == {"requetes": 1, "succes": 0, "taux_succes": 0.0, "vides": 0,
+                                              "http": {"503": 1}, "erreurs": {"HTTP 503": 1}, "duree_ms_mediane": 50}
+    # premier relevé réussi = AMORÇAGE (arriéré du flux) : exclu des délais
+    assert all("amorcage" in e.flags for e in obs)
+    assert s["gdelt_crypto"]["amorcage"] == 2 and s["gdelt_crypto"]["delai_publication_reception_min"]["n"] == 0
     assert s["gnews_crypto_fr"]["cost"] == "0 €"
+    # relevé suivant : nouveaux articles mesurés (10:20 -> 11:00 = 40 min ; 10:50 -> 11:00 = 10 min)
+    g2 = json.dumps({"articles": [
+        {"url": "https://www.theblock.co/a", "title": "Stablecoin issuer reports reserves update", "seendate": "20261124T102000Z",
+         "domain": "theblock.co"},
+        {"url": "https://www.decrypt.co/b", "title": "Solana network upgrade goes live on mainnet", "seendate": "20261124T105000Z",
+         "domain": "decrypt.co"}]})
+    collect([SOURCES["gdelt_crypto"]], tmp_path, _fetcher({"gdelt_crypto": FetchResult(200, g2)}, []),
+            clock=FakeClock(ms("2026-11-24T11:00:00Z")))
+    rep = source_report(journal.load_observations(tmp_path), list(journal.read(tmp_path / "collectes.jsonl")))
+    lat = rep["sources"]["gdelt_crypto"]["delai_publication_reception_min"]
+    assert lat["n"] == 2 and lat["mediane"] == 40.0  # quantile « supérieur » sur deux valeurs
 
 
 def test_collect_journal_append_only_and_repeats_not_relogged(tmp_path: Path) -> None:
