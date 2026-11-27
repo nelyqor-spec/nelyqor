@@ -335,12 +335,19 @@ class WsProbe:
 
     @staticmethod
     def exchange_ts(msg: dict[str, Any]) -> int | None:
+        """Horodatage de l'échange en MILLISECONDES. Bitvavo horodate le carnet du WebSocket en nanosecondes
+        (≈ 1,8e18, constaté au run 45903651762) et les transactions en millisecondes : l'unité est déduite de
+        l'ordre de grandeur (ns > 1e17, µs > 1e14, sinon ms)."""
         ts = msg.get("timestamp")
-        if isinstance(ts, int | float) and not isinstance(ts, bool) and ts > 0:
-            return int(ts)
         if isinstance(ts, str) and ts.isdigit():
-            return int(ts)
-        return None
+            ts = int(ts)
+        if not (isinstance(ts, int | float) and not isinstance(ts, bool) and ts > 0):
+            return None
+        if ts > 1e17:
+            return int(ts // 1_000_000)
+        if ts > 1e14:
+            return int(ts // 1_000)
+        return int(ts)
 
     def handle(self, msg: dict[str, Any], recv_wall_ms: float, recv_mono: float) -> str | None:
         ev = msg.get("event")

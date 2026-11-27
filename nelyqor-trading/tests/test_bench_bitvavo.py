@@ -374,3 +374,15 @@ def test_network_failure_gives_partial_json_and_code_4():
     res = asyncio.run(bb.run_bench(args, transport=httpx.MockTransport(h), connect=DownWS))
     assert res["code_sortie"] == 4 and res["aucune_mesure"]
     assert "erreur" in res["decalage_horloge"] and res["moteur"]["incomplet"]
+
+
+def test_exchange_timestamp_units_normalised_to_ms():
+    """Run 45903651762 : le carnet WebSocket est horodaté en nanosecondes (délai aberrant −1,8e18 ms avant
+    correction) ; transactions en millisecondes. Les trois unités donnent la même date en ms."""
+    from scripts.bench_bitvavo import WsProbe
+    ms = 1_795_730_000_123
+    assert WsProbe.exchange_ts({"timestamp": ms}) == ms
+    assert WsProbe.exchange_ts({"timestamp": ms * 1_000}) == ms
+    assert WsProbe.exchange_ts({"timestamp": ms * 1_000_000}) == ms
+    assert WsProbe.exchange_ts({"timestamp": str(ms * 1_000_000)}) == ms
+    assert WsProbe.exchange_ts({"timestamp": None}) is None and WsProbe.exchange_ts({"timestamp": True}) is None
