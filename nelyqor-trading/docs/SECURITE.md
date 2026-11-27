@@ -42,6 +42,7 @@
 | HTTPS sans domaine (phase 7) | `NELYQOR_TLS=internal` : autorité interne de Caddy (sauvegardée chiffrée), TLS 1.2+ | `incident_check.sh` (TLS 1.0/1.1 refusés, HSTS, en-têtes) |
 | Accès non autorisé (phase 7) | rafale de mots de passe → 429 par adresse, X-Forwarded-For usurpé ignoré, rejeu de session et de commande signée refusés, CSRF exigé, API injoignable sans Caddy | `incident_check.sh` |
 | Disque plein (phase 7, E2/E7) | garde du moteur (écritures non critiques suspendues), erreur SQLITE_FULL non masquée, alerte même base pleine | `tests/test_phase7_exploitation.py`, `incident_check.sh` (tmpfs saturé) |
+| Vigie du moteur (phase 7, E8/E9) | tâche parallèle : arrêt d'urgence SSH appliqué et battement de cœur écrit même quand la boucle est bloquée sur un Bitvavo sans réponse | `test_E8_*`, `test_E9_*`, `incident_check.sh` (mode « hang ») |
 | Alertes (phase 7) | ntfy (type d'alerte seulement par défaut), alertes de l'hôte `scripts/alerte.sh` | `test_ntfy_*`, `test_alert_script_*` |
 | Révocation (phase 7) | `scripts/revoquer_acces.sh` : sessions, mot de passe, phrase, clés Bitvavo séparément | `test_E6_*` |
 | Réel exige la séparation | pré-requis `bases_separees` (moteur, commandes, affichage = 3 fichiers distincts) | `test_real_activation_requires_separated_bases` |

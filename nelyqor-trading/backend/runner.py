@@ -134,6 +134,7 @@ class Engine:
         self.disk_level = OK
         self.disk_free_mb: float | None = None
         self.disk_full_errors = 0
+        self._last_hb_ms = 0
 
     @property
     def writes_suspended(self) -> bool:
@@ -1229,6 +1230,7 @@ class Engine:
 
     def heartbeat(self, data_ok: bool) -> None:
         """Signe de vie du moteur, distinct de la fraîcheur des données de marché."""
+        self._last_hb_ms = self.clock.now_ms()
         ex = self.exec
         mode = ex.mode if ex else "simulation"
         self.db.kv_set("engine_heartbeat", {"ts": self.clock.now_ms(), "mode": mode, "pid": os.getpid(),
@@ -1239,6 +1241,31 @@ class Engine:
                                                        "ecritures_suspendues": self.writes_suspended}},
                          self.clock.now_ms())
         self.publish_display()  # l'API ne voit que cette copie (affichage.db, montée :ro dans l'API)
+
+    def vigil_once(self) -> None:
+        """Vigie (phase 7, tâche asyncio parallèle à la boucle) : si la boucle est bloquée dans un appel réseau
+        (Bitvavo sans réponse : 5 tentatives × 10 s par requête, soit plus de 2 min par cycle — mesuré), le drapeau
+        d'arrêt d'urgence SSH est quand même appliqué et le battement de cœur continue (sinon l'API et le contrôle
+        de santé déclaraient le moteur mort). Synchrone : jamais entrelacé au milieu d'une transaction. Ne lève jamais."""
+        now = self.clock.now_ms()
+        try:
+            self._check_emergency_file()
+        except Exception:  # noqa: BLE001
+            log.exception("vigie : drapeau d'arrêt d'urgence non lu")
+        if now - self._last_hb_ms < 10_000:
+            return
+        try:
+            self.heartbeat(data_ok=now - self.last_data_ms <= self.limits.max_stale_ms)
+        except Exception as e:  # noqa: BLE001
+            if is_disk_full_error(e):
+                self.on_disk_full(e)
+            else:
+                log.exception("vigie : battement de cœur non écrit")
+
+    async def vigil(self, every_s: float = 5.0) -> None:  # pragma: no cover - boucle de production
+        while True:
+            await asyncio.sleep(every_s)
+            self.vigil_once()
 
     async def idle_tick(self) -> None:
         """Attente après une erreur de boucle (échange injoignable, données refusées…) : l'arrêt d'urgence SSH et les
@@ -1385,6 +1412,7 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
         eur = [m for m, i in eng.markets.items() if i.quote == "EUR"]
         stream = AccountStream(s.bitvavo_ws_url, key, secret, eur, eng.on_ws_event, eng.on_ws_reconnect)
         asyncio.create_task(stream.run_forever())  # noqa: RUF006
+    asyncio.create_task(eng.vigil())  # noqa: RUF006 — arrêt d'urgence SSH et battement de cœur, boucle bloquée ou non
     failures = 0
     while True:
         try:

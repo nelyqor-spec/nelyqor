@@ -307,7 +307,9 @@ check "cookie de session : Secure, HttpOnly, SameSite=Strict" cookie_ok
 code() { "${CURL[@]}" -o /dev/null -w '%{http_code}' "$@"; }
 check "csrf : commande SANS jeton refusée (403)" [ "$(code -b "$WORK/cj" -X POST "$U/api/control/deactivate_real")" = 403 ]
 check "csrf : commande avec un FAUX jeton refusée (403)" [ "$(code -b "$WORK/cj" -H 'X-CSRF-Token: faux' -X POST "$U/api/control/deactivate_real")" = 403 ]
-check "csrf : commande avec le bon jeton acceptée (témoin)" [ "$(code -b "$WORK/cj" -H "X-CSRF-Token: $CSRF" -X POST "$U/api/control/deactivate_real")" = 200 ]
+# témoin : commande SANS effet sur l'état (un retour en simulation daterait une révocation et invaliderait la
+# signature du test de rejeu ci-dessous)
+check "csrf : commande avec le bon jeton acceptée (témoin)" [ "$(code -b "$WORK/cj" -H "X-CSRF-Token: $CSRF" -X POST "$U/api/control/liquidation_estimate")" = 200 ]
 check "sans session : lecture refusée (401)" [ "$(code "$U/api/status")" = 401 ]
 # rejeu d'une commande SIGNÉE (activation du réel) : le moteur consomme le nonce, la 2e soumission est un rejeu
 SIGNED=$(docker run --rm -e NELYQOR_ROLE=lab -e PHRASE="$PHRASE" -e SALT="$SALT" -i "$IMAGE" python - sign \
@@ -323,7 +325,10 @@ cmd_done() { [ "$(res "$1" | jget status)" = done ]; }
 wait_for 60 cmd_done "$C2"
 R1=$(res "$C1"); R2=$(res "$C2")
 echo "$R1" > "$OUT/commande_signee_1.json"; echo "$R2" > "$OUT/commande_signee_2.json"
-first_ok() { echo "$R1" | grep -q '"ok": false' && ! echo "$R1" | grep -qE 'rejeu|signature invalide|non signée' && echo "refus hors signature"; }
+first_ok() {  # signature ACCEPTÉE (nonce consommé) : aucun motif lié à la signature, refus par le drapeau serveur seul
+  echo "$R1" | grep -q '"ok": false' && echo "$R1" | grep -q 'NELYQOR_REAL_TRADING_ALLOWED' \
+    && ! echo "$R1" | grep -qE 'signature|non signée|commande_signee_par_le_proprietaire' && echo "signature valide, refus serveur"
+}
 second_replay() { echo "$R2" | grep -q 'déjà utilisée (rejeu)' && echo rejeu; }
 check "rejeu : 1re commande signée vérifiée (nonce consommé, refusée par le drapeau serveur)" first_ok
 check "rejeu : 2e soumission IDENTIQUE refusée « signature déjà utilisée (rejeu) »" second_replay
