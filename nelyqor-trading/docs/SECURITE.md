@@ -38,6 +38,12 @@
 | Plafonds (phase 6) | ordres d'achat EN ATTENTE comptés dans l'exposition totale et dans la position de leur marché (contrôle atomique à la soumission) ; au plus `max_active_entry_orders` (3) achats actifs par mode ; ventes/protections jamais bornées | `tests/test_phase6_plafonds.py` |
 | Données périmées (phase 6) | âge = le plus ancien de l'heure de réception et de l'horodatage de l'échange : une réponse récente d'un flux figé est périmée | `test_stale_exchange_timestamps_block_buys` |
 | Déploiement réel (phase 6) | montages, isolation, santé, redémarrages, coupures réseau, arrêt d'urgence SSH vérifiés sur la pile Docker réelle | `scripts/deploy_check.sh`, workflow `nelyqor-deploy-check.yml` |
+| CSP des réponses API (phase 7, E1) | la CSP générique du site écrasait la CSP `sandbox` de `/api/*` (en-têtes différés) : `?Content-Security-Policy` | `test_E1_caddy_api_csp_sandbox_not_overridden`, `incident_check.sh` |
+| HTTPS sans domaine (phase 7) | `NELYQOR_TLS=internal` : autorité interne de Caddy (sauvegardée chiffrée), TLS 1.2+ | `incident_check.sh` (TLS 1.0/1.1 refusés, HSTS, en-têtes) |
+| Accès non autorisé (phase 7) | rafale de mots de passe → 429 par adresse, X-Forwarded-For usurpé ignoré, rejeu de session et de commande signée refusés, CSRF exigé, API injoignable sans Caddy | `incident_check.sh` |
+| Disque plein (phase 7, E2/E7) | garde du moteur (écritures non critiques suspendues), erreur SQLITE_FULL non masquée, alerte même base pleine | `tests/test_phase7_exploitation.py`, `incident_check.sh` (tmpfs saturé) |
+| Alertes (phase 7) | ntfy (type d'alerte seulement par défaut), alertes de l'hôte `scripts/alerte.sh` | `test_ntfy_*`, `test_alert_script_*` |
+| Révocation (phase 7) | `scripts/revoquer_acces.sh` : sessions, mot de passe, phrase, clés Bitvavo séparément | `test_E6_*` |
 | Réel exige la séparation | pré-requis `bases_separees` (moteur, commandes, affichage = 3 fichiers distincts) | `test_real_activation_requires_separated_bases` |
 
 ## Configuration de la clé API Bitvavo (par le propriétaire, jamais dans le chat)
@@ -51,9 +57,12 @@
    n'applique pas uid/mode aux secrets de type fichier).
 6. `docker compose up -d engine` (redémarrage pour lecture des secrets).
 
-## Pare-feu VPS
-`ufw default deny incoming; ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw enable`.
-SSH par clé uniquement (`PasswordAuthentication no`).
+## Pare-feu VPS (phase 7 : `scripts/install_serveur.sh`, docs/INSTALLATION.md)
+`ufw default deny incoming; ufw limit 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw enable`.
+**Docker contourne UFW** pour les ports publiés : seul Caddy publie (`NELYQOR_BIND_IP` pour n'écouter que sur l'IP
+Tailscale/WireGuard) ; moteur et API sans port (tests `test_E3_*`, contrôle réel dans `incident_check.sh`).
+SSH par clé uniquement (`/etc/ssh/sshd_config.d/10-nelyqor.conf`, posé seulement si une clé autorisée existe) ;
+fail2ban (prison sshd) en option `--fail2ban`.
 
 ## Risques résiduels connus
 - (Corrigé en phase 5) Base partagée API/moteur : l'API n'a plus aucun accès en écriture aux données du moteur

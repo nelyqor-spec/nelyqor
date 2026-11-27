@@ -14,6 +14,8 @@ DB="${NELYQOR_DB:-$VOL/nelyqor_engine_data/_data/engine.db}"
 STATE_DIR="${NELYQOR_ENGINE_STATE_HOST_DIR:-$VOL/nelyqor_engine_state/_data}"
 API_DB="${NELYQOR_API_DB:-$VOL/nelyqor_api_data/_data/api.db}"
 PASS="${NELYQOR_BACKUP_PASS_FILE:-secrets/backup_passphrase}"
+# phase 7 : autorité INTERNE de Caddy (mode NELYQOR_TLS=internal) : la perdre oblige à refaire confiance sur l'iPhone
+CADDY_PKI="${NELYQOR_CADDY_PKI_HOST_DIR:-$VOL/nelyqor_caddy_data/_data/caddy/pki}"
 [ -f "$DB" ] || { echo "REFUS : base du moteur absente : $DB (définir NELYQOR_DB)" >&2; exit 1; }
 [ -f "$STATE_DIR/etat_moteur.json" ] || { echo "REFUS : magasin d'état absent : $STATE_DIR/etat_moteur.json (définir NELYQOR_ENGINE_STATE_HOST_DIR)" >&2; exit 1; }
 [ -f "$PASS" ] || { echo "REFUS : phrase de passe absente : $PASS" >&2; exit 1; }
@@ -37,8 +39,14 @@ tar -C "$STATE_DIR" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -sal
 sha256sum "$DEST/etat-moteur-$TS.tar.enc" > "$DEST/etat-moteur-$TS.tar.enc.sha256"
 echo "OK $DEST/etat-moteur-$TS.tar.enc"
 if [ -f "$API_DB" ]; then snap "$API_DB" api; else echo "ATTENTION : audit de l'API absent ($API_DB) : non sauvegardé"; fi
+if [ -d "$CADDY_PKI/authorities/local" ]; then
+  tar -C "$CADDY_PKI" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -out "$DEST/caddy-pki-$TS.tar.enc" -pass "file:$PASS"
+  sha256sum "$DEST/caddy-pki-$TS.tar.enc" > "$DEST/caddy-pki-$TS.tar.enc.sha256"
+  echo "OK $DEST/caddy-pki-$TS.tar.enc"
+fi
 # rétention : NELYQOR_BACKUP_KEEP (30 par défaut) dernières sauvegardes de chaque type
-for p in engine-*.db.enc api-*.db.enc etat-moteur-*.tar.enc; do
+for p in engine-*.db.enc api-*.db.enc etat-moteur-*.tar.enc caddy-pki-*.tar.enc; do
   # shellcheck disable=SC2012
-  ls -1t "$DEST"/$p 2>/dev/null | tail -n +$(( ${NELYQOR_BACKUP_KEEP:-30} + 1 )) | while read -r f; do rm -f "$f" "$f.sha256"; done
+  # « || true » : un type absent (api.db, autorité de Caddy en mode acme) ne doit pas faire échouer la sauvegarde
+  { ls -1t "$DEST"/$p 2>/dev/null || true; } | tail -n +$(( ${NELYQOR_BACKUP_KEEP:-30} + 1 )) | while read -r f; do rm -f "$f" "$f.sha256"; done
 done

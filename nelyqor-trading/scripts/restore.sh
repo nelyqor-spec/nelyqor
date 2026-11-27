@@ -12,7 +12,8 @@ TARGET="${NELYQOR_DB:-$VOL/nelyqor_engine_data/_data/engine.db}"
 STATE_DIR="${NELYQOR_ENGINE_STATE_HOST_DIR:-$VOL/nelyqor_engine_state/_data}"
 API_DB="${NELYQOR_API_DB:-$VOL/nelyqor_api_data/_data/api.db}"
 PASS="${NELYQOR_BACKUP_PASS_FILE:-secrets/backup_passphrase}"
-OWNER="${NELYQOR_RESTORE_OWNER:-10001:10001}"   # « - » : ne pas changer le propriétaire (tests uniquement)
+OWNER="${NELYQOR_RESTORE_OWNER:-10001:10001}"
+CADDY_PKI="${NELYQOR_CADDY_PKI_HOST_DIR:-$VOL/nelyqor_caddy_data/_data/caddy/pki}"   # « - » : ne pas changer le propriétaire (tests uniquement)
 case "$(basename "$SRC")" in engine-*.db.enc) ;; *) echo "REFUS : attendu engine-<horodatage>.db.enc" >&2; exit 1 ;; esac
 TS="$(basename "$SRC" .db.enc)"; TS="${TS#engine-}"
 STATE_SRC="$(dirname "$SRC")/etat-moteur-$TS.tar.enc"
@@ -47,5 +48,17 @@ cp -a "$TMPD/." "$STATE_DIR/"; own -R "$STATE_DIR"
 echo "Restauré : magasin d'état $STATE_DIR"
 if [ -f "$API_SRC" ]; then
   [ -d "$(dirname "$API_DB")" ] && restore_db "$API_SRC" "$API_DB" || echo "ATTENTION : dossier de api.db absent : non restauré"
+fi
+PKI_SRC="$(dirname "$SRC")/caddy-pki-$TS.tar.enc"
+if [ -f "$PKI_SRC" ]; then
+  # autorité interne de Caddy (propriétaire root dans le conteneur Caddy) : l'iPhone garde sa confiance
+  if [ -d "$(dirname "$(dirname "$CADDY_PKI")")" ]; then
+    sha256sum -c "$PKI_SRC.sha256"
+    mkdir -p "$CADDY_PKI" && chmod 700 "$CADDY_PKI"
+    openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$PKI_SRC" -pass "file:$PASS" | tar -C "$CADDY_PKI" -xf -
+    echo "Restauré : autorité interne de Caddy $CADDY_PKI"
+  else
+    echo "ATTENTION : volume de Caddy absent ($CADDY_PKI) : autorité interne non restaurée"
+  fi
 fi
 echo "Au redémarrage, le moteur repasse par la réconciliation si le réel était actif (ordres ouverts rapprochés)."

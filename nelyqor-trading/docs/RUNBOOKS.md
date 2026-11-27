@@ -35,9 +35,14 @@ si le réel était actif → état `RECONCILIATION` puis reprise automatique si 
 **Pendant la panne, aucun stop n'est exécuté** (stops gérés par le moteur en V1).
 
 ## Sauvegarde / restauration
-Quotidien (cron) : `0 3 * * * cd /root/nelyqor/nelyqor-trading && NELYQOR_DB=/var/lib/docker/volumes/nelyqor_engine_data/_data/engine.db scripts/backup.sh /root/backups`
-Copier `/root/backups` hors du VPS. Restaurer : `docker compose stop engine api && scripts/restore.sh <fichier.enc> <chemin_db> && docker compose up -d`.
-Testé ici : copie cohérente + intégrité (`test_backup_restore`).
+Quotidien (phase 7) : timer systemd `nelyqor-backup.timer` (03:17, rattrapé au démarrage) → `scripts/sauvegarde_auto.sh
+/var/backups/nelyqor` : sauvegarde chiffrée (moteur, magasin d'état, api.db, autorité interne de Caddy), vérification
+(déchiffrement + intégrité), rétention `NELYQOR_BACKUP_KEEP` (30), **alerte** en cas d'échec ; refusée si le disque
+dépasse 90 %. Copier les sauvegardes hors du VPS (docs/INSTALLATION.md) et garder `secrets/backup_passphrase` dans
+un gestionnaire de mots de passe. Restaurer (1 seul argument : le fichier engine-…) :
+`docker compose stop engine api && scripts/restore.sh /var/backups/nelyqor/engine-<horodatage>.db.enc && docker compose up -d`.
+Testé en conditions réelles (`scripts/incident_check.sh`) : sauvegarde des vrais volumes Docker, destruction
+(`down -v`), restauration, reprise sans fill ni achat dupliqué, même autorité TLS interne.
 
 ## Mise à jour / rollback
 ```bash
@@ -54,6 +59,20 @@ git checkout <ancien_commit> && docker compose up -d --build   # (+ restore si m
 3. Le moteur repasse en simulation faute de clés (pré-requis `cles_api_presentes` faux).
 
 ## Disque plein
-Une écriture SQLite échoue proprement (transaction annulée — testé). Purger : `docker system prune`,
-anciennes sauvegardes, puis agréger/supprimer les anciennes bougies 1 m si collectées.
+Alertes : hôte à 80 % puis 90 % (`nelyqor-disque.timer` : à 90 %, laboratoire/collecteur arrêtés et sauvegardes
+suspendues) ; moteur sous `NELYQOR_DISK_WARN_FREE_MB` (2048) puis `NELYQOR_DISK_CRIT_FREE_MB` (512) : décisions,
+nouvelles entrées, instantanés et purge suspendus, suivi des positions/protections et battement de cœur maintenus,
+reprise automatique au-dessus du seuil d'alerte. Une écriture SQLite refusée est annulée (base intacte — vérifié sur
+un disque réellement plein à 100 %). Libérer : `docker system prune` (images inutilisées), `docker builder prune`,
+anciennes sauvegardes (`/var/backups/nelyqor`, après copie hors serveur), `journalctl --vacuum-size=200M`.
 `/api/status` affiche l'espace libre.
+
+## Alerte reçue
+`journalctl -t nelyqor -n 50` (hôte) ; PWA › Incidents (moteur). « Sauvegarde ECHOUEE » : `journalctl -u nelyqor-backup`.
+« Service … en échec » : `systemctl status nelyqor` puis `docker compose logs --tail 100`.
+
+## Révocation des accès (phase 7)
+`scripts/revoquer_acces.sh --sessions | --mot-de-passe | --phrase | --bitvavo | --tout` : sessions fermées
+(redémarrage de l'API, sessions en mémoire), nouveau mot de passe, nouvelle phrase de signature (nouveau sel et
+nouvelle clé du moteur : toute signature préparée avant est invalide), clés Bitvavo vidées (supprimer aussi la clé
+chez Bitvavo). Saisie dans un conteneur sans réseau, rien n'est affiché.

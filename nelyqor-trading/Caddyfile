@@ -22,7 +22,9 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+		# « ? » : posée seulement si absente — les en-têtes sont différés et ce bloc extérieur s'applique EN DERNIER :
+		# sans « ? », il écrasait la CSP « sandbox » des réponses /api/* (défaut mesuré en phase 7)
+		?Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
 		-Server
 	}
 	# limite basique de taille de requête
@@ -32,7 +34,7 @@
 	# API : seul chemin relayé vers le conteneur api. Ses réponses sont « sandboxées » : même si une API
 	# compromise renvoyait du HTML, aucun script ne s'exécuterait sur l'origine de la PWA (phase 4, D5).
 	handle /api/* {
-		header Content-Security-Policy "sandbox; default-src 'none'; frame-ancestors 'none'"
+		header >Content-Security-Policy "sandbox; default-src 'none'; frame-ancestors 'none'"
 		header -Service-Worker-Allowed
 		reverse_proxy api:8000 {
 			header_down -Service-Worker-Allowed

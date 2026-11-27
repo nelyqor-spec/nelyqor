@@ -145,7 +145,11 @@ class Database:
                 yield self.conn
                 self.conn.execute("COMMIT")
             except BaseException:
-                self.conn.execute("ROLLBACK")
+                # phase 7 : un COMMIT refusé (disque plein, SQLITE_FULL) est déjà annulé par SQLite ; un ROLLBACK
+                # inconditionnel levait « no transaction is active » et MASQUAIT l'erreur d'origine
+                if self.conn.in_transaction:
+                    with contextlib.suppress(sqlite3.Error):
+                        self.conn.execute("ROLLBACK")
                 raise
 
     def q(self, sql: str, args: tuple[Any, ...] = ()) -> list[sqlite3.Row]:

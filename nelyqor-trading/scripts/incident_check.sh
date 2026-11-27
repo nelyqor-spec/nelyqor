@@ -323,9 +323,10 @@ cmd_done() { [ "$(res "$1" | jget status)" = done ]; }
 wait_for 60 cmd_done "$C2"
 R1=$(res "$C1"); R2=$(res "$C2")
 echo "$R1" > "$OUT/commande_signee_1.json"; echo "$R2" > "$OUT/commande_signee_2.json"
-check "rejeu : 1re commande signée vérifiée (nonce consommé, refusée par le drapeau serveur)" bash -c \
-  "echo '$R1' | grep -q '\"ok\": false' && ! echo '$R1' | grep -q 'rejeu' && echo 'refus hors signature'"
-check "rejeu : 2e soumission IDENTIQUE refusée « signature déjà utilisée (rejeu) »" bash -c "echo '$R2' | grep -q 'déjà utilisée (rejeu)' && echo rejeu"
+first_ok() { echo "$R1" | grep -q '"ok": false' && ! echo "$R1" | grep -qE 'rejeu|signature invalide|non signée' && echo "refus hors signature"; }
+second_replay() { echo "$R2" | grep -q 'déjà utilisée (rejeu)' && echo rejeu; }
+check "rejeu : 1re commande signée vérifiée (nonce consommé, refusée par le drapeau serveur)" first_ok
+check "rejeu : 2e soumission IDENTIQUE refusée « signature déjà utilisée (rejeu) »" second_replay
 check "rejeu : état toujours SIMULATION" bash -c "[ \"\$(st etat)\" = SIMULATION ] && echo SIMULATION"
 LOGOUT=$(code -b "$WORK/cj" -H "X-CSRF-Token: $CSRF" -X POST "$U/api/logout")
 check "rejeu de session : cookie réutilisé après déconnexion refusé (401)" bash -c \
@@ -363,8 +364,8 @@ dc stop engine api > /dev/null 2>&1
 CB=$(dc run --rm --no-deps -T engine python - counts < scripts/incident_probe.py 2>/dev/null | tail -1)
 echo "$CB" > "$OUT/counts_avant_sauvegarde.json"
 BKENV=(env NELYQOR_DB="$(vol engine_data)/engine.db" NELYQOR_ENGINE_STATE_HOST_DIR="$(vol engine_state)"
-       NELYQOR_API_DB="$(vol api_data)/api.db" NELYQOR_BACKUP_PASS_FILE="$WORK/backup_passphrase"
-       NELYQOR_ALERT_NTFY_FILE="$WORK/ntfy_hote")
+       NELYQOR_API_DB="$(vol api_data)/api.db" NELYQOR_CADDY_PKI_HOST_DIR="$(vol caddy_data)/caddy/pki"
+       NELYQOR_BACKUP_PASS_FILE="$WORK/backup_passphrase" NELYQOR_ALERT_NTFY_FILE="$WORK/ntfy_hote")
 mkdir -p "$WORK/backups"
 check "sauvegarde chiffrée des VRAIS volumes (sauvegarde_auto.sh : backup + vérification)" \
   asroot "${BKENV[@]}" bash scripts/sauvegarde_auto.sh "$WORK/backups"
@@ -385,6 +386,7 @@ check "après restauration : fills et achats identiques (aucune transaction dupl
 check "après restauration : aucun doublon (client_order_id, stops), intégrité ok" no_dupes "$C1"
 check "après restauration : état SIMULATION, pas d'INCIDENT d'intégrité" bash -c \
   "[ \"\$(st etat)\" = SIMULATION ] && ! docker logs $(cid engine) 2>&1 | grep -q falsification && echo SIMULATION"
+check "après restauration : autorité interne de Caddy restaurée (l'ancienne racine valide encore le certificat)" wait_for 60 https_ok
 check "après restauration : API reprise (connexion HTTPS possible)" wait_for 60 owner_login_ok "$WORK/cj3"
 
 # ================================================================== 5. échec de sauvegarde, rétention, disque de l'hôte
@@ -414,13 +416,18 @@ NELYQOR_DISK_PATHS=/ NELYQOR_DISK_CRIT_PCT=1 NELYQOR_DISK_WARN_PCT=1 NELYQOR_DIS
 check "surveillance disque : pas de répétition d'alerte au même niveau" bash -c "[ \"\$(alerts | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')\" = $N2 ] && echo 'une seule alerte'"
 
 # ================================================================== 6. Bitvavo indisponible, données incohérentes, Internet
+alive_stale() {
+  local s; s=$(state)
+  python3 -c "import sys; sys.exit(0 if float('$(echo "$s" | jget heartbeat_age_s)') < 60 else 1)" && [ "$(echo "$s" | jget data_ok)" = false ] \
+    && echo "battement $(echo "$s" | jget heartbeat_age_s) s, data_ok=false"
+}
 REF=$(counts)
 for m in error ratelimit hang; do
   log "faux Bitvavo : mode $m (60 s)"
   RE=$(restarts engine); T=$(( $(date +%s) * 1000 ))
   fake_mode "$m" > /dev/null; sleep 60
   check "bitvavo $m : moteur en marche, jamais redémarré" bash -c "running engine && [ $(restarts engine) = $RE ] && echo ok"
-  check "bitvavo $m : battement de cœur continu, données signalées périmées" bash -c "alive && [ \"\$(st data_ok)\" = false ] && echo data_ok=false"
+  check "bitvavo $m : battement de cœur continu (< 60 s ; API : 120 s), données signalées périmées" alive_stale
   check "bitvavo $m : aucun achat" python3 -c "import sys; t='$(st dernier_achat_ts)'; sys.exit(0 if t in ('null','None','') or int(t) < $T else 1)"
   fake_mode normal > /dev/null
   check "bitvavo $m : reprise propre" wait_for 150 fresh
@@ -433,7 +440,8 @@ check "données incohérentes : moteur en marche, jamais redémarré" bash -c "r
 check "données incohérentes : aucun achat" python3 -c "import sys; t='$(echo "$SI" | jget dernier_achat_ts)'; sys.exit(0 if t in ('null','None','') or int(t) < $T else 1)"
 check "données incohérentes : marchés écartés (carnet croisé / indisponible / périmé)" bash -c \
   "echo '$SI' | grep -qE 'carnet croisé|carnet indisponible|donnée périmée|horodatage' || [ \"\$(echo '$SI' | jget data_ok)\" = false ]; echo \"data_ok=\$(echo '$SI' | jget data_ok)\""
-check "données incohérentes : pas d'INCIDENT" bash -c "[ \"\$(echo '$SI' | jget etat)\" = SIMULATION ] && echo SIMULATION"
+not_incident() { local e; e=$(echo "$1" | jget etat); [ -n "$e" ] && [ "$e" != INCIDENT ] && echo "$e"; }
+check "données incohérentes : pas d'INCIDENT (pause « erreurs répétées » admise)" not_incident "$SI"
 fake_mode normal > /dev/null
 check "données incohérentes : reprise propre" wait_for 150 fresh
 NET="${PROJ}_default"
@@ -486,6 +494,8 @@ dc --profile lab down -v > /dev/null 2>&1
 DISK_WARN=24 DISK_CRIT=12 write_override tmpfs
 dc up -d --no-build engine api caddy fakebitvavo > /dev/null 2>&1
 check "disque : pile repartie avec engine_data en tmpfs 64 Mo" wait_for 180 fresh
+wait_for 60 dc exec -T caddy test -s /data/caddy/pki/authorities/local/root.crt   # volumes neufs : nouvelle racine
+dc exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > "$WORK/ca.crt" 2>/dev/null
 check "disque : niveau ok au départ" bash -c "[ \"\$(counts | jget disque.niveau)\" = ok ] && counts | jget disque"
 sleep 65
 NA=$(n_alerts)
@@ -499,7 +509,8 @@ check "disque critique : l'alerte ntfy ne contient aucun détail (confidentialit
   "alerts | python3 -c \"import json,sys; a=[x for x in json.load(sys.stdin)[$NA:] if x['topic']=='moteur']; sys.exit(0 if a and all('Mo' not in x['body'] for x in a) else 1)\" && echo minimal"
 DA=$(counts); sleep 75; DB=$(counts)
 check "disque critique : écritures non critiques ARRÊTÉES (instantanés, décisions)" same "$DA" "$DB" equity_snapshots decisions
-check "disque critique : battement de cœur et protections maintenus" bash -c "alive && [ \"\$(echo '$DB' | jget stops_actifs_max_par_marche)\" -le 1 ] && echo ok"
+hb_protect() { alive && [ "$(echo "$DB" | jget stops_actifs_max_par_marche)" -le 1 ] && echo "battement frais"; }
+check "disque critique : battement de cœur maintenu" hb_protect
 RE=$(restarts engine)
 dc exec -T engine sh -c 'cat /dev/zero > /engine/remplissage2 2>/dev/null; sync; df -k /engine | tail -1'
 log "disque du moteur rempli à 100 % (ENOSPC)"

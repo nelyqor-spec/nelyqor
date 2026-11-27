@@ -12,3 +12,6 @@ docs
 scripts/deploy_fake_bitvavo.py
 scripts/deploy_probe.py
 scripts/deploy_check.sh
+scripts/incident_check.sh
+scripts/incident_probe.py
+scripts/install_serveur.sh

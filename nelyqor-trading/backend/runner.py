@@ -1240,6 +1240,26 @@ class Engine:
                          self.clock.now_ms())
         self.publish_display()  # l'API ne voit que cette copie (affichage.db, montée :ro dans l'API)
 
+    async def idle_tick(self) -> None:
+        """Attente après une erreur de boucle (échange injoignable, données refusées…) : l'arrêt d'urgence SSH et les
+        commandes restent traités, et le battement de cœur continue (phase 7 : sans lui, une panne prolongée de
+        Bitvavo faisait passer le moteur pour mort jusqu'à 65 s). Ne lève jamais."""
+        try:
+            self._check_emergency_file()
+        except Exception:  # noqa: BLE001
+            log.exception("drapeau d'arrêt d'urgence non lu")
+        try:
+            await self.process_commands()
+        except Exception:  # noqa: BLE001
+            log.exception("commandes non traitées")
+        try:
+            self.heartbeat(data_ok=False)
+        except Exception as e:  # noqa: BLE001
+            if is_disk_full_error(e):
+                self.on_disk_full(e)
+            else:
+                log.exception("battement de cœur non écrit")
+
     async def step(self) -> None:
         try:
             await self._step()
@@ -1383,10 +1403,7 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
                 eng.guardian.pause("engine", f"erreurs répétées : {type(e).__name__}")
                 eng.notifier.notify("panne_prolongee", f"Moteur en erreur répétée : {type(e).__name__}")
             for _ in range(min(60, 2 ** failures) // 5 + 1):
-                try:
-                    await eng.process_commands()
-                except Exception:  # noqa: BLE001
-                    log.exception("commandes non traitées")
+                await eng.idle_tick()
                 await asyncio.sleep(5)
         await asyncio.sleep(5)
 
