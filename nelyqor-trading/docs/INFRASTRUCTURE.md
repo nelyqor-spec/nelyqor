@@ -179,13 +179,58 @@ Elles **ne prouvent pas** :
   SYNTHÉTIQUE de 430 marchés, LAB en parallèle à priorité basse] cycle moteur médian ≈ 1,0 s (max ≈ 1,5 s),
   RSS du moteur ≈ 140 Mo, LAB ≈ 210 Mo, base ≈ 8 Mo : un VPS de 2 vCPU / 4 Go est largement suffisant ; 1 Go
   (e2-micro, Stardust) l'est aussi pour le moteur seul mais pas pour construire l'image ni faire tourner la pile.
-- **[À MESURER EN CI]** : latences REST, poids, WebSocket, balayage de l'univers réel (≈ 430 marchés, dont les EUR),
-  part de données périmées. Lancer le workflow `nelyqor-bench` (Actions → nelyqor-bench → Run workflow, 9 min) et
-  reporter ici les chiffres du résumé, avec la date du job.
+- **[MESURÉ, runner GitHub 4 vCPU AMD EPYC 9V74 / 15,6 Go, région inconnue (probablement États-Unis), runs
+  `nelyqor-bench` 45903651762 (26/11 22:16 UTC) et 45949068420 (27/11 06:00 UTC), API publique, aucune clé, aucun
+  ordre]** :
+
+| Mesure | Run 1 (26/11) | Run 2 (27/11) |
+|---|---|---|
+| REST `/time` médiane / p90 / p99 | 136 / 173 / 238 ms | 170 / 197 / 300 ms |
+| REST `/ticker/book` (tous les marchés) | 168 / 285 / 399 ms | 201 / 438 / 913 ms |
+| REST `/markets` | 262 / 302 / 302 ms | 314 / 354 / 364 ms |
+| REST `/ticker/24h` | 295 / 747 / 882 ms | 325 / 509 / 636 ms |
+| REST `/{marché}/candles` | 199 / 218 / 226 ms | 233 / 380 / 706 ms |
+| Décalage d'horloge runner ↔ Bitvavo | 2 ms | 6 ms |
+| Limite annoncée / `remaining` minimal observé | 1000 / 822 | 1000 / 798 |
+| HTTP 429 ou erreur 105 | 0 | 0 |
+| WebSocket : connexion initiale | 682 ms | 788 ms |
+| WebSocket : reprise après fermeture volontaire (1re donnée, médiane, 3 reprises) | 738 ms | 883 ms (max 922) |
+| WebSocket : coupures non planifiées | 0 | 0 |
+| Délai échange → réception, carnet (médiane / p99) | (unités erronées, corrigé) | **91 / 103 ms** |
+| Délai échange → réception, transactions (médiane / p99) | 71 / 128 ms | 91 / 99 ms |
+| Ruptures de nonce du carnet en continu | 0 | 0 |
+| Mises à jour du carnet manquées pendant les reconnexions | 991 | 1001 |
+
+  Moteur réel en SIMULATION sur l'univers réel (run 1 ; au run 2 la partie moteur s'est arrêtée sur le budget de
+  temps du banc, aucune mesure moteur n'est reprise de ce run) :
+  - **437 marchés**, dont 426 en EUR et 155 éligibles ;
+  - **décision sur tout l'univers : 0,40 à 0,43 s de CPU** (437 lignes de scanner, 30 propositions) ;
+  - mémoire RSS 155 → 178 Mo ;
+  - lecture des carnets et des tickers : 0,3 à 0,5 s ;
+  - **bougies** : 28 marchés en 240 s sous le plafond propre de 400 poids/min. Le moteur charge au plus 20 marchés par
+    cycle de 60 s : il faut **≈ 8 cycles (≈ 8 min) après un démarrage à froid** pour que tous les marchés éligibles aient
+    des bougies fraîches. Pendant ce temps, les marchés sans bougies fraîches sont écartés (127 sur 155 à la fin du
+    banc) ;
+  - **données périmées juste avant la décision : 0 %** (âge 0,47 s, seuil 15 s).
+
+**Constats importants** :
+1. Le délai échange → réception (≈ 91 ms) est cohérent avec la moitié de l'aller-retour `/time` (≈ 85 ms) : le runner
+   est loin de Bitvavo (serveurs en Europe). Depuis un serveur en Allemagne ou en France, attendre nettement moins
+   (**[HYPOTHÈSE]**, à remesurer).
+2. **`/ticker/book` (REST) et le canal `ticker` du WebSocket ne portent AUCUN horodatage de l'échange** (426/426
+   marchés, 23 288/23 288 messages). La protection de la phase 6 contre un flux « reçu à l'instant mais figé » ne
+   s'applique donc pas à ces sources : la fraîcheur repose sur l'heure de réception, prise **avant** la requête
+   (prudent). Seuls le carnet et les transactions du WebSocket sont horodatés. Limite reportée au rapport de la phase 7.
+3. Le moteur actuel **n'utilise pas** le carnet WebSocket : il interroge `/ticker/book` en REST à chaque cycle. Les
+   mises à jour manquées pendant une reconnexion n'ont donc aucun effet sur lui. Le module
+   `backend/market_data/bitvavo_ws.py` contient une resynchronisation par nonce (`BookManager`), mais elle n'est **pas
+   branchée** sur le moteur. Elle n'est donc pas comptée comme une protection active.
+4. Marge d'API large : le banc, volontairement bridé à 40 % de la limite, n'a jamais consommé plus de 20 % de la
+   fenêtre.
 
 ## 6. Ce qui reste à faire (propriétaire)
 
-1. Lancer `nelyqor-bench` et reporter les résultats au § 5.
+1. (Fait le 27/11, § 5.) Relancer `nelyqor-bench` après tout changement de machine ou de réseau.
 2. Décider : machine existante (simulation) puis Hetzner CX23 (24 h/24). Vérifier le prix TTC et la disponibilité
    dans la console avant de commander ; ajuster `NELYQOR_HOSTING_EUR` (`compose.yaml`, défaut 7,19).
 3. Sur la machine retenue : `python scripts/bench_bitvavo.py --minutes 5` pour la latence réelle depuis ce serveur.
