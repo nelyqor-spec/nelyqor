@@ -1,0 +1,71 @@
+# Nelyqor Trading — diagnostic d'INTÉGRITÉ des données (phase 8), lecture seule.
+# Compare, bougie par bougie, le cache de la BRANCHE (données des prédictions prospectives enregistrées) au cache neuf
+# de `main` (nelyqor-donnees), pour expliquer les divergences de rejeu de v3 à l'import (run 46134632301).
+# Aucune clé, aucun ordre, aucune stratégie exécutée, aucune recherche : seulement des comparaisons de bougies publiques.
+name: nelyqor-diag-donnees
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "nelyqor-trading/scripts/diag_cache_compare.py"
+      - ".github/workflows/nelyqor-diag-donnees.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+env:
+  NELYQOR_REAL_TRADING_ALLOWED: "false"
+  NELYQOR_ROLE: lab
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - name: Cache de main (nelyqor-donnees, run 46129551977)
+        id: main_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nelyqor-trading/data/market
+          key: bitvavo-market-v1-46129551977
+          fail-on-cache-miss: true
+      - name: Mise de côté du cache de main
+        env: {MATCHED: "${{ steps.main_cache.outputs.cache-matched-key }}"}
+        run: |
+          mv data/market ../cache_main
+          echo "cache main : $MATCHED"
+      - name: Cache de la branche (dernier enregistré par l'évaluation prospective)
+        id: branch_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: nelyqor-trading/data/market
+          key: bitvavo-market-v1-inexistant
+          restore-keys: bitvavo-market-v1-
+      - name: Comparaison
+        env: {MATCHED: "${{ steps.branch_cache.outputs.cache-matched-key }}"}
+        run: |
+          echo "cache branche : $MATCHED"
+          python scripts/diag_cache_compare.py --a data/market --b ../cache_main --out ../diag.json
+          python - <<'PY'
+          import json, os
+          r = json.load(open("../diag.json"))
+          t = r["totaux"]
+          lines = ["## Diagnostic des données (branche = A, main = B)", "",
+                   f"- marchés A {r['marches_a']} ; B {r['marches_b']} ; seulement A {len(r['seulement_dans_a'])} ; seulement B {len(r['seulement_dans_b'])}",
+                   f"- totaux : {t}"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with: {name: nelyqor-diag-donnees, path: diag.json, retention-days: 14}
