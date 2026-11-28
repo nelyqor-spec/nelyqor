@@ -18,7 +18,7 @@ Le Short reste exclusivement expérimental.
 |---|---|
 | **Développement** | **terminé** pour le périmètre de la phase 8 : WebSocket horodaté, bilan financier, apprentissage en ombre, documentation (§ 2 à § 6). Testé hors ligne et en CI |
 | **Installation réellement effectuée** | **aucune** sur un serveur définitif : il faut votre choix de machine et votre éventuelle commande (§ 4) |
-| **Simulation opérationnelle** | en CI seulement : évaluations prospectives planifiées sur `main` après l'import du journal (§ 1). La **simulation permanente 24 h/24** démarrera sur le serveur définitif |
+| **Simulation opérationnelle** | **pas encore** : les évaluations planifiées sur `main` attendent la reprise de l'import (défaut N11 corrigé sur la branche, votre autorisation requise, § 10). La **simulation permanente 24 h/24** démarrera sur le serveur définitif |
 | **Rentabilité financière** | **à démontrer** : quelques jours de données prospectives seulement ; critères fixés à 6 et 12 mois ; aucune conclusion possible |
 
 ---
@@ -32,11 +32,51 @@ Le Short reste exclusivement expérimental.
    - empreintes figées vertes ;
    - `main` ancêtre direct de la branche.
 2. **Fusion** de la PR n° 1 par « merge commit » : **818f421** (28/11, 09:13 UTC), après votre autorisation explicite.
-3. **Pré-remplissage** des données (`nelyqor-donnees` sur `main`) : ⏳ run 46129551977 en cours (téléchargement complet : `main` n'avait aucun cache) ; à relancer jusqu'à « COMPLET ».
-4. **Import unique du journal** : ⏳ après « COMPLET » : `seed_run_id` = **46121817643** (dernier run réussi, artefact valable jusqu'au 26/02/2027), `force` = vrai.
-5. **Planification** : ⏳ à vérifier après l'import : `nelyqor-prospective` (02:17 et 14:43 UTC), `nelyqor-events` (horaire), `nelyqor-microstructure` (09:37) sur `main`.
+3. **Pré-remplissage** des données (`nelyqor-donnees` sur `main`) : ✅ run 46129551977 : **COMPLET**. 423 marchés EUR, dont 392 à jour (93 %) ; 160 avec au moins 1 000 jours d'historique ; 259 Mo.
+4. **Import unique du journal** : ❌ run 46134632301 (`seed_run_id=46121817643`, `force`) : **v3 INVALIDE**, 6 divergences de rejeu.
+   - v1, v2 et E1 sont valides ; chaînes intactes.
+   - L'archive n'a **pas** été créée ; l'issue n° 2 a été ouverte automatiquement.
+   - Aucun nouvel import n'a été lancé.
+   - **Cause trouvée** (§ 1 bis) : défaut du téléchargeur des bougies. Il est corrigé sur la branche ; la reprise
+     attend votre autorisation (§ 10).
+5. **Planification** : actifs sur `main` depuis la fusion :
+   - `nelyqor-prospective` (02:17 et 14:43 UTC) ;
+   - `nelyqor-events` (horaire) ;
+   - `nelyqor-microstructure` (09:37).
+
+   Tant que la reprise n'est pas faite, chaque évaluation planifiée échoue **sans dommage** : contrôle « aucun état
+   antérieur », archive non écrite, commentaire sur l'issue n° 2. Les créneaux ainsi manqués sont comptés, jamais
+   reconstitués.
 6. **Prédictions manquées** : jamais reconstituées. Les créneaux d'avant la fusion sont comptés et publiés comme
    manqués.
+
+## 1 bis. Défaut des données trouvé à la mise en service (N11)
+
+- **Diagnostic des caches** (`nelyqor-diag-donnees`, run 46135687867), comparaison bougie par bougie :
+  - 434 marchés de chaque côté, aucun présent d'un seul côté ;
+  - 19 bougies seulement ont des valeurs différentes ;
+  - mais **430 marchés présentent des trous** : 4 750 bougies absentes du cache de `main` et 4 800 de celui de la
+    branche, dont 732 sur les 30 derniers jours. Pour BTC, ETH, SOL, XRP et ADA, exactement **18** de chaque côté.
+- **Sonde des bornes de l'API** (run 46136440611) :
+  - `start` porte sur l'ouverture de la bougie ;
+  - **`end` porte sur sa clôture** : avec `end = t+5h−1`, l'API renvoie les heures 0 à 3 ; avec `end = t+5h`, 0 à 4.
+- **Cause** : le téléchargeur demandait `end = limite − 1 ms`. Il **perdait la dernière bougie de chaque fenêtre de
+  1 440 bougies**, soit 18 par marché sur 1 100 jours.
+  - Les deux caches, téléchargés à des dates différentes, ont perdu des bougies **différentes**, dont celles des
+    5/11 et 8/11, dans la période d'historique utilisée par v3 pour ses décisions des 27 et 28/11.
+  - Les mises à jour quotidiennes ne sont pas touchées.
+  - Le faux Bitvavo des tests supposait des bornes inclusives, ce qui masquait le défaut.
+- **Correction** (branche, commit f563052) :
+  - `end` = clôture de la dernière bougie de la fenêtre ;
+  - faux Bitvavo aligné sur la sémantique réelle ;
+  - test `test_no_candle_lost_at_window_boundaries`. L'ancien test échouait lui aussi avec la sémantique réelle :
+    2 994 bougies au lieu de 3 000.
+- **Données de reprise** : export vérifiable du cache **exact** de l'évaluation 46121817643.
+  - Run `nelyqor-export-donnees` **46136919562**, artefact `donnees-marche-46121817643`.
+  - 328 Mo, empreinte `sha256:73b227e3…`, valable jusqu'au 26/02/2027.
+  - Les trous de ce cache ne sont **pas** comblés (≈ 0,07 % des bougies), pour préserver le rejeu exact des décisions
+    déjà enregistrées. C'est une limite documentée (N12).
+- Aucune génération figée n'a été modifiée, et aucune prédiction n'a été reconstituée.
 
 ## 2. Fiabilité des données : WebSocket Bitvavo horodaté par l'échange
 
@@ -190,7 +230,16 @@ sur le serveur.
 
 ## 7. Tests et preuves CI
 
-⏳ en cours de collecte : voir la mise à jour de ce rapport.
+| Contrôle | Run | Résultat |
+|---|---|---|
+| Tests, ruff, mypy, empreintes (phase 8) | `nelyqor-trading` sur la branche | ✅ 744 tests en local sur f563052 ; CI verte sur chaque commit de code poussé (dernier relevé : 01157ff) |
+| Contrôle de déploiement (vrai Dockerfile, recette PWA Chromium) | 46130630709 (659858d) | ✅ |
+| Contrôles d'incidents (vraie pile Docker) | 46130630723 (659858d) | ✅ |
+| Flux WebSocket réel | 46130158690 | ✅ 8 critères sur 8 |
+| Pré-remplissage sur `main` | 46129551977 | ✅ COMPLET |
+| Import du journal sur `main` | 46134632301 | ❌ v3 INVALIDE (cause N11, § 1 bis) |
+| Diagnostic des caches / sonde des bornes | 46135687867 / 46136440611 | cause établie |
+| Export du cache exact | 46136919562 | ✅ artefact vérifiable |
 
 ## 8. Coûts
 
@@ -211,4 +260,30 @@ sur le serveur.
 
 ## 10. Vos prochaines manipulations
 
-⏳ complété à la fin de la mise en service.
+**La procédure est interrompue : votre intervention est nécessaire.**
+
+**Manipulation 1** (votre décision) : m'autoriser à **créer puis fusionner une PR n° 2** de
+`claude/new-session-cv44ga` vers `main`. Elle contient tout le travail de la phase 8 :
+- téléchargeur corrigé ;
+- import à l'identique des données ;
+- WebSocket horodaté ;
+- bilan et apprentissage en ombre ;
+- documents et workflows de diagnostic.
+
+Avant de fusionner, je vérifierai la CI, la sécurité des workflows et les empreintes figées.
+
+**Ensuite, je déroulerai seul** :
+1. `nelyqor-donnees` sur `main`, avec `seed_data_run_id = 46136919562` (cache exact, empreinte vérifiée) ;
+2. `nelyqor-prospective` sur `main`, avec `seed_run_id = 46121817643` et `force = true`. Attendu :
+   - v1, v2, v3 et E1 valides ;
+   - rejeu à 0 divergence ;
+   - création de `prospective-journal`.
+
+   En cas d'échec, j'arrête et je vous rends compte, sans nouvel essai à l'aveugle ;
+3. vérification de la planification, puis fermeture de l'issue n° 2 si tout est vert.
+
+**Manipulation 2** (plus tard, votre décision et votre dépense) : choisir la machine
+(`docs/GUIDE_PROPRIETAIRE.md`, § 2) et me dire quand elle est prête. Nous ferons ensemble :
+- l'installation ;
+- les 18 vérifications de `docs/VERIFICATION_SERVEUR.md` ;
+- la recette iPhone en 33 étapes.
