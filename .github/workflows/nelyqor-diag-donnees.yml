@@ -10,6 +10,7 @@ on:
     branches: ["claude/**"]
     paths:
       - "nelyqor-trading/scripts/diag_cache_compare.py"
+      - "nelyqor-trading/scripts/diag_candles_bornes.py"
       - ".github/workflows/nelyqor-diag-donnees.yml"
 
 permissions:
@@ -33,6 +34,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
       - run: pip install -r requirements.lock
+      - name: Bornes de l'API /candles (quelques requêtes publiques)
+        run: python scripts/diag_candles_bornes.py
       - name: Cache de main (nelyqor-donnees, run 46129551977)
         id: main_cache
         uses: actions/cache/restore@v4

@@ -82,6 +82,13 @@ def main() -> int:
     txt = json.dumps(res, ensure_ascii=False, indent=1, default=str)
     if a.out:
         Path(a.out).write_text(txt)
+    top = sorted(res["par_marche"].items(), key=lambda kv: -kv[1]["ecarts_recents_30j"])[:15]
+    print("DIAG_RESUME", json.dumps({"totaux": res["totaux"], "seulement_dans_a": res["seulement_dans_a"],
+                                     "seulement_dans_b": res["seulement_dans_b"],
+                                     "focus": {m: res["par_marche"].get(m) for m in FOCUS},
+                                     "plus_d_ecarts_recents": {m: {k: v[k] for k in ("absentes_dans_a",
+                                         "absentes_dans_b", "differentes", "ecarts_recents_30j", "exemples_recents")}
+                                         for m, v in top}}, default=str))
     print("DIAG_JSON_DEBUT")
     print(txt[:60000])
     print("DIAG_JSON_FIN")
