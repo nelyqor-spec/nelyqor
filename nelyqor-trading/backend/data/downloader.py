@@ -57,11 +57,12 @@ async def download_market(rest: Any, store: CandleStore, market: str, interval: 
     rep_d: dict[str, Any] = man.get("validation", {}) if man else {}
     cursor = start
     while cursor + step <= now:
-        # Fenêtre d'EXACTEMENT `limit` bougies : `end` = dernier instant avant la bougie suivante.
-        # (Avec une borne inclusive et des lignes les plus récentes en premier, une fenêtre de limit+1
-        # bougies ferait perdre silencieusement la plus ancienne — défaut détecté par les tests.)
+        # Fenêtre d'EXACTEMENT `limit` bougies [cursor, nxt − step]. Sémantique RÉELLE de l'API (mesurée en
+        # phase 8, nelyqor-diag-donnees 46136440611) : `start` porte sur l'ouverture de la bougie, `end` sur sa
+        # CLÔTURE (bougie renvoyée si ts + step <= end). `end` = clôture de la dernière bougie = `nxt`.
+        # (Avant : end = nxt − 1 ms perdait la dernière bougie de CHAQUE fenêtre : 18 par marché sur 1100 jours.)
         nxt = min(cursor + limit * step, now // step * step + step)
-        end = nxt - 1
+        end = nxt
         rows = await rest.candles(market, interval, limit=limit, start=cursor, end=end)
         requests += 1
         if pause_s:

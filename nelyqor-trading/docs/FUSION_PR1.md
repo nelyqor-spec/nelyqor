@@ -88,3 +88,33 @@ Un run planifié lancé avant ces étapes **échoue sans dommage** :
   - `bases_separees`, `horloge_synchronisee` et `point_acces_bitvavo_officiel`.
 - Elle ne commande aucun serveur et n'engage aucune dépense : les minutes de GitHub Actions sont gratuites pour un dépôt
   public.
+
+## Reprise après l'échec de l'import du 28/11/2026 (phase 8)
+
+**Constat** (run 46134632301 sur `main`, `seed_run_id=46121817643`) :
+- v1, v2 et E1 sont valides ; **v3 est INVALIDE**, avec 6 divergences de rejeu.
+- L'archive n'a pas été créée et l'issue n° 2 a été ouverte.
+
+**Cause** (diagnostics `nelyqor-diag-donnees` 46135687867 et 46136440611) : dans l'API Bitvavo `/candles`, `end`
+porte sur la **clôture** des bougies. Le téléchargeur demandait `end = limite − 1 ms` et perdait donc la dernière
+bougie de **chaque** fenêtre de 1 440 bougies, soit 18 bougies par marché sur 1 100 jours. Le cache neuf de `main` et
+celui de la branche ont été téléchargés à des dates différentes : ils ont perdu des bougies **différentes**, dont deux
+récentes (les 5/11 et 8/11), dans la période d'historique que v3 utilise. Les mises à jour quotidiennes, qui ne
+franchissent pas de limite de fenêtre, ne sont pas touchées.
+
+**Correction** : `backend/data/downloader.py`, avec `end` = clôture de la dernière bougie de la fenêtre. Test
+`test_no_candle_lost_at_window_boundaries` ; le faux Bitvavo des tests suit maintenant la sémantique réelle.
+
+**Reprise prévue, à exécuter seulement après la fusion de la PR de la phase 8, avec l'autorisation du propriétaire** :
+1. Fusionner la PR de la phase 8. Elle apporte le téléchargeur corrigé et l'entrée `seed_data_run_id` de
+   `nelyqor-donnees`.
+2. Actions → `nelyqor-donnees` sur `main`, avec `seed_data_run_id` = l'identifiant du run de
+   **`nelyqor-export-donnees`**. Cet artefact contient le cache EXACT de l'évaluation 46121817643. L'empreinte sha256
+   est vérifiée, puis l'archive est extraite **sans modifier une seule bougie**.
+3. Actions → `nelyqor-prospective` sur `main`, avec `seed_run_id=46121817643` et `force=true`. Attendu :
+   - v1, v2, v3 et E1 valides ;
+   - rejeu à 0 divergence ;
+   - création de la branche `prospective-journal`.
+4. Les trous historiques déjà présents dans ce cache ne sont **pas** comblés. Les combler changerait les données
+   d'entrée des décisions déjà enregistrées et invaliderait le rejeu exact. C'est une limite documentée : environ
+   0,07 % des bougies 1 h.

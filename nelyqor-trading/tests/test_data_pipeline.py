@@ -31,7 +31,9 @@ def fake_bitvavo(n: int, missing: set[int] = frozenset(), fail_on_call: int | No
         rows = []
         for i in range(listing, n):
             ts = T0 + i * H
-            if start <= ts <= end and i not in missing:
+            # sémantique RÉELLE mesurée sur l'API Bitvavo (phase 8, nelyqor-diag-donnees 46136440611) : `start`
+            # porte sur l'ouverture, `end` sur la CLÔTURE de la bougie (incluse si ts + 1 h <= end)
+            if start <= ts and ts + H <= end and i not in missing:
                 o = close[i - 1] if i else close[0]
                 rows.append([ts, str(o), str(max(o, close[i]) * 1.001), str(min(o, close[i]) * 0.999), str(close[i]), "10"])
         rows = sorted(rows, key=lambda r: -r[0])[:limit]
@@ -86,6 +88,31 @@ async def test_incremental_download_and_resume_after_interruption(tmp_path, monk
     # relancer sans nouvelle donnée : aucune requête inutile au-delà de la fenêtre courante, rien d'ajouté
     r2 = await download_market(fl, store, "BTC-EUR", "1h", days=999, now_ms=now_after(n), limit=500)
     assert r2.new_rows == 0
+
+
+async def test_no_candle_lost_at_window_boundaries(tmp_path, monkeypatch):
+    """Défaut trouvé en phase 8 : avec end = limite − 1 ms, la dernière bougie de CHAQUE fenêtre était perdue
+    (18 bougies par marché sur 1100 jours, à des heures différentes selon la date du téléchargement) : le rejeu
+    exact de v3 divergeait entre deux caches. Un historique complet doit n'avoir AUCUN trou."""
+    import asyncio
+
+    async def nosleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", nosleep)
+    n = 2000
+    h, _ = fake_bitvavo(n)
+    st = CandleStore(tmp_path / "s")
+    rest = BitvavoREST("https://x/v2", transport=httpx.MockTransport(h))
+    res = await download_market(rest, st, "BTC-EUR", "1h", days=n // 24 + 2, now_ms=now_after(n), limit=300)
+    df = st.read(REAL, "bitvavo", "BTC-EUR", "1h")
+    assert res.report.get("missing_intervals") == 0, res.report.get("gaps")
+    assert len(df) == n and int(df["ts"].iloc[0]) == T0 and int(df["ts"].iloc[-1]) == T0 + (n - 1) * H
+    # reprise incrémentale (1 h plus tard) : la bougie suivante est ajoutée, rien n'est perdu
+    h2, _ = fake_bitvavo(n + 1)
+    rest2 = BitvavoREST("https://x/v2", transport=httpx.MockTransport(h2))
+    await download_market(rest2, st, "BTC-EUR", "1h", days=n // 24 + 2, now_ms=now_after(n + 1), limit=300)
+    assert len(st.read(REAL, "bitvavo", "BTC-EUR", "1h")) == n + 1
 
 
 async def test_gaps_detected_and_reported(tmp_path):

@@ -7,7 +7,9 @@ import yaml
 from backend.core.config import ROOT
 
 WF = sorted((ROOT.parent / ".github" / "workflows").glob("*.yml"))
-ALLOWED_WRITE = {"nelyqor-prospective.yml": {"contents": "write", "issues": "write", "actions": "read"}}
+ALLOWED_WRITE = {"nelyqor-prospective.yml": {"contents": "write", "issues": "write", "actions": "read"},
+                 # phase 8 : import ponctuel d'un artefact de données (lecture seule)
+                 "nelyqor-donnees.yml": {"contents": "read", "actions": "read"}}
 
 
 def _on(doc):

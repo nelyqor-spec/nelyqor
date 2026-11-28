@@ -29,6 +29,12 @@ Tout est corrigé et testé en CI (Docker réel) ou hors ligne. Il reste à l'ob
 | D1 à D10 | Défauts de la contre-expertise (mode affiché, disque, boucle figée, installation sans domaine, restauration…) | P0 TRAITÉ | lignes 2 à 10 et 17 de la fiche de vérification ; recette iPhone 33 étapes |
 | E1 à E9 | Défauts trouvés par les essais d'incidents | P0 TRAITÉ | `incident_check.sh` vert (113 contrôles en CI) ; à relancer une fois sur le serveur si possible |
 
+## 1 bis. Défaut trouvé à la mise en service (phase 8)
+| # | Défaut | Priorité | État | Critère de validation |
+|---|---|---|---|---|
+| N11 | Téléchargeur des bougies : `end = limite − 1 ms`, alors que l'API compare `end` à la CLÔTURE des bougies. La dernière bougie de chaque fenêtre de 1 440 est perdue (18 par marché sur 1 100 jours). Résultat : 6 divergences de rejeu de v3 à l'import sur `main` | P0 | TRAITÉ sur la branche : correction et test réalistes. Il reste à fusionner, puis à reprendre le cache exact (`docs/FUSION_PR1.md`, § Reprise) | import sur `main` : v1, v2, v3 et E1 valides, rejeu 0 divergence |
+| N12 | Trous historiques dans le cache figé (≈ 0,07 % des bougies), non comblés pour préserver le rejeu exact | P3 | ACCEPTÉ | — |
+
 ## 2. Défauts persistants
 | # | Défaut | Priorité | État | Critère de validation |
 |---|---|---|---|---|
