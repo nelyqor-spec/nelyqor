@@ -4,10 +4,8 @@ name: nelyqor-research-p4b
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["claude/**"]
-    paths: ["nelyqor-trading/scripts/research_phase4b.py", "nelyqor-trading/backend/research/xsection_v3.py",
-            ".github/workflows/nelyqor-research-p4b.yml"]
+  # Pas de déclenchement au push (phase 7) : recherche figée, lancement MANUEL seulement. Les historiques déjà
+  # exploités ne doivent plus être fouillés (règle du propriétaire) ; un push qui touche ce fichier l'a fait une fois.
 
 permissions:
   contents: read

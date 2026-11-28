@@ -71,7 +71,7 @@ Procédure complète : `docs/FUSION_PR1.md`. Résumé :
 1. Fusionner la PR n° 1, de préférence par « Create a merge commit ».
 2. Actions → `nelyqor-donnees` → *Run workflow* sur `main`, et le relancer jusqu'au résumé **COMPLET**.
 3. Relever l'identifiant du **dernier** run réussi de `nelyqor-prospective` sur la branche
-   `claude/new-session-cv44ga` (au moment de ce rapport : **45947688361**, ou un run plus récent).
+   `claude/new-session-cv44ga` (au moment de ce rapport : **46121817643**, ou un run plus récent).
 4. Actions → `nelyqor-prospective` → *Run workflow* sur `main`, avec `seed_run_id` = cet identifiant et
    `force` = vrai.
 5. Vérifier le résumé :
@@ -94,6 +94,8 @@ Run 45947688361, déclenché à la main le 27/11 à 05:45 UTC.
   - rejeu à 0 divergence.
 - **Bougie de 00:00 UTC** : elle n'a **pas** été prédite. Le rappel automatique est arrivé en retard, car la session
   était arrêtée. Elle est **rejouée et comptée comme créneau manqué**, jamais reconstituée.
+- **Run suivant** (46121817643, 28/11 07:34 UTC) : tout est de nouveau valide (§ 11.2). Le journal à importer après la
+  fusion est donc celui de ce run, ou d'un run plus récent.
 - **Limite connue** : tant que la PR n'est pas fusionnée, il n'y a pas de planification. Il n'y a donc qu'environ une
   évaluation par jour, et une bougie 4 h sur 6 seulement devient une prédiction. La fusion corrige cela, avec deux
   passages par jour.
@@ -296,12 +298,88 @@ Le run n° 2 sur la tête est reporté au § 11.
 6. Démarrage à froid : ≈ 8 min avant que tout l'univers ait des bougies fraîches.
 7. Sans fusion : une évaluation prospective par jour au mieux, et des créneaux manqués (comptés, jamais reconstitués).
 8. Le Short reste expérimental : il n'est pas disponible par l'API Bitvavo.
+9. Une boucle figée est signalée (alerte, santé Docker « unhealthy »), mais **pas redémarrée automatiquement** : Docker
+   ne relance pas un conteneur « unhealthy ». Le redémarrage est manuel (`docs/RUNBOOKS.md`, « Robot bloqué »).
+10. Remarques secondaires de la contre-expertise non corrigées et assumées (§ 11.1).
 
 ---
 
 ## 11. Contre-expertise indépendante et preuves finales
 
-*(complété ci-dessous)*
+### 11.1 Contre-expertise adversariale (e7ee97c..cb434df)
+Un auditeur indépendant (sans accès en écriture) a cherché des défauts dans tout le travail de la phase 7 et les a
+**prouvés par des tests**. Résultat : **10 défauts avérés, aucun critique**. Tous sont corrigés dans le commit 6166046,
+avec 20 tests de non-régression (`tests/test_phase7_contre_expertise.py`). **18 de ces tests échouent sur le code
+d'avant la correction** ; les 2 autres sont des témoins (refus déjà existant d'une adresse vide, restauration normale).
+
+| # | Gravité | Défaut | Correction |
+|---|---|---|---|
+| D1 | moyenne-élevée | Après un arrêt d'urgence en **réel**, l'application affichait « SIMULATION, argent FICTIF », alors que des positions réelles restaient ouvertes et gérées | le moteur publie le nombre de positions réelles ouvertes. L'application affiche « **ARGENT RÉEL (entrées suspendues)** » ; si ce nombre est inconnu, elle choisit la prudence et affiche RÉEL |
+| D2 | moyenne-élevée | Disque plein « invisible » (inodes, quota) : oscillation critique/ok, 10 alertes en 25 s. Le quota de 20 alertes par jour était épuisé, et **une alerte « ordre inconnu » n'était plus envoyée** | « critique » maintenu 10 min après un refus d'écriture ; clés de déduplication stables ; **quota séparé** : les alertes disque ne consomment plus celui des alertes de sécurité ; arrêt d'urgence SSH : une alerte par dépôt du drapeau |
+| D3 | moyenne | La vigie gardait le battement de cœur frais pendant une boucle **figée** : santé Docker et API « vivant », aucune alerte | fin de cycle publiée ; « boucle figée » au-delà de 10 min, avec santé Docker « unhealthy », `/api/health` non vivant, alerte `panne_prolongee` unique et alerte rouge « Robot bloqué » dans l'application ; runbook ajouté |
+| D4 | moyenne | `--sans-domaine <nom>` publiait Caddy sur 0.0.0.0, joignable depuis Internet, car Docker contourne UFW | un nom exige `--ecoute <IP privée>` ; 0.0.0.0 est refusé sans domaine |
+| D5 | moyenne | `restore.sh` supprimait l'état courant même si sa copie de sécurité avait échoué (disque plein) | copie de sécurité obligatoire, faite **avant** toute modification ; refus sinon, et rien n'est modifié |
+| D6 | faible-moyenne | `restore.sh` ne refusait pas de s'exécuter quand l'API tournait | refus si le moteur **ou** l'API tourne |
+| D7 | faible | `--ecoute` n'était pas validé | IPv4 exigée |
+| D8 | faible | Le test de sécurité des workflows laissait passer `toJSON(secrets)`, `secrets['X']`, et le drapeau du réel fixé par une expression ou par `$GITHUB_ENV` ; jeton laissé dans `.git/config` | formes strictes testées (le test se vérifie lui-même contre les formes contournées) ; `persist-credentials: false` partout, sauf pour le workflow qui pousse l'archive |
+| D9 | faible | Le garde disque du moteur ignorait les inodes | inodes surveillés |
+| D10 | faible | En disque critique, la copie d'affichage complète était réécrite toutes les 10 s | une fois toutes les 5 min, ou sur commande |
+
+**Remarques secondaires** :
+- Corrigées :
+  - le titre ntfy ne contient plus le nom d'hôte ;
+  - le journal de construction n'utilise plus un chemin fixe dans `/tmp` ;
+  - la remise à faux du drapeau du réel à chaque installation est désormais annoncée.
+- **Non corrigées et assumées** :
+  - les envois d'alerte sont synchrones (au plus 10 s par canal) ;
+  - le chiffrement des sauvegardes n'a pas de MAC : une empreinte sha256 est stockée à côté, et une altération est
+    détectée au contrôle d'intégrité SQLite ;
+  - la rétention des sauvegardes est appliquée par type de fichier ;
+  - les actions GitHub `actions/*` ne sont pas épinglées par SHA, ce qui est accepté pour des actions officielles ;
+  - le verrouillage SSH se fonde sur la présence d'une clé autorisée, atténué par la confirmation « OUI » et un
+    avertissement ;
+  - `set_password.py` ne compare pas la nouvelle phrase au mot de passe existant.
+
+**Ce qui a résisté** :
+- Concurrence entre la vigie et la boucle : aucun `await` dans une transaction, veto atomique, invariant de protection
+  intact.
+- Secrets jamais affichés, et ports : seul Caddy publie.
+- Empreinte GPG de Docker vérifiée.
+- Chiffrement réel des sauvegardes.
+- Échappement systématique dans la PWA, et service worker sans cache de `/api`.
+- « Protégé » seulement si l'échange a confirmé le stop ; arrêt d'urgence toujours précédé d'une confirmation.
+
+### 11.1 bis Incident de ma part : relance involontaire de workflows de recherche (28/11, 07:41 UTC)
+- **Cause** : la correction D8 a ajouté `persist-credentials: false` à tous les workflows. Or les workflows de
+  recherche (`nelyqor-research`, `-p4`, `-p4b`, `-p5`) se déclenchaient au push de leur propre fichier. Le push du
+  commit 6166046 les a donc relancés sur les historiques déjà exploités, ce que les règles interdisent.
+- **Réaction** : les 4 runs ont été annulés environ 1 min après leur démarrage :
+  - 46122339856 et 46122339818 : arrêtés pendant le téléchargement des données ;
+  - 46122339807 et 46122339823 : étapes de recherche **démarrées**, puis interrompues après environ 60 s.
+- **Conséquences** : des artefacts partiels ont été versés. **Je ne les ai pas consultés et ils ne servent à rien.**
+  Aucune stratégie ni aucun candidat figé n'est modifié ; les empreintes sont inchangées (`test_gel_dependances`).
+- **Correction durable** : les workflows de recherche n'ont plus de déclencheur au push, seulement un lancement manuel.
+  Le test `test_research_workflows_never_triggered_automatically` le garantit.
+
+### 11.2 Preuves à la clôture de la phase 7
+| Preuve | Résultat |
+|---|---|
+| Suite de tests (conteneur) | **704 réussis**, 0 échec ; ruff et mypy propres (82 fichiers) |
+| Contrôles d'incidents, CI, run 45952193485 (cb434df) | **108 réussis / 0 échec / 0 ignoré** (run n° 1 sur 36a16c8 : 106/2, § 7) |
+| Évaluation prospective du 28/11, run 46121817643 | ✅ aucun problème ; v1, v2, v3 et E1 **valides** ; v3 : 84 lignes, rejeu 0 divergence ; E1 : 10 lignes, 2 prédictions par candidat, rejeu 0 divergence ; chaînes intactes |
+| Banc Bitvavo, runs 45903651762 et 45949068420 | § 5 |
+| Checks CI sur le dernier commit | voir la PR n° 1 (reportés ci-dessous) |
+
+Observations prospectives du 28/11, **à titre d'information seulement : ce n'est pas une validation** (échéances de 6
+et 12 mois) :
+- E1 tendance (`e1_ls`, `e1_lc`) : 98,11 €, soit −1,89 %, en 1 transaction ; achat passif de BTC : −2,11 %.
+- v3 : 0 transaction ; les références BTC et équipondérée sont entre −0,3 et −0,34 % en moyenne.
+- Aucun filtre événementiel déclenché. Le cache événementiel ne se rafraîchit pas sans planification (807 groupes,
+  comme le 27/11) : c'est une raison de plus de fusionner.
+- **Créneaux** :
+  - v3 : 7 bougies 4 h depuis le départ, dont 2 prédites (une par évaluation) ;
+  - E1 : 2 créneaux prédits sur 7 ;
+  - les autres créneaux sont rejoués, comptés et jamais reconstitués.
 
 ---
 

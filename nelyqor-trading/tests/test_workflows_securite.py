@@ -107,3 +107,14 @@ def test_no_untrusted_expression_in_run_scripts():
                 for m in re.findall(r"\$\{\{\s*inputs\.(\w+)", run):
                     spec = (_on(doc).get("workflow_dispatch") or {}).get("inputs", {}).get(m, {})
                     assert spec.get("type") == "boolean", f"{f.name} : entrée {m} non booléenne dans un script"
+
+
+def test_research_workflows_never_triggered_automatically():
+    """Phase 7 : un push touchant un fichier de workflow de recherche a relancé des recherches sur les historiques déjà
+    exploités (annulées en 1 min). Les workflows de recherche ne se lancent plus qu'à la main."""
+    research = [f for f in WF if f.name.startswith("nelyqor-research")]
+    assert len(research) >= 4
+    for f in research:
+        on = _on(yaml.safe_load(f.read_text()))
+        keys = set(on) if isinstance(on, dict) else set(on if isinstance(on, list) else [on])
+        assert keys == {"workflow_dispatch"}, f"{f.name} : déclencheurs {keys}"
