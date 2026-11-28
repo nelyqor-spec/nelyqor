@@ -48,6 +48,13 @@ Un run planifié lancé avant ces étapes **échoue sans dommage** :
    Noter son identifiant (le nombre dans l'URL `…/actions/runs/<ID>`).
    - Si plusieurs runs ont eu lieu après le départ du 27/11, le **plus récent** contient tout le journal (chaîné, en
      ajout seul).
+   - **Au 28/11/2026 : run 46121817643** (07:34 UTC) : « ✅ aucun problème détecté », v1, v2, v3 et E1 valides,
+     rejeu 0 divergence, chaînes intactes (v3 : 84 lignes, tête `88b3f22f…` ; E1 : 10 lignes, tête `72b92900…`).
+     Son artefact expire 90 jours après le run, vers le **26/02/2027**.
+   - **Juste avant de lancer l'import**, revérifier dans Actions → `nelyqor-prospective` (filtre : branche
+     `claude/new-session-cv44ga`) qu'aucun run réussi plus récent n'existe. S'il en existe un, prendre le plus
+     récent : il contient tout le journal précédent.
+   - Ne **jamais** prendre un run en échec ou annulé, ni un run dont le résumé n'est pas « aucun problème ».
 5. **Importer et évaluer** : Actions → `nelyqor-prospective` → *Run workflow* sur `main`, avec `seed_run_id` = `<ID>` et
    `force` = vrai. Contrôles attendus dans le résumé :
    - « ✅ aucun problème détecté » ;

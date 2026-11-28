@@ -415,3 +415,95 @@ Ensuite, sur le serveur, lancez `python scripts/bench_bitvavo.py --minutes 5` et
 - révocation des accès : `scripts/revoquer_acces.sh`.
 
 **Le robot reste en SIMULATION** : rien dans ces étapes n'active le réel.
+
+---
+
+## 13. Clôture de la phase 7 (28/11/2026)
+
+### 13.1 Contrôles CI sur le commit des corrections (6166046)
+| Contrôle | Run | Résultat |
+|---|---|---|
+| `nelyqor-trading` (suite de tests, ruff, mypy, empreintes figées) | 46122339817 | ✅ réussi |
+| `nelyqor-deploy-check` (vrai Dockerfile, pile complète, **recette PWA Chromium incluse**) | 46122339820 | ✅ **100 réussis / 0 échec / 0 ignoré** |
+| `nelyqor-incident-check` (incidents sur vraie pile Docker) | 46122339771 | ⏳ en cours au moment de ce commit ; résultat reporté dès réception |
+| `nelyqor-trading` sur la tête 5edc32d | 46122591276 | ✅ réussi |
+
+### 13.2 Le dernier commit de la PR correspond-il au code testé ?
+Entre 6166046 (testé par les contrôles Docker) et la tête de la PR, **aucun fichier exécuté par le robot ne
+change**. Aucune différence dans :
+- `backend/`, `frontend/`, `scripts/` ;
+- `compose.yaml`, `Dockerfile`, `Caddyfile`, `requirements.lock` ;
+- `reports/prospective/`.
+
+Les seules différences :
+- les déclencheurs des 4 workflows de recherche (suppression du `push`) ;
+- un test de sécurité des workflows ;
+- la documentation : ce rapport, `docs/GUIDE_PROPRIETAIRE.md`, `docs/FUSION_PR1.md`, `docs/INSTALLATION.md`.
+
+La suite de tests complète tourne aussi sur la tête (`nelyqor-trading`). Les résultats Docker de 6166046 valent
+donc pour le code de la tête.
+
+### 13.3 Recherches déclenchées par erreur : aucune influence
+- Les 4 runs ont été annulés après environ 1 min (§ 11.1 bis). Leurs artefacts partiels n'ont pas été consultés.
+- **Aucun workflow n'écrit dans le dépôt**, sauf l'archive prospective (`contents: read` partout ailleurs). Un run de
+  recherche ne peut donc modifier ni une stratégie, ni un paramètre, ni un candidat figé.
+- Aucun fichier figé n'a été modifié depuis le dernier gel (26/11 à 16:17:48 UTC, amendement 1 d'E1, avant le
+  départ) : `git log` sur les chemins figés, et `tests/test_gel_dependances.py` vert.
+- **Seul effet possible** : le run `nelyqor-research-p4` a peut-être enregistré un cache de **bougies publiques
+  brutes**, sous la même famille de clés que celle du prospectif. Le prochain run prospectif pourrait le reprendre.
+  - Ce sont des données de marché téléchargées de Bitvavo, pas des résultats de recherche.
+  - Le prospectif les complète lui-même, et chaque évaluation **rejoue** tout le journal : une donnée différente
+    ferait apparaître une divergence, et le run serait déclaré INVALIDE.
+  - Le run du 28/11 (46121817643), antérieur à l'incident, n'est pas concerné.
+
+### 13.4 Remarques mineures restantes (non bloquantes)
+| # | Remarque | Pourquoi ce n'est pas bloquant / suite proposée |
+|---|---|---|
+| 1 | Les envois d'alerte (ntfy, Telegram) sont synchrones : jusqu'à 10 s par canal, pendant lesquelles la boucle et la vigie attendent | rares (alertes critiques seulement, dédupliquées) ; phase 8 : envoi en tâche de fond |
+| 2 | Le chiffrement des sauvegardes n'a pas de MAC : l'empreinte sha256 est stockée à côté, sans signature | protège contre la corruption, pas contre une substitution délibérée par quelqu'un qui a déjà accès au disque ; amélioration possible : signature HMAC |
+| 3 | La rétention des sauvegardes est appliquée par type de fichier : une sauvegarde partielle peut décaler les paires restaurables | `restore.sh` exige la paire moteur + état du même horodatage et refuse sinon |
+| 4 | Les actions GitHub ne sont pas épinglées par SHA | actions officielles `actions/*` seulement, sans secret ; dépréciation de Node 20 signalée par GitHub, mise à jour à prévoir |
+| 5 | Le verrouillage SSH se fonde sur la présence d'une clé autorisée (qui peut être une clé à commande forcée de l'hébergeur) | confirmation « OUI », consigne de tester une 2e connexion avant de fermer ; amélioration : vérifier la clé de l'utilisateur sudo |
+| 6 | `set_password.py --phrase-seule` ne compare pas la nouvelle phrase au mot de passe existant ; en `--les-deux`, un refus de la phrase laisse le nouveau mot de passe écrit sans redémarrer l'API | correctif simple, à faire en phase 8 |
+| 7 | Caddy n'écoute pas en IPv6 | IPv4 suffit (Hetzner fournit une IPv4) |
+| 8 | Une boucle figée est signalée mais **pas redémarrée automatiquement** | redémarrage manuel documenté ; un redémarrage automatique est possible plus tard |
+| 9 | `/ticker/book` n'a pas d'horodatage de l'échange : la fraîcheur repose sur la réception (§ 5) | phase 8 : brancher le carnet WebSocket horodaté (`BookManager`) |
+| 10 | Démarrage à froid : environ 8 min avant d'avoir des bougies fraîches pour tout l'univers | les marchés sans bougies fraîches sont écartés, pas devinés |
+| 11 | Sans fusion, le cache événementiel n'est pas rafraîchi (807 groupes le 27 et le 28/11) | la fusion active la collecte horaire |
+| 12 | v1 publie `achat_passif_btc: NaN` dans son résultat | v1 est **figée** et ne peut pas être corrigée ; la référence BTC est publiée par v3 et E1 |
+| 13 | Chaque mise à jour des données signale « téléchargement incomplet (code 2) » | marchés radiés par Bitvavo ; sans effet sur les candidats (rejeu exact vérifié) |
+| 14 | Avertissement de dépréciation `httpx` / Starlette dans les tests | maintenance des dépendances |
+
+### 13.5 Procédure définitive de fusion
+`docs/FUSION_PR1.md`, mis à jour :
+- **Run à importer : 46121817643**. C'est le dernier run prospectif réussi au 28/11 ; aucun run réussi plus récent
+  n'existe.
+- L'artefact `journal-prospectif` (12 136 octets) existe, n'a pas expiré, et **expire le 26/02/2027 à 07:34 UTC**.
+- Juste avant l'import, revérifier qu'aucun run réussi plus récent n'existe. Prendre toujours le **plus récent**
+  run « aucun problème ».
+
+### 13.6 Guide pour le propriétaire
+`docs/GUIDE_PROPRIETAIRE.md` est le guide d'entrée, en langage simple :
+- vocabulaire ;
+- les 3 secrets à créer et à garder ;
+- choix de la machine et de l'accès ;
+- installation, vérifications, iPhone (Tailscale, certificat, PWA, ntfy, recette) ;
+- usage quotidien : que faire selon chaque alerte ;
+- ce qui est testé et ce qui est seulement préparé.
+
+Il renvoie aux commandes exactes de `docs/INSTALLATION.md` et à la recette `docs/RECETTE_IPHONE.md`.
+
+### 13.7 Testé / préparé : synthèse
+- **Testé réellement** (CI ou conteneur, vraie pile Docker, données publiques Bitvavo) :
+  - pile, isolation, HTTPS interne, authentification, résistance aux abus ;
+  - sauvegarde, destruction et restauration ;
+  - incidents : Bitvavo, Internet, processus, Docker, disque ;
+  - PWA dans Chromium ;
+  - mesures Bitvavo publiques ;
+  - évaluations prospectives.
+- **Préparé seulement** :
+  - installation réelle sur le serveur : apt, systemd, UFW, SSH, fail2ban, NTP, démarrage au boot ;
+  - Let's Encrypt, Tailscale ;
+  - Safari sur un vrai iPhone ;
+  - mesures depuis le serveur définitif.
+- **Jamais vérifié** : l'exécution d'ordres réels (aucune transaction).

@@ -101,6 +101,7 @@ sudo bash scripts/install_serveur.sh --dry-run --sans-domaine <IP Tailscale du s
 ```bash
 sudo bash scripts/install_serveur.sh --domaine <nelyqor.mondomaine.fr> --ntfy
 # ou : sudo bash scripts/install_serveur.sh --sans-domaine <100.x.y.z> --ntfy
+# (sans domaine : donner l'ADRESSE IP Tailscale ; un nom MagicDNS exige en plus --ecoute <100.x.y.z>)
 ```
 Ce que fait le script, et ce qui vous sera demandé :
 
@@ -133,7 +134,7 @@ problème, corrigez puis relancez-le ; il ne refait que ce qui manque et **ne r�
 Si ça échoue :
 - `empreinte de la clé Docker inattendue` : ne pas insister ; vérifier la date du serveur (`date`) et réessayer
   plus tard (possible attaque réseau ou changement de clé annoncé par Docker).
-- `construction de l'image impossible` : lire `/tmp/nelyqor-build.log` (souvent : disque plein ou réseau).
+- `construction de l'image impossible` : lire le journal dont le chemin est affiché (`/tmp/nelyqor-build.….log` ; souvent : disque plein ou réseau).
 - `l'uid 10001 est déjà pris` : un autre compte utilise cet identifiant ; le supprimer ou changer son uid.
 - `ATTENTION … horloge` : `timedatectl` doit afficher `System clock synchronized: yes` ; sinon
   `sudo systemctl restart systemd-timesyncd` et attendre une minute.
