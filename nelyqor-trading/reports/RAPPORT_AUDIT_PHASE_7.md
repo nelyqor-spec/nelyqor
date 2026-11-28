@@ -507,7 +507,8 @@ Il renvoie aux commandes exactes de `docs/INSTALLATION.md` et à la recette `doc
 | e7ddbff | incidents 46124328537 | ❌ 112 / 1 | nouveau scénario « flux figé » : marchés écartés, mais état global publié encore « frais » |
 | **7bb63b2** (état global en cas de flux figé) | tests 46126279157 | ✅ | 717 tests, ruff, mypy, empreintes figées |
 | **7bb63b2** | **incidents 46126279187** | ✅ **113 / 0 / 0** | dont « flux figé » (5 contrôles) et « disque libéré » (3 contrôles) |
-| **7bb63b2** | déploiement (lancé à la main, `backend/` absent des filtres de push) | ⏳ en cours (run 46128131422 sur 7bb63b2, puis relancé sur la tête de la PR) | recette PWA Chromium incluse |
+| **a600acf** (tête de PR : code de 7bb63b2 + documentation + filtre du contrôle) | **déploiement 46128217089** | ✅ **100 / 0 / 0** | vrai Dockerfile, recette PWA Chromium incluse ; la relance manuelle 46128131422 sur 7bb63b2 a été annulée et remplacée par celle-ci (même code) |
+| a600acf | tests 46128217106 | ✅ | — |
 
 Chaque échec a été analysé et corrigé, avec un test unitaire qui échoue sans la correction. Aucun contrôle n'a été
 assoupli ni retiré.
