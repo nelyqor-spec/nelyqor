@@ -222,6 +222,14 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
         return {"maj": paris_str(sc["ts"]) if sc.get("ts") else None, "rows": sc["rows"],
                 "note": "Scores et estimations non calibrés sauf mention contraire."}
 
+    @app.get("/api/bilan")
+    def bilan_simulation(_: Any = Depends(require_session)) -> dict[str, Any]:
+        """Bilan financier de la simulation et apprentissage EN OMBRE (phase 8), calculés par le moteur (1/h)."""
+        b = database.kv_get("bilan_simulation")
+        if not b:
+            return {"statut": "non disponible", "raison": "le moteur n'a pas encore publié de bilan (1 fois par heure)"}
+        return {**b, "source": "copie d'affichage publiée par le moteur (lecture seule)", "capital": "FICTIF"}
+
     @app.get("/api/strategies")
     def strategies(_: Any = Depends(require_session)) -> dict[str, Any]:
         reg = [dict(r) for r in database.q("SELECT name,version,status,sha256,updated_ms FROM model_registry ORDER BY name")]

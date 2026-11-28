@@ -166,6 +166,7 @@ class Engine:
         self.ws_alert_after_ms = 60_000
         self._ws_down_since_ms = 0
         self._last_ws_markets_ms = 0
+        self._last_bilan_ms = 0  # phase 8 : bilan financier + apprentissage en ombre, une fois par heure
 
     @property
     def writes_suspended(self) -> bool:
@@ -1322,6 +1323,7 @@ class Engine:
                 self.db.exec("INSERT OR REPLACE INTO equity_snapshots VALUES(?,?,?,?,?)",
                              (now, ex.mode, fmt(v), fmt(cash), fmt(v - cash)))
             self.last_snapshot_ms = now
+        self.update_bilan()
         self.heartbeat(data_ok=not self.feed_frozen and now - self.last_data_ms <= self.limits.max_stale_ms)
 
     def _ws_summary(self) -> dict[str, Any] | None:
@@ -1392,6 +1394,36 @@ class Engine:
                 self.on_disk_full(e)
             else:
                 log.exception("vigie : battement de cœur non écrit")
+
+    def update_bilan(self, force: bool = False) -> None:
+        """Bilan financier de la simulation et cycle d'apprentissage EN OMBRE (phase 8), une fois par heure, en
+        lecture seule du journal (backend/learning) ; publié dans la copie d'affichage (clé « bilan_simulation »).
+        Rien n'est appliqué au compte simulé. Suspendu en disque critique. Ne lève jamais."""
+        now = self.clock.now_ms()
+        if self.writes_suspended or (not force and now - self._last_bilan_ms < 3_600_000):
+            return
+        self._last_bilan_ms = now
+        try:
+            from .learning import apprentissage as A
+            from .learning.bilan import bilan, round_trips
+            from .research.registry import Registry
+
+            trades = round_trips(self.db, "simulation")
+            stored = self.db.kv_get("apprentissage_propositions", [])
+            policies, judged = A.cycle(trades, stored, Registry(self.db, self.clock.now_ms, role="lab"),
+                                       float(self.s.initial_capital_eur), now)
+            if len(policies) != len(stored):
+                self.db.kv_set("apprentissage_propositions", policies, now)
+            self.db.kv_set("bilan_simulation", {
+                "genere_ms": now, "bilan": bilan(self.db, self.s.initial_capital_eur, self.s.monthly_hosting_eur, now),
+                "apprentissage": {"propositions": judged[-5:],
+                                  "note": "en ombre : jamais appliqué au compte simulé ; activation par le propriétaire"},
+            }, now)
+        except Exception as e:  # noqa: BLE001 — un bilan impossible ne doit jamais gêner la simulation
+            if is_disk_full_error(e):
+                self.on_disk_full(e)
+            else:
+                log.exception("bilan de la simulation impossible")
 
     def update_ws_markets(self, force: bool = False) -> None:
         """Marchés suivis par le WebSocket : positions détenues d'abord, puis les marchés EUR les plus liquides."""
