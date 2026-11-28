@@ -32,21 +32,22 @@ print("intégrité:", r); sys.exit(r != "ok")
 PY
   openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in "$TMP" -out "$DEST/$2-$TS.db.enc" -pass "file:$PASS"
   sha256sum "$DEST/$2-$TS.db.enc" > "$DEST/$2-$TS.db.enc.sha256"
+  python3 scripts/backup_mac.py sign "$PASS" "$DEST/$2-$TS.db.enc"  # authentification (HMAC-SHA256)
   echo "OK $DEST/$2-$TS.db.enc"
 }
 snap "$DB" engine
 tar -C "$STATE_DIR" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -out "$DEST/etat-moteur-$TS.tar.enc" -pass "file:$PASS"
 sha256sum "$DEST/etat-moteur-$TS.tar.enc" > "$DEST/etat-moteur-$TS.tar.enc.sha256"
+python3 scripts/backup_mac.py sign "$PASS" "$DEST/etat-moteur-$TS.tar.enc"
 echo "OK $DEST/etat-moteur-$TS.tar.enc"
 if [ -f "$API_DB" ]; then snap "$API_DB" api; else echo "ATTENTION : audit de l'API absent ($API_DB) : non sauvegardé"; fi
 if [ -d "$CADDY_PKI/authorities/local" ]; then
   tar -C "$CADDY_PKI" -cf - . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -out "$DEST/caddy-pki-$TS.tar.enc" -pass "file:$PASS"
   sha256sum "$DEST/caddy-pki-$TS.tar.enc" > "$DEST/caddy-pki-$TS.tar.enc.sha256"
+  python3 scripts/backup_mac.py sign "$PASS" "$DEST/caddy-pki-$TS.tar.enc"
   echo "OK $DEST/caddy-pki-$TS.tar.enc"
 fi
-# rétention : NELYQOR_BACKUP_KEEP (30 par défaut) dernières sauvegardes de chaque type
-for p in engine-*.db.enc api-*.db.enc etat-moteur-*.tar.enc caddy-pki-*.tar.enc; do
-  # shellcheck disable=SC2012
-  # « || true » : un type absent (api.db, autorité de Caddy en mode acme) ne doit pas faire échouer la sauvegarde
-  { ls -1t "$DEST"/$p 2>/dev/null || true; } | tail -n +$(( ${NELYQOR_BACKUP_KEEP:-30} + 1 )) | while read -r f; do rm -f "$f" "$f.sha256"; done
-done
+# rétention (clôture phase 7, remarque 3) : par JEU d'horodatage, et non par type de fichier. On garde les
+# NELYQOR_BACKUP_KEEP (30) jeux COMPLETS les plus récents (moteur + magasin d'état : la paire exigée par restore.sh),
+# plus tout jeu incomplet plus récent qu'eux ; tous les fichiers des horodatages plus anciens sont supprimés ensemble.
+python3 scripts/backup_retention.py "$DEST" "${NELYQOR_BACKUP_KEEP:-30}"

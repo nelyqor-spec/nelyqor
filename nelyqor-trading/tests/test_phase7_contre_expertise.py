@@ -107,6 +107,22 @@ async def test_D2_enospc_with_free_blocks_does_not_flap(tmp_path, monkeypatch):
     assert eng.check_disk() == "ok"
 
 
+async def test_D2_truly_full_disk_recovers_as_soon_as_space_returns(tmp_path, monkeypatch):
+    """Régression trouvée par incident_check.sh (run 46122339771) : disque RÉELLEMENT plein (statvfs confirme), puis
+    libéré : la reprise doit suivre l'hystérésis normale, sans attendre 10 min."""
+    clock = FakeClock(1_770_000_000_000)
+    eng, _ = make(tmp_path, clock)
+    eng.disk_th = disk.DiskThresholds(warn_free_mb=100, crit_free_mb=50)
+    monkeypatch.setattr("backend.runner.inodes_exhausted", lambda p: False)
+    free = {"mb": 0.0}
+    monkeypatch.setattr("backend.runner.free_mb", lambda p: (free["mb"], 20_000.0))
+    eng.on_disk_full(sqlite3.OperationalError("database or disk is full"))
+    assert eng.check_disk() == "critique"
+    free["mb"] = 500.0  # place libérée
+    clock.advance(5_000)
+    assert eng.check_disk() == "ok"
+
+
 async def test_D2_disk_alerts_never_consume_security_quota(tmp_path, monkeypatch):
     clock = FakeClock(1_770_000_000_000)
     eng, _ = make(tmp_path, clock)

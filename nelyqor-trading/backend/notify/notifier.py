@@ -11,6 +11,8 @@ déduplication est aussi tenue en mémoire, et un échec d'écriture du journal 
 from __future__ import annotations
 
 import os
+import queue
+import threading
 import unicodedata
 from typing import Any
 
@@ -40,7 +42,7 @@ def _ascii(s: str) -> str:
 class Notifier:
     def __init__(self, db: Database, now_ms: Any, telegram_token: str | None = None, telegram_chat: str | None = None,
                  dedup_window_ms: int = 6 * 3600 * 1000, max_per_day: int = 20, ntfy_url: str | None = None,
-                 ntfy_details: bool | None = None) -> None:
+                 ntfy_details: bool | None = None, background: bool = False) -> None:
         self.db, self._now = db, now_ms
         self.token, self.chat = telegram_token, telegram_chat
         self.ntfy_url = ntfy_url or None
@@ -49,6 +51,12 @@ class Notifier:
         self.window, self.max_per_day = dedup_window_ms, max_per_day
         self._recent: dict[str, int] = {}  # déduplication en mémoire (base pleine ou illisible)
         self._sent_mem: list[tuple[int, bool]] = []  # (horodatage, basse priorité)
+        # Clôture phase 7 (remarque 1) : en production, les envois HTTP (jusqu'à 10 s par canal) partent d'un fil
+        # d'envoi dédié : la boucle asyncio du moteur et la vigie ne sont plus jamais bloquées par une alerte.
+        self.background = background
+        self._q: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=100)
+        self._worker: threading.Thread | None = None
+        self.dropped = 0
 
     def _seen(self, key: str, now: int) -> bool:
         if now - self._recent.get(key, -self.window - 1) <= self.window:
@@ -81,7 +89,10 @@ class Notifier:
         sent = 0
         low = kind in LOW_PRIORITY_KINDS
         if self._sent_today(now, low) < self.max_per_day:
-            sent = int(self._telegram(message) | self._ntfy(kind, message))
+            if self.background and (self.ntfy_url or (self.token and self.chat)):
+                sent = int(self._enqueue(kind, message))  # 1 = envoi LANCÉ (compté dans le quota)
+            else:
+                sent = int(self._telegram(message) | self._ntfy(kind, message))
             if sent:
                 self._sent_mem.append((now, low))
         log.warning("notification critique", extra={"data": {"kind": kind, "sent": sent}})
@@ -91,6 +102,39 @@ class Notifier:
         except Exception as e:  # noqa: BLE001 — disque plein : l'alerte est déjà partie, la base n'est pas en cause
             log.error("journal des notifications non écrit", extra={"data": {"kind": kind, "err": type(e).__name__}})
         return True
+
+    def _enqueue(self, kind: str, message: str) -> bool:
+        if self._worker is None or not self._worker.is_alive():
+            self._worker = threading.Thread(target=self._drain, name="notifier", daemon=True)
+            self._worker.start()
+        try:
+            self._q.put_nowait((kind, message))
+            return True
+        except queue.Full:  # canal bloqué depuis longtemps : jamais d'attente côté moteur
+            self.dropped += 1
+            log.error("file des alertes pleine : alerte non envoyée", extra={"data": {"kind": kind}})
+            return False
+
+    def _drain(self) -> None:  # fil d'envoi : n'accède jamais à la base (connexion SQLite du moteur)
+        while True:
+            kind, message = self._q.get()
+            try:
+                self._telegram(message)
+                self._ntfy(kind, message)
+            except Exception:  # noqa: BLE001
+                log.exception("envoi d'alerte")
+            finally:
+                self._q.task_done()
+
+    def flush(self, timeout: float = 30.0) -> bool:
+        """Attend la fin des envois en file (arrêt propre, tests). Vrai si la file est vide."""
+        end = threading.Event()
+
+        def wait() -> None:
+            self._q.join()
+            end.set()
+        threading.Thread(target=wait, daemon=True).start()
+        return end.wait(timeout)
 
     def _telegram(self, message: str) -> bool:
         if not (self.token and self.chat):

@@ -21,9 +21,10 @@ out=$(bash scripts/backup.sh "$DEST" 2>&1) || fail "$(printf '%s\n' "$out" | tai
 printf '%s\n' "$out"
 last=$(printf '%s\n' "$out" | sed -n 's/^OK \(.*engine-.*\.db\.enc\)$/\1/p' | tail -1)
 [ -n "$last" ] && [ -f "$last" ] || fail "sauvegarde du moteur introuvable après backup.sh"
+python3 scripts/backup_mac.py verify "$PASS" "$last" > /dev/null || fail "sauvegarde $last : authentification invalide"
 TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$last" -out "$TMP" -pass "file:$PASS" 2>/dev/null \
   || fail "la sauvegarde $last ne se déchiffre pas"
 r=$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('PRAGMA integrity_check').fetchone()[0])" "$TMP" 2>&1)
 [ "$r" = ok ] || fail "sauvegarde $last : intégrité « $r »"
-echo "VÉRIFIÉE $last (déchiffrement + intégrité ok)"
+echo "VÉRIFIÉE $last (authentification + déchiffrement + intégrité ok)"

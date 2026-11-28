@@ -375,6 +375,14 @@ async def test_real_path_exchange_failures_block_buys_but_engine_keeps_running(t
     protections toujours possibles ; reprise quand l'échange répond de nouveau."""
     eng, db, real, clock = await real_ready(tmp_path)
     propose(eng, D(20), order="market")
+    # Un vrai carnet change sans cesse ; ce faux carnet est constant, ce que la défense « flux figé » (clôture
+    # phase 7) traite à juste titre comme des données périmées. Ce test porte sur les pannes de soldes et de
+    # réseau : le carnet évolue donc légèrement (taille au meilleur prix), comme sur un vrai marché.
+    base_book = eng.rest.ticker_book
+
+    async def live_book():
+        return [{**r, "bidSize": str(1 + (clock.now_ms() // 1000) % 97)} for r in await base_book()]
+    eng.rest.ticker_book = live_book  # type: ignore[method-assign]
 
     async def broken_balance():
         raise httpx.ReadTimeout("soldes : délai dépassé (simulé)")

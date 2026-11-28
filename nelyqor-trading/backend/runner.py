@@ -142,7 +142,22 @@ class Engine:
         # (D3) fin du dernier cycle de boucle : la vigie ne doit pas masquer une boucle figée
         self.last_cycle_ms = 0
         self.frozen_after_ms = 10 * 60_000
+        # clôture phase 7 (remarque 8) : boucle figée au-delà de ce délai => sortie du processus pour que Docker le
+        # relance (restart: unless-stopped). Redémarrage sûr : verrou d'instance, journal idempotent, réconciliation
+        # si le réel était actif (vérifié par kill -9 dans deploy_check.sh et incident_check.sh). None = jamais.
+        self.frozen_exit_after_ms = 15 * 60_000
+        self.on_frozen: Any = None
+        self._frozen_exit_done = False
         self._display_crit_ms = 0
+        # clôture phase 7 (remarque 9) : /ticker/book ne porte AUCUN horodatage de l'échange (mesuré : 426/426
+        # marchés). Défense contre un flux « reçu à l'instant mais figé » (cache, réponse rejouée) : si l'ensemble des
+        # carnets est strictement identique au-delà de ce délai, les données prennent l'âge de leur dernier changement.
+        self.frozen_feed_ms = 120_000
+        self._book_fp: str | None = None
+        self._book_fp_since_ms = 0
+        self._book_fp_n = 0  # lectures RÉUSSIES consécutives identiques (un trou sans lecture n'est pas un flux figé)
+        self.frozen_feed_reads = 3
+        self.feed_frozen = False
 
     @property
     def writes_suspended(self) -> bool:
@@ -197,7 +212,17 @@ class Engine:
         """Écriture refusée faute de place (SQLITE_FULL / ENOSPC) : la transaction est annulée par SQLite (base
         intacte) ; passage immédiat en « critique »."""
         self.disk_full_errors += 1
-        self._enospc_until_ms = self.clock.now_ms() + self.enospc_hold_ms
+        # D2 : maintien en « critique » SEULEMENT si statvfs contredit le refus (place apparente, mais inodes ou quota
+        # épuisés) ; un disque réellement plein reprend dès que la place revient (hystérésis normale).
+        # Clôture phase 7 : le maintien inconditionnel retardait de 10 min la reprise après un vrai disque plein
+        # (incident_check.sh, run 46122339771 : 3 échecs « disque libéré »).
+        try:
+            paths = self._disk_paths()
+            apparent = min(free_mb(p)[0] for p in paths) if paths else 0.0
+        except OSError:
+            apparent = 0.0
+        if apparent >= self.disk_th.crit_free_mb:
+            self._enospc_until_ms = self.clock.now_ms() + self.enospc_hold_ms
         if self.disk_level != CRITIQUE:
             self._set_disk_level(CRITIQUE)
         log.error("écriture refusée : disque plein", extra={"data": {"err": repr(e)[:200], "n": self.disk_full_errors}})
@@ -323,17 +348,47 @@ class Engine:
                      "last_error='simulateur redémarré' WHERE mode='simulation' AND status IN "
                      "('new','partiallyFilled','awaitingTrigger','PENDING','SUBMITTING','UNKNOWN')")
 
+    def _book_freshness(self, books: list[dict[str, Any]], now: int) -> int:
+        """Heure de réception à retenir pour ces carnets : `now`, sauf si TOUS les carnets sont identiques sur au moins
+        `frozen_feed_reads` lectures réussies consécutives étalées sur plus de `frozen_feed_ms` (flux figé) : alors
+        l'heure du dernier changement, ce qui les rend périmés."""
+        import hashlib
+
+        h = hashlib.sha256()
+        for b in sorted(books, key=lambda x: str(x.get("market"))):
+            h.update("|".join(str(b.get(k)) for k in ("market", "bid", "ask", "bidSize", "askSize")).encode())
+            h.update(b"\n")
+        fp = h.hexdigest()
+        if not books or fp != self._book_fp:
+            self._book_fp, self._book_fp_since_ms, self._book_fp_n = fp, now, 1
+            if self.feed_frozen:
+                log.warning("flux des carnets de nouveau changeant : données reprises")
+            self.feed_frozen = False
+            return now
+        self._book_fp_n += 1
+        if self._book_fp_n < self.frozen_feed_reads or now - self._book_fp_since_ms <= self.frozen_feed_ms:
+            return now
+        if not self.feed_frozen:
+            self.feed_frozen = True
+            log.error("flux des carnets FIGÉ : données traitées comme périmées",
+                      extra={"data": {"depuis_ms": self._book_fp_since_ms}})
+            self.notifier.notify("incident", "Flux de prix Bitvavo figé (carnets identiques depuis plus de 2 min) : "
+                                 "aucune nouvelle entrée tant qu'il ne change pas.",
+                                 dedup_key=f"flux-fige-{self._book_fp_since_ms}")
+        return self._book_fp_since_ms
+
     async def refresh_tickers(self) -> None:
         now = self.clock.now_ms()
         books = await self.rest.ticker_book()
         vols = {t["market"]: t for t in await self.rest.ticker_24h()} if now - self.last_ticker_ms > 60_000 else {}
+        received = self._book_freshness(books, now)
         for b in books:
             st = self.states.get(b["market"])
             if st is None:
                 continue
             st.best_bid = D(b["bid"]) if b.get("bid") else None
             st.best_ask = D(b["ask"]) if b.get("ask") else None
-            st.ts_received_ms = now
+            st.ts_received_ms = received
             st.ts_market_ms = parse_exchange_ts(b.get("timestamp"))  # nul/non entier : inconnu (D9)
             if st.best_bid and st.best_ask and self.paper:
                 self.paper.set_book(b["market"], [(st.best_bid, b.get("bidSize") or "0")],
@@ -1292,6 +1347,19 @@ class Engine:
             self.notifier.notify("panne_prolongee", "Boucle du moteur figée depuis plus de 10 min : aucune décision ni "
                                  "audit des protections. Redémarrer le moteur (docs/RUNBOOKS.md).",
                                  dedup_key=f"boucle-figee-{self.last_cycle_ms}")
+            if (self.on_frozen is not None and not self._frozen_exit_done
+                    and now - self.last_cycle_ms > self.frozen_exit_after_ms):
+                self._frozen_exit_done = True
+                log.error("boucle figée : sortie du processus pour redémarrage automatique",
+                          extra={"data": {"dernier_cycle_ms": self.last_cycle_ms}})
+                try:
+                    self.notifier.notify("panne_prolongee", "Boucle figée depuis plus de 15 min : redémarrage "
+                                         "automatique du moteur.", dedup_key=f"boucle-redemarrage-{self.last_cycle_ms}")
+                    flush = getattr(self.notifier, "flush", None)
+                    if flush:
+                        flush(10.0)
+                finally:
+                    self.on_frozen()
         if now - self._last_hb_ms < 10_000:
             return
         try:
@@ -1438,7 +1506,8 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
         if sec:
             register_secret(sec)
     if (tg_token and tg_chat) or ntfy_url:
-        eng.notifier = Notifier(db, eng.clock.now_ms, tg_token if tg_chat else None, tg_chat, ntfy_url=ntfy_url)
+        eng.notifier = Notifier(db, eng.clock.now_ms, tg_token if tg_chat else None, tg_chat, ntfy_url=ntfy_url,
+                            background=True)  # envois hors de la boucle (clôture phase 7)
     if key and secret and not eng.official_endpoints():
         log.error("clés présentes mais BITVAVO_REST_URL/WS_URL ne sont pas les points d'accès officiels : réel désactivé")
         key = secret = None
@@ -1457,6 +1526,7 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
         eur = [m for m, i in eng.markets.items() if i.quote == "EUR"]
         stream = AccountStream(s.bitvavo_ws_url, key, secret, eur, eng.on_ws_event, eng.on_ws_reconnect)
         asyncio.create_task(stream.run_forever())  # noqa: RUF006
+    eng.on_frozen = lambda: os._exit(70)  # Docker relance le conteneur (restart: unless-stopped)
     asyncio.create_task(eng.vigil())  # noqa: RUF006 — arrêt d'urgence SSH et battement de cœur, boucle bloquée ou non
     failures = 0
     while True:

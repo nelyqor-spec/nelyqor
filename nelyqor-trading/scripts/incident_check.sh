@@ -449,6 +449,16 @@ not_incident() { local e; e=$(echo "$1" | jget etat); [ -n "$e" ] && [ "$e" != I
 check "données incohérentes : pas d'INCIDENT (pause « erreurs répétées » admise)" not_incident "$SI"
 fake_mode normal > /dev/null
 check "données incohérentes : reprise propre" wait_for 150 fresh
+log "flux de prix FIGÉ (carnets identiques à chaque lecture, sans horodatage exploitable : clôture phase 7)"
+RE=$(restarts engine); T=$(( $(date +%s) * 1000 ))
+fake_mode fige > /dev/null; sleep 200
+SF=$(state)
+check "flux figé : moteur en marche, jamais redémarré" bash -c "running engine && [ $(restarts engine) = $RE ] && echo ok"
+check "flux figé : données signalées périmées" bash -c "[ \"\$(echo '$SF' | jget data_ok)\" = false ] && echo data_ok=false"
+check "flux figé : aucun achat" python3 -c "import sys; t='$(echo "$SF" | jget dernier_achat_ts)'; sys.exit(0 if t in ('null','None','') or int(t) < $T else 1)"
+check "flux figé : battement de cœur continu" alive
+fake_mode normal > /dev/null
+check "flux figé : reprise propre dès que le flux change" wait_for 150 fresh
 NET="${PROJ}_default"
 log "coupure d'Internet du moteur (60 s)"
 RE=$(restarts engine)

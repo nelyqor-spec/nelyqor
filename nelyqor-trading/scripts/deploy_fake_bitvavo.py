@@ -4,7 +4,9 @@
 Aucun point d'accès privé : pas de clé, pas d'ordre, pas de solde. Sert /v2/time, /v2/markets, /v2/ticker/book,
 /v2/ticker/24h et /v2/{marché}/candles, comme le Bitvavo public, pour que le moteur tourne en SIMULATION dans
 une pile Docker isolée d'internet. Pilotage du test (réseau interne de la pile uniquement) :
-    POST /control/mode/<normal|stale|error|hang|ratelimit|incoherent>
+    POST /control/mode/<normal|stale|error|hang|ratelimit|incoherent|fige>
+    (fige : carnets strictement identiques à chaque lecture, comme un cache figé ; normal : la taille au meilleur
+    prix évolue chaque seconde, comme sur un vrai marché)
       normal : réponses fraîches ; stale : carnet horodaté 1 h dans le passé (données PÉRIMÉES) ;
       error  : HTTP 503 ; hang : aucune réponse (délai d'attente du client) ;
       ratelimit  : HTTP 429 (errorCode 105, limite de requêtes) — phase 7 ;
@@ -69,7 +71,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
         if self.path.startswith("/control/mode/"):
             mode = self.path.rsplit("/", 1)[1]
-            if mode in ("normal", "stale", "error", "hang", "ratelimit", "incoherent"):
+            if mode in ("normal", "stale", "error", "hang", "ratelimit", "incoherent", "fige"):
                 STATE["mode"] = mode
                 return self._send(200, {"mode": mode})
         self._send(404, {"error": "inconnu"})
@@ -101,7 +103,8 @@ class H(BaseHTTPRequestHandler):
         if path == "/v2/markets":
             return self._send(200, MARKETS)
         if path == "/v2/ticker/book":
-            return self._send(200, [{"market": m["market"], "bid": f"{_px(m['market']) * 0.9999:.2f}", "bidSize": "2",
+            size = "2" if mode == "fige" else str(1 + (now // 1000) % 97)  # un vrai carnet change sans cesse
+            return self._send(200, [{"market": m["market"], "bid": f"{_px(m['market']) * 0.9999:.2f}", "bidSize": size,
                                      "ask": f"{_px(m['market']) * 1.0001:.2f}", "askSize": "2", "timestamp": ts}
                                     for m in MARKETS])
         if path == "/v2/ticker/24h":

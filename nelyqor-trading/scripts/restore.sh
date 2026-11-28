@@ -34,8 +34,18 @@ own() { [ "$OWNER" = - ] || chown "$OWNER" "$@"; }
 TMP="$(mktemp)"; TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMP" "$TMPD"' EXIT
 STAMP="$(date -u +%s)"
+# Authentification (clôture phase 7) : toute sauvegarde doit porter un HMAC valide (scripts/backup_mac.py), sauf
+# NELYQOR_RESTORE_SANS_HMAC=1 pour une sauvegarde ANTÉRIEURE à cette mesure (avertissement affiché).
+authentifier() {
+  if [ -f "$1.hmac" ] || [ "${NELYQOR_RESTORE_SANS_HMAC:-0}" != 1 ]; then
+    python3 scripts/backup_mac.py verify "$PASS" "$1"
+  else
+    echo "ATTENTION : $1 sans authentification (sauvegarde antérieure, NELYQOR_RESTORE_SANS_HMAC=1)" >&2
+  fi
+}
 restore_db() {  # restore_db FICHIER_CHIFFRÉ CIBLE
   sha256sum -c "$1.sha256"
+  authentifier "$1"
   openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$1" -out "$TMP" -pass "file:$PASS"
   python3 -c "import sqlite3,sys; r=sqlite3.connect(sys.argv[1]).execute('PRAGMA integrity_check').fetchone()[0]; print('intégrité:', r); sys.exit(r!='ok')" "$TMP"
   if [ -f "$2" ]; then cp -p "$2" "$2.avant-restauration.$STAMP"; fi
@@ -44,6 +54,8 @@ restore_db() {  # restore_db FICHIER_CHIFFRÉ CIBLE
   echo "Restauré : $2"
 }
 sha256sum -c "$STATE_SRC.sha256"
+authentifier "$STATE_SRC"
+authentifier "$SRC"  # la base du moteur est authentifiée AVANT la copie de sécurité et toute modification
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$STATE_SRC" -pass "file:$PASS" | tar -C "$TMPD" -xf -
 [ -f "$TMPD/etat_moteur.json" ] || { echo "REFUS : archive du magasin d'état sans etat_moteur.json" >&2; exit 1; }
 # D5 : copie de sécurité de l'état courant OBLIGATOIRE et faite AVANT toute modification ; si elle échoue (disque
@@ -66,6 +78,7 @@ if [ -f "$PKI_SRC" ]; then
   # autorité interne de Caddy (propriétaire root dans le conteneur Caddy) : l'iPhone garde sa confiance
   if [ -d "$(dirname "$(dirname "$CADDY_PKI")")" ]; then
     sha256sum -c "$PKI_SRC.sha256"
+    authentifier "$PKI_SRC"
     mkdir -p "$CADDY_PKI" && chmod 700 "$CADDY_PKI"
     openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$PKI_SRC" -pass "file:$PASS" | tar -C "$CADDY_PKI" -xf -
     echo "Restauré : autorité interne de Caddy $CADDY_PKI"
