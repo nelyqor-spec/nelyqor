@@ -1,0 +1,78 @@
+# Nelyqor Trading — vérification RÉELLE du flux WebSocket public Bitvavo branché au moteur (phase 8).
+# - API publique seulement : aucune clé, aucun canal privé, aucun ordre ; NELYQOR_REAL_TRADING_ALLOWED=false.
+# - Mesure le régime établi, 3 reconnexions forcées, une coupure simulée du flux, le retard échange -> réception
+#   (horloge corrigée) et la distinction marché immobile / flux défaillant : scripts/bench_ws_feed.py.
+# - Artefact : le JSON des mesures (données de marché publiques seulement), 14 jours.
+name: nelyqor-ws-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "nelyqor-trading/backend/market_data/ws_feed.py"
+      - "nelyqor-trading/scripts/bench_ws_feed.py"
+      - "nelyqor-trading/tests/test_phase8_ws_feed.py"
+      - ".github/workflows/nelyqor-ws-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-ws-check-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+env:
+  NELYQOR_REAL_TRADING_ALLOWED: "false"
+  NELYQOR_ROLE: lab
+
+jobs:
+  ws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - name: Tests hors ligne du flux
+        run: python -m pytest tests/test_phase8_ws_feed.py -q -p no:cacheprovider
+      - name: Flux WebSocket réel (API publique Bitvavo, 8 min)
+        run: |
+          set +e
+          python scripts/bench_ws_feed.py --minutes 8 --out ../bench/ws_feed.json > ../ws.log 2>&1
+          echo "$?" > ../ws_code
+          tail -c 20000 ../ws.log
+          exit 0
+      - name: Résumé
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          p = "../bench/ws_feed.json"
+          lines = ["## Flux WebSocket Bitvavo (public)", ""]
+          if not os.path.exists(p):
+              lines.append("Aucun résultat JSON : voir le journal du job.")
+          else:
+              r = json.load(open(p))
+              lines.append(f"- code de sortie : {r.get('code_sortie')} ; arrêt : {r.get('arret') or 'aucun'}")
+              for k, v in (r.get("criteres") or {}).items():
+                  lines.append(f"- {'✅' if v else '❌'} {k}")
+              lines.append(f"- retard échange : {r.get('retard_echange_ms')}")
+              lines.append(f"- statuts : {r.get('statuts_cumules')}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: nelyqor-ws-feed, path: bench/ws_feed.json, retention-days: 14, if-no-files-found: warn}
+      - name: Code de sortie
+        run: |
+          code=$(cat ../ws_code 2>/dev/null || echo 1)
+          echo "code de sortie : $code (1 = critère non tenu, 3 = limite d'API, 4 = réseau)"
+          exit "$code"

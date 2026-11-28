@@ -49,6 +49,8 @@ from .market_data.universe import (
     parse_exchange_ts,
     spread_bps,
 )
+from .market_data.ws_feed import BLOCKING as WS_BLOCKING
+from .market_data.ws_feed import PublicBookFeed
 from .notify.notifier import Notifier
 from .portfolio.decision import DecisionEngine, HeldPosition
 from .research.registry import Registry
@@ -158,6 +160,12 @@ class Engine:
         self._book_fp_n = 0  # lectures RÉUSSIES consécutives identiques (un trou sans lecture n'est pas un flux figé)
         self.frozen_feed_reads = 3
         self.feed_frozen = False
+        # phase 8 : carnet WebSocket PUBLIC horodaté par l'échange (backend/market_data/ws_feed.py), garde-fou de
+        # fraîcheur et de cohérence ; None = désactivé (tests, faux Bitvavo, NELYQOR_WS_FEED=0)
+        self.ws_feed: PublicBookFeed | None = None
+        self.ws_alert_after_ms = 60_000
+        self._ws_down_since_ms = 0
+        self._last_ws_markets_ms = 0
 
     @property
     def writes_suspended(self) -> bool:
@@ -722,6 +730,8 @@ class Engine:
         t1 = self.clock.now_ms()
         self.clock_skew_ms = server - (t0 + t1) // 2
         self.clock_skew_known = True
+        if self.ws_feed is not None:
+            self.ws_feed.clock_skew_ms = self.clock_skew_ms
         self.last_clock_sync_ms = t1
         self.db.kv_set("decalage_horloge", {"ms": self.clock_skew_ms, "ts": t1,
                                             "alerte": abs(self.clock_skew_ms) > CLOCK_SKEW_ALERT_MS}, t1)
@@ -1087,6 +1097,10 @@ class Engine:
         scanner = []
         for mk, st in self.states.items():
             el = check_eligibility(st, self.limits, now, self.s.quote_currency, self.clock_skew_ms)
+            ws = self.ws_feed.status(mk, st.best_bid, st.best_ask, now) if self.ws_feed is not None else None
+            if ws in WS_BLOCKING:  # carnet WS désynchronisé, incohérent avec le REST, ou échange en retard (phase 8)
+                el.eligible = False
+                el.reasons.append(f"flux WebSocket : {ws}")
             row: dict[str, Any] = {"market": mk, "eligible": el.eligible, "reasons": el.reasons,
                                    "spread_bps": float(spread_bps(st.best_bid, st.best_ask) or 0),
                                    "volume_24h_eur": float(st.quote_volume_24h)}
@@ -1310,6 +1324,14 @@ class Engine:
             self.last_snapshot_ms = now
         self.heartbeat(data_ok=not self.feed_frozen and now - self.last_data_ms <= self.limits.max_stale_ms)
 
+    def _ws_summary(self) -> dict[str, Any] | None:
+        if self.ws_feed is None:
+            return None
+        try:
+            return self.ws_feed.summary(self.clock.now_ms())
+        except Exception:  # noqa: BLE001
+            return {"erreur": "résumé indisponible"}
+
     def heartbeat(self, data_ok: bool) -> None:
         """Signe de vie du moteur, distinct de la fraîcheur des données de marché."""
         self._last_hb_ms = self.clock.now_ms()
@@ -1328,6 +1350,7 @@ class Engine:
                                             "real_exec": self.real_exec is not None,
                                             "positions_reelles_ouvertes": reelles,
                                             "last_cycle_ms": self.last_cycle_ms, "boucle_figee": frozen,
+                                            "flux_ws": self._ws_summary(),
                                             "disque": {"niveau": self.disk_level, "libre_mo": self.disk_free_mb,
                                                        "ecritures_suspendues": self.writes_suspended}},
                          self.clock.now_ms())
@@ -1369,6 +1392,44 @@ class Engine:
                 self.on_disk_full(e)
             else:
                 log.exception("vigie : battement de cœur non écrit")
+
+    def update_ws_markets(self, force: bool = False) -> None:
+        """Marchés suivis par le WebSocket : positions détenues d'abord, puis les marchés EUR les plus liquides."""
+        if self.ws_feed is None:
+            return
+        now = self.clock.now_ms()
+        if not force and now - self._last_ws_markets_ms < 600_000:
+            return
+        self._last_ws_markets_ms = now
+        held: list[str] = []
+        for mode in ("real", "simulation"):
+            if mode == "real" and self.real_exec is None:
+                continue
+            try:
+                held += list(self.held_positions(mode))
+            except Exception:  # noqa: BLE001 — journal illisible : la sélection se rabat sur les marchés liquides
+                log.warning("positions illisibles pour la sélection du WebSocket", extra={"data": {"mode": mode}})
+        liquid = sorted((m for m, st in self.states.items() if st.info.quote == self.s.quote_currency
+                         and st.info.is_trading), key=lambda m: self.states[m].quote_volume_24h, reverse=True)
+        if self.ws_feed.set_markets(held + [m for m in liquid if m not in held]):
+            log.info("marchés suivis par le WebSocket", extra={"data": {"n": len(self.ws_feed.markets)}})
+
+    def check_ws_feed(self) -> None:
+        """Alerte unique si le flux WebSocket est coupé au-delà de `ws_alert_after_ms` (repli sur les règles REST)."""
+        if self.ws_feed is None or not self.ws_feed.markets:
+            return
+        now = self.clock.now_ms()
+        if self.ws_feed.feed_alive(now):
+            if self._ws_down_since_ms:
+                log.warning("flux WebSocket rétabli")
+            self._ws_down_since_ms = 0
+            return
+        if not self._ws_down_since_ms:
+            self._ws_down_since_ms = now
+        elif now - self._ws_down_since_ms > self.ws_alert_after_ms:
+            self.notifier.notify("incident", "Flux WebSocket Bitvavo coupé depuis plus d'une minute : horodatage de "
+                                 "l'échange indisponible, repli sur les contrôles REST.",
+                                 dedup_key=f"ws-coupe-{self._ws_down_since_ms}")
 
     def loop_frozen(self) -> bool:
         """Aucun cycle de boucle terminé depuis `frozen_after_ms` (D3) ; faux avant le premier cycle."""
@@ -1428,6 +1489,8 @@ class Engine:
             raise
         if not self.feed_frozen:  # flux figé : la dernière donnée FRAÎCHE reste celle d'avant le gel (clôture phase 7)
             self.last_data_ms = now
+        self.update_ws_markets()
+        self.check_ws_feed()
         await self._safe_commands()
         if self.real_exec is not None and not self._open_orders_checked:
             try:  # premier cycle après démarrage : ordres ouverts chez l'échange vs journal (D7)
@@ -1527,6 +1590,17 @@ async def main() -> None:  # pragma: no cover - point d'entrée de production
         eur = [m for m, i in eng.markets.items() if i.quote == "EUR"]
         stream = AccountStream(s.bitvavo_ws_url, key, secret, eur, eng.on_ws_event, eng.on_ws_reconnect)
         asyncio.create_task(stream.run_forever())  # noqa: RUF006
+    if os.environ.get("NELYQOR_WS_FEED", "1") != "0" and eng.official_endpoints():
+        # carnet public horodaté (phase 8) : seulement contre l'API OFFICIELLE (jamais un faux service de test)
+        eng.ws_feed = PublicBookFeed(s.bitvavo_ws_url, public.book, eng.clock.now_ms)
+        eng.ws_feed.clock_skew_ms = eng.clock_skew_ms
+        try:
+            await eng.refresh_markets()
+            await eng.refresh_tickers()
+        except Exception:  # noqa: BLE001 — Bitvavo injoignable au démarrage : la sélection se fera au 1er cycle
+            log.warning("sélection initiale des marchés du WebSocket différée")
+        eng.update_ws_markets(force=True)
+        asyncio.create_task(eng.ws_feed.run_forever())  # noqa: RUF006
     eng.on_frozen = lambda: os._exit(70)  # Docker relance le conteneur (restart: unless-stopped)
     asyncio.create_task(eng.vigil())  # noqa: RUF006 — arrêt d'urgence SSH et battement de cœur, boucle bloquée ou non
     failures = 0
