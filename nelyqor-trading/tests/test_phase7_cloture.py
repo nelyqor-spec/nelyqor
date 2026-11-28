@@ -101,6 +101,11 @@ async def test_R9_frozen_book_feed_becomes_stale_then_recovers(tmp_path):
     assert db.one("SELECT COUNT(*) n FROM notifications WHERE kind='incident'")["n"] == 1
     clock.advance(60_000)
     await eng.refresh_tickers()  # toujours figé : pas de 2e alerte
+    # l'état GLOBAL publié (battement de cœur, PWA « données périmées ») le dit aussi : défaut trouvé par
+    # incident_check.sh, run 46124328537 (marchés écartés, mais data_ok=true dans le battement)
+    clock.advance(5_000)
+    await eng.step()
+    assert eng.db.kv_get("engine_heartbeat")["data_ok"] is False
     assert db.one("SELECT COUNT(*) n FROM notifications WHERE kind='incident'")["n"] == 1
     base = eng.rest.ticker_book
 
@@ -110,6 +115,8 @@ async def test_R9_frozen_book_feed_becomes_stale_then_recovers(tmp_path):
     clock.advance(5_000)
     await eng.refresh_tickers()
     assert not eng.feed_frozen and st.ts_received_ms == clock.now_ms()
+    await eng.step()
+    assert eng.db.kv_get("engine_heartbeat")["data_ok"] is True
 
 
 async def test_R9_outage_gap_is_not_a_frozen_feed(tmp_path):

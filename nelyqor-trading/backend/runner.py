@@ -1308,7 +1308,7 @@ class Engine:
                 self.db.exec("INSERT OR REPLACE INTO equity_snapshots VALUES(?,?,?,?,?)",
                              (now, ex.mode, fmt(v), fmt(cash), fmt(v - cash)))
             self.last_snapshot_ms = now
-        self.heartbeat(data_ok=True)
+        self.heartbeat(data_ok=not self.feed_frozen and now - self.last_data_ms <= self.limits.max_stale_ms)
 
     def heartbeat(self, data_ok: bool) -> None:
         """Signe de vie du moteur, distinct de la fraîcheur des données de marché."""
@@ -1426,7 +1426,8 @@ class Engine:
         except Exception:
             self.heartbeat(data_ok=False)
             raise
-        self.last_data_ms = now
+        if not self.feed_frozen:  # flux figé : la dernière donnée FRAÎCHE reste celle d'avant le gel (clôture phase 7)
+            self.last_data_ms = now
         await self._safe_commands()
         if self.real_exec is not None and not self._open_orders_checked:
             try:  # premier cycle après démarrage : ordres ouverts chez l'échange vs journal (D7)
