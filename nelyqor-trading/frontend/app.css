@@ -1,0 +1,90 @@
+[hidden] { display: none !important; }
+/* Thème sombre par défaut ; clair selon le réglage de l'iPhone (ou forcé dans Réglages > Apparence). */
+:root {
+  --bg: #0b0f14; --card: #131a22; --card2: #1a232e; --line: #243040; --text: #e7edf3; --mute: #8c9aab;
+  --accent: #4fb3ff; --good: #3ecf8e; --bad: #ff5d6c; --warn: #ffb547; --real: #e5173f; --sim: #4fb3ff;
+  --sim-strip: #1d5fbf; --real-strip: #d0103a; --alert-bg: rgba(255,59,92,.16); --warn-bg: rgba(255,181,71,.12);
+  --tabs-bg: rgba(11,15,20,.96); --on-accent: #031522;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f6f9; --card: #ffffff; --card2: #eef1f5; --line: #d6dde6; --text: #0d1620; --mute: #566476;
+    --accent: #0a6fd1; --good: #0f7a48; --bad: #c8102e; --warn: #8a5600; --sim: #0a6fd1;
+    --alert-bg: #fde7ea; --warn-bg: #fff3dc; --tabs-bg: rgba(255,255,255,.96); --on-accent: #ffffff;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f4f6f9; --card: #ffffff; --card2: #eef1f5; --line: #d6dde6; --text: #0d1620; --mute: #566476;
+  --accent: #0a6fd1; --good: #0f7a48; --bad: #c8102e; --warn: #8a5600; --sim: #0a6fd1;
+  --alert-bg: #fde7ea; --warn-bg: #fff3dc; --tabs-bg: rgba(255,255,255,.96); --on-accent: #ffffff;
+  color-scheme: light;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-text-size-adjust: 100%; }
+/* zones sûres (encoche, barre d'accueil) : en haut via l'en-tête, en bas via les onglets, sur les côtés ici */
+body { padding: 0 env(safe-area-inset-right) calc(72px + env(safe-area-inset-bottom)) env(safe-area-inset-left); min-height: 100vh; }
+.view { max-width: 640px; margin: 0 auto; padding: 12px 16px 96px; }
+h1 { font-size: 22px; margin: 8px 0 12px; } h2 { font-size: 16px; margin: 18px 0 8px; color: var(--mute); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; margin: 10px 0; overflow-wrap: anywhere; }
+.big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; padding: 4px 0; }
+.row + .row { border-top: 1px solid var(--line); }
+.row.sub { padding-left: 14px; font-size: 14px; }
+.mute { color: var(--mute); font-size: 13px; } .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: .03em; }
+.pill.sim { background: rgba(79,179,255,.15); color: var(--sim); } .pill.real { background: var(--real); color: #fff; }
+.pill.pause { background: rgba(255,181,71,.15); color: var(--warn); } .pill.inc { background: rgba(255,93,108,.2); color: var(--bad); }
+/* en-tête collé en haut : bandeau du MODE (permanent) puis bandeau d'état (démo, données périmées, réel) */
+.top { position: sticky; top: 0; z-index: 7; padding-top: env(safe-area-inset-top); background: var(--bg); }
+.mode { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; padding: 6px 12px; font-size: 13px; color: #fff; text-align: center; }
+.mode:empty { display: none; }
+.mode b { letter-spacing: .06em; } .mode span { opacity: .95; }
+.mode.sim { background: var(--sim-strip); } .mode.real { background: var(--real-strip); font-size: 15px; padding: 9px 12px; }
+.mode.inconnu { background: #5b6675; }
+.mode .q { border-color: rgba(255,255,255,.7); color: #fff; }
+body.mode-real::after { content: ""; position: fixed; inset: 0; border: 4px solid var(--real); pointer-events: none; z-index: 30; }
+.banner { text-align: center; font-size: 12px; font-weight: 700; padding: 6px 12px; display: none; color: #fff; }
+.banner.show { display: block; } .banner.demo { background: #5b3fd1; } .banner.stale { background: #8a5a00; } .banner.real { background: var(--real); }
+.tabs { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--tabs-bg); border-top: 1px solid var(--line); padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 6; }
+.tabs button { flex: 1; background: none; border: 0; color: var(--mute); font-size: 11px; padding: 8px 0 10px; display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 56px; }
+.tabs button span { font-size: 20px; } .tabs button.on { color: var(--accent); }
+/* bouton STOP : toujours visible dans la barre du bas, à portée du pouce, sans masquer le contenu */
+.tabs button.tab-stop { flex: 1.1; margin: 6px 6px 8px; min-height: 48px; border-radius: 14px; background: #d0103a; color: #fff; font-weight: 800; font-size: 12px; letter-spacing: .05em; border: 2px solid #fff; padding: 4px 0; }
+.tabs button.tab-stop span { font-size: 16px; }
+button.btn { width: 100%; border: 0; border-radius: 12px; padding: 14px; font-size: 16px; font-weight: 600; margin: 6px 0; background: var(--card2); color: var(--text); min-height: 48px; }
+button.btn.primary { background: var(--accent); color: var(--on-accent); } button.btn.danger { background: #d0103a; color: #fff; } button.btn.warn { background: var(--warn); color: #241600; }
+button.btn.big { font-size: 18px; min-height: 60px; }
+.seg { display: flex; gap: 8px; } .seg .btn { margin: 0; }
+/* aide « ? » : cible tactile de 32 px au moins */
+.q { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; margin: -4px 0 -4px 4px; padding: 0; border-radius: 50%; border: 1.5px solid var(--mute); background: none; color: var(--mute); font-size: 14px; font-weight: 700; line-height: 1; vertical-align: middle; position: relative; }
+.q::after { content: ""; position: absolute; inset: -6px; }
+.help { font-size: 16px; line-height: 1.5; }
+input, select { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card2); color: var(--text); font-size: 16px; margin: 6px 0; }
+label.chk { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; font-size: 14px; } label.chk input { width: auto; margin-top: 3px; }
+svg.chart { width: 100%; height: 140px; display: block; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; } td, th { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.scroll { overflow-x: auto; }
+.sheet { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 40; display: flex; align-items: flex-end; }
+.sheet > div { background: var(--card); width: 100%; max-width: 640px; margin: 0 auto; border-radius: 20px 20px 0 0; padding: 18px calc(16px + env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); max-height: 90vh; overflow: auto; }
+.reason { font-size: 12px; color: var(--mute); margin: 2px 0 0; }
+.login { max-width: 380px; margin: 18vh auto 0; }
+/* capital : FICTIF (bleu) ou RÉEL (rouge), jamais confondus */
+.capital.sim { border-left: 6px solid var(--sim); } .capital.real { border: 2px solid var(--real); border-left-width: 6px; }
+.cap-label { font-weight: 700; font-size: 13px; letter-spacing: .03em; text-transform: uppercase; }
+.capital.sim .cap-label { color: var(--sim); } .capital.real .cap-label { color: var(--real); }
+/* alertes : rouge = grave ; une position NON protégée est TOUJOURS une alerte rouge distincte */
+.alert { border-radius: 12px; padding: 10px 12px; margin: 8px 0; }
+.alert.rouge { background: var(--alert-bg); border: 2px solid var(--bad); }
+.alert.orange { background: var(--warn-bg); border: 1px solid var(--warn); }
+.alert-t { font-weight: 800; } .alert.rouge .alert-t { color: var(--bad); } .alert.orange .alert-t { color: var(--warn); }
+.alert-x { font-size: 14px; margin-top: 2px; }
+.pos { padding: 6px 0; } .pos + .pos { border-top: 1px solid var(--line); }
+.pos.ko { background: var(--alert-bg); border: 2px solid var(--bad); border-radius: 12px; padding: 6px 10px; margin: 6px 0; }
+.prot-ok { color: var(--good); font-weight: 700; font-size: 13px; }
+.prot-ko { color: #fff; background: var(--bad); font-weight: 800; font-size: 13px; padding: 2px 8px; border-radius: 6px; }
+/* jauge de risque 0-100 avec le seuil des 45/100 */
+.gauge { position: relative; height: 12px; border-radius: 6px; background: var(--card2); margin: 8px 0 4px; overflow: visible; }
+.gauge .fill { height: 100%; border-radius: 6px; background: var(--good); } .gauge .fill.hi { background: var(--warn); }
+.gauge .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--text); }

@@ -1,0 +1,17 @@
+.env
+secrets
+data
+backups
+tests
+reports
+docs
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+scripts/deploy_fake_bitvavo.py
+scripts/deploy_probe.py
+scripts/deploy_check.sh
+scripts/incident_check.sh
+scripts/incident_probe.py
+scripts/install_serveur.sh

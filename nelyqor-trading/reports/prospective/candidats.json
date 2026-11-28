@@ -1,0 +1,18 @@
+[
+  {"id": "xs_eur_4h_detention3j_hybride", "type": "xs", "quote": "EUR", "interval": "4h", "variant": "detention_min_3j",
+   "overrides": {"execution": "hybrid"},
+   "justification": "meilleur Sharpe transversal en recherche (0,69, DSR 0,19 non significatif) ; exécution hybride la moins défavorable"},
+  {"id": "xs_eur_4h_base_limite", "type": "xs", "quote": "EUR", "interval": "4h", "variant": "base",
+   "overrides": {"execution": "limit"},
+   "justification": "comparaison d'exécution : limite +24,1 % vs marché -17,3 % en recherche (modèle de remplissage à vérifier)"},
+  {"id": "xs_eur_4h_base_marche", "type": "xs", "quote": "EUR", "interval": "4h", "variant": "base",
+   "overrides": {"execution": "market"},
+   "justification": "témoin : même signal, exécution au marché"},
+  {"id": "xs_eur_8h_detention3j_marche", "type": "xs", "quote": "EUR", "interval": "8h", "variant": "detention_min_3j",
+   "justification": "second meilleur intervalle en recherche (+82,1 %), contrôle de robustesse de l'horizon"},
+  {"id": "strat_4h_tendance_protection", "type": "strat", "interval": "4h", "family": "trend_following",
+   "markets": ["ADA-EUR", "AVAX-EUR", "BTC-EUR", "DOGE-EUR", "ETH-EUR", "LINK-EUR", "PEPE-EUR", "SOL-EUR", "SUI-EUR", "XRP-EUR"],
+   "filters": {"trend_ema": 200, "mtf_mult": 4},
+   "bt": {"latency_bars": 1, "cooldown_bars": 6, "breakeven_r": 1.0, "atr_trail_mult": 2.5},
+   "justification": "meilleur holdout interne (+7,6 %, PF 1,93, 39 trades) mais walk-forward -9,0 % : NON promu, suivi seulement"}
+]

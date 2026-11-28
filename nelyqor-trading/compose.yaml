@@ -1,0 +1,204 @@
+# Nelyqor Trading — 3 services permanents + laboratoire à la demande.
+# Séparation des permissions :
+#  - engine : SEUL service avec les secrets Bitvavo ; pas de port exposé.
+#  - api    : contrôle/visualisation ; aucun secret Bitvavo ; écoute uniquement sur le réseau interne.
+# Séparation des BASES (phase 5, backend/storage/channels.py) :
+#  - engine_data  /engine   engine.db (journal, intentions, flux, état)  : moteur SEUL (lecture/écriture)
+#  - commands     /commands commandes.db (table control_commands seule)  : api écrit ; moteur LECTURE SEULE
+#  - display      /display  affichage.db (copie d'affichage)            : moteur écrit ; api LECTURE SEULE
+#  - api_data     /apidata  api.db (audit de l'API)                     : api SEULE
+#  - engine_state /state    magasin signé du Guardian, ARRET_URGENCE     : moteur SEUL
+#  - caddy  : HTTPS public (Let's Encrypt) -> api.
+#  - lab    : aucun secret, aucun socket Docker, CPU/RAM limités, priorité basse, base de travail séparée.
+name: nelyqor
+
+x-common: &common
+  build: .
+  image: nelyqor-trading:local
+  restart: unless-stopped
+  read_only: true
+  tmpfs: ["/tmp"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "5"}
+
+services:
+  engine:
+    <<: *common
+    command: ["python", "-m", "backend.runner"]
+    environment:
+      NELYQOR_ROLE: engine
+      NELYQOR_REAL_TRADING_ALLOWED: ${NELYQOR_REAL_TRADING_ALLOWED:-false}
+      BITVAVO_OPERATOR_ID: ${BITVAVO_OPERATOR_ID:-1}
+      NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
+      LOG_LEVEL: INFO
+      NELYQOR_ENGINE_STATE_DIR: /state
+      NELYQOR_DB: /engine/engine.db
+      NELYQOR_COMMANDS_DB: /commands/commandes.db
+      NELYQOR_DISPLAY_DB: /display/affichage.db
+      # phase 7 : seuils d'espace libre (Mo) ; sous le seuil critique, écritures non critiques suspendues
+      NELYQOR_DISK_WARN_FREE_MB: ${NELYQOR_DISK_WARN_FREE_MB:-2048}
+      NELYQOR_DISK_CRIT_FREE_MB: ${NELYQOR_DISK_CRIT_FREE_MB:-512}
+      NELYQOR_NTFY_DETAILS: ${NELYQOR_NTFY_DETAILS:-false}
+    volumes:
+      - engine_data:/engine      # base du moteur : jamais montée ailleurs (phase 5)
+      - commands:/commands:ro    # commandes déposées par l'API : lues, jamais écrites par le moteur
+      - display:/display         # copie d'affichage publiée pour l'API (jamais relue par le moteur)
+      - engine_state:/state   # état autoritaire du Guardian, nonces, méta réelles : moteur SEUL (phase 4)
+    secrets:
+      - bitvavo_api_key
+      - bitvavo_api_secret
+      - engine_state_key
+      - owner_command_key
+      - owner_command_salt
+      - ntfy_url            # phase 7 : alertes ntfy (fichier vide = désactivé)
+    deploy:
+      resources:
+        limits: {cpus: "1.5", memory: 1200M}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3,json,time,sys;r=sqlite3.connect('file:/engine/engine.db?mode=ro',uri=True).execute(\"select v from kv where k='engine_heartbeat'\").fetchone();h=json.loads(r[0]) if r else {};sys.exit(0 if h and time.time()*1000-h['ts']<180000 and not h.get('boucle_figee') else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  api:
+    <<: *common
+    # X-Forwarded-For accepté UNIQUEMENT de Caddy (adresse fixe ci-dessous) : un autre conteneur du réseau ne
+    # peut pas usurper l'IP cliente (anti-bruteforce par IP) — phase 6, contre-expertise D9
+    command: ["uvicorn", "backend.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers",
+              "--forwarded-allow-ips", "172.30.57.10"]
+    environment:
+      NELYQOR_ROLE: api
+      NELYQOR_COOKIE_SECURE: "true"
+      NELYQOR_LAB_REPORT: /lab/reports/lab_report_bitvavo.json
+      NELYQOR_REAL_TRADING_ALLOWED: ${NELYQOR_REAL_TRADING_ALLOWED:-false}
+      NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
+      NELYQOR_COMMANDS_DB: /commands/commandes.db
+      NELYQOR_DISPLAY_DB: /display/affichage.db
+      NELYQOR_API_DB: /apidata/api.db
+    volumes:
+      - display:/display:ro   # copie d'affichage du moteur : LECTURE SEULE (phase 5)
+      - commands:/commands    # seul canal écrit vers le moteur (table control_commands)
+      - api_data:/apidata     # audit propre à l'API
+      - lab:/lab:ro  # rapport du laboratoire, lecture seule
+    # aucun accès à engine_data (base du moteur) ni à engine_state
+    secrets:
+      - owner_password_hash
+      - owner_command_salt
+    expose: ["8000"]
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 300M}
+    healthcheck:   # phase 6 : santé de l'API elle-même (indépendante de la fraîcheur du moteur)
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    # phase 6 : durcissement (seule capacité gardée : écouter sur 80/443) ; /data et /config sont des volumes
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    # Sans DAC_OVERRIDE, Caddy (root) ne lit que des fichiers lisibles par « autres » : le sel PUBLIC
+    # secrets/owner_command_salt est en 644 (choix documenté, D3) ; les vrais secrets restent en 600 (uid 10001).
+    networks:
+      default: {ipv4_address: 172.30.57.10}
+    # SEUL service publié. Docker contourne UFW pour les ports publiés : ne jamais publier engine/api ;
+    # NELYQOR_BIND_IP restreint l'écoute (ex. IP Tailscale 100.x.y.z, ou 127.0.0.1 derrière un tunnel) — phase 7
+    ports: ["${NELYQOR_BIND_IP:-0.0.0.0}:80:80", "${NELYQOR_BIND_IP:-0.0.0.0}:443:443"]
+    logging:   # phase 7 : rotation des journaux aussi pour Caddy (hors ancre commune)
+      driver: json-file
+      options: {max-size: "10m", max-file: "5"}
+    environment:
+      NELYQOR_DOMAIN: ${NELYQOR_DOMAIN:?définir NELYQOR_DOMAIN dans .env}
+      # acme : Let's Encrypt (domaine public) ; internal : certificat de l'autorité interne de Caddy (sans domaine)
+      NELYQOR_TLS: ${NELYQOR_TLS:-acme}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./frontend:/srv/frontend:ro   # PWA servie par Caddy, jamais par l'API (phase 4)
+      - ./secrets/owner_command_salt:/srv/meta/owner_command_salt:ro   # sel PUBLIC (pas une clé)
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: {condition: service_healthy}
+
+  collector:
+    # Téléchargement incrémental des bougies PUBLIQUES (aucune clé, aucun accès à la base de production).
+    <<: *common
+    profiles: ["lab"]
+    restart: "no"
+    command: ["python", "scripts/download_candles.py", "--markets", "BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR",
+              "--interval", "1h", "--days", "1100"]
+    environment:
+      NELYQOR_ROLE: collector
+      NELYQOR_MARKET_DATA: /market
+    volumes:
+      - market:/market
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 400M}
+
+  lab:
+    <<: *common
+    profiles: ["lab"]
+    restart: "no"
+    command: ["nice", "-n", "19", "python", "scripts/run_lab.py", "--source", "real",
+              "--markets", "BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR"]
+    environment:
+      NELYQOR_ROLE: lab
+      NELYQOR_MARKET_DATA: /market
+      NELYQOR_LAB_DB: /lab/lab.db
+      NELYQOR_LAB_OUT: /lab/reports
+      NELYQOR_HOSTING_EUR: ${NELYQOR_HOSTING_EUR:-7.19}
+    volumes:
+      - market:/market:ro   # données de marché en lecture seule
+      - lab:/lab            # base et rapports du laboratoire, SÉPARÉS de la production
+    # aucun secret, aucun socket Docker, aucun accès aux bases de production (engine_data, display, commands)
+    deploy:
+      resources:
+        limits: {cpus: "1.0", memory: 1500M}
+
+networks:
+  default:
+    ipam:
+      config: [{subnet: 172.30.57.0/24}]   # adresse fixe de Caddy (--forwarded-allow-ips de l'API)
+
+volumes:
+  engine_state:
+  engine_data:
+  commands:
+  display:
+  api_data:
+  market:
+  lab:
+  caddy_data:
+  caddy_config:
+
+# Les secrets sont MONTÉS tels quels depuis ./secrets (Compose ignore uid/gid/mode pour un secret de type
+# fichier) : ils doivent appartenir à l'utilisateur des conteneurs (uid 10001), sinon moteur et API ne peuvent
+# pas les lire (vérifié en conditions réelles, phase 6) : `chown 10001:10001 secrets/<fichier>` puis `chmod 600`.
+# Exception : owner_command_salt (PUBLIC) en 644, pour que Caddy sans capacités puisse le servir (D3).
+secrets:
+  bitvavo_api_key:
+    file: ./secrets/bitvavo_api_key
+  bitvavo_api_secret:
+    file: ./secrets/bitvavo_api_secret
+  owner_password_hash:
+    file: ./secrets/owner_password_hash
+  engine_state_key:
+    file: ./secrets/engine_state_key
+  owner_command_key:
+    file: ./secrets/owner_command_key
+  owner_command_salt:
+    file: ./secrets/owner_command_salt
+  ntfy_url:
+    file: ./secrets/ntfy_url

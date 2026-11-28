@@ -1,0 +1,7 @@
+[
+ {"id": "e1_ls", "type": "tendance", "short": true, "evt": false},
+ {"id": "e1_lc", "type": "tendance", "short": false, "evt": false},
+ {"id": "e1_ls_evt", "type": "tendance", "short": true, "evt": true},
+ {"id": "e1_lc_evt", "type": "tendance", "short": false, "evt": true},
+ {"id": "e1_cash", "type": "cash", "short": false, "evt": false}
+]

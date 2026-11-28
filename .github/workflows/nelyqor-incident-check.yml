@@ -1,0 +1,69 @@
+# Nelyqor Trading — vérification des INCIDENTS en conditions réelles (Docker) sur ubuntu-latest (phase 7).
+# - Construit l'image du VRAI Dockerfile, démarre la pile de compose.yaml (projet séparé « nelyqor-incident »)
+#   en HTTPS avec le certificat INTERNE de Caddy.
+# - SIMULATION uniquement : aucune clé Bitvavo (fichiers vides), secrets FACTICES générés par le script,
+#   NELYQOR_REAL_TRADING_ALLOWED=false, faux Bitvavo public et faux ntfy (réseau de la pile) : aucun ordre réel.
+# - Scénarios : HTTPS/TLS/en-têtes, accès non autorisé, sauvegarde -> destruction des volumes -> restauration,
+#   échec de sauvegarde, disque (hôte et moteur sur tmpfs saturé), Bitvavo indisponible, données incohérentes,
+#   coupure d'Internet, kill -9, redémarrage complet de la pile et du démon Docker.
+name: nelyqor-incident-check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "nelyqor-trading/compose.yaml"
+      - "nelyqor-trading/Dockerfile"
+      - "nelyqor-trading/.dockerignore"
+      - "nelyqor-trading/Caddyfile"
+      - "nelyqor-trading/requirements.lock"
+      - "nelyqor-trading/backend/**"
+      - "nelyqor-trading/scripts/incident_check.sh"
+      - "nelyqor-trading/scripts/incident_probe.py"
+      - "nelyqor-trading/scripts/deploy_probe.py"
+      - "nelyqor-trading/scripts/deploy_fake_bitvavo.py"
+      - "nelyqor-trading/scripts/backup.sh"
+      - "nelyqor-trading/scripts/restore.sh"
+      - "nelyqor-trading/scripts/sauvegarde_auto.sh"
+      - "nelyqor-trading/scripts/surveillance_disque.sh"
+      - "nelyqor-trading/scripts/alerte.sh"
+      - ".github/workflows/nelyqor-incident-check.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-incident-check-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+jobs:
+  incident-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Versions
+        run: docker version && docker compose version && openssl version
+      - name: Vérification des incidents
+        env:
+          INCIDENT_OUT: reports/incident_check
+          INCIDENT_DOCKERD_RESTART: "sudo -n systemctl restart docker"
+        run: bash scripts/incident_check.sh
+      - name: Résumé
+        if: always()
+        run: |
+          if [ -f reports/incident_check/resume.md ]; then cat reports/incident_check/resume.md >> "$GITHUB_STEP_SUMMARY";
+          else echo "Aucun résumé produit (échec avant les contrôles) : voir le journal du job." >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nelyqor-incident-check
+          path: nelyqor-trading/reports/incident_check/
+          retention-days: 7
+          if-no-files-found: warn

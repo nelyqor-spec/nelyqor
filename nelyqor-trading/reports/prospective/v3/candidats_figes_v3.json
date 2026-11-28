@@ -1,0 +1,101 @@
+{
+  "fige_le_utc": "2026-11-26T10:36:55+00:00",
+  "commit_parent": "1917023ec84ff19e5c19e4087395154f6bc5c1f3",
+  "cutoff_ms": 1795737600000,
+  "cutoff_utc": "2026-11-27T00:00:00+00:00",
+  "empreinte_code": {
+    "backend/research/xsection_v4.py": "4032e0a32df047cac9e1e55744391019a8e147df815c3dce13595917e24704ca",
+    "backend/research/strategies_v4.py": "56fc107df81b2659442fa6315349e9a6ef6b318766a7439b56ae173e20ac2d4a",
+    "backend/research/xsection_v3.py": "e2368abecbf7b817ffcada0807f4762cd662c98d7f4f29bc23e6014aeaee4dff",
+    "backend/research/xsection.py": "354e47b1d5fb6640b773a659b2dd235fa1aa52655cba794aee79aadca22bde4f",
+    "scripts/research_phase3.py": "2544d89c464042ebfd558feb270e5c20a1b74e5f4f8bed7c1bf5c3b87df9d776",
+    "scripts/prospective_v3.py": "bc27676df4074ccd02488ba45c8b3dc7b6da9baa6e4d50cd8e2413fd0faed5f1"
+  },
+  "empreintes_candidats": {
+    "v3_rotation_largeur": "9f3cf660a75ab8fbed302845586299c04ce7b385ad6800e9d12f2b60756069d8",
+    "v3_rotation_largeur_volatilite": "0d1c7a9d6d867725ba05922120a7ff9918035d0fcd0ffee2806b799cc9db3a43",
+    "v3_rotation_largeur_limite": "66c4f7e4c72f07f73aa979b5fbe7f1e829ec1d87bc0c74f8249590b27fd51372",
+    "v3_rotation_sans_filtre": "4a524f4930d82d59d2ee0d240a66828c8e9f29ff024010f76a8616f910839d28",
+    "v3_ref_btc_filtre": "815b24de90c40dd4145cb2e04f1f7cc3283a7d3df0346fb1086c069abe2b63cd",
+    "v3_ref_btc_exposition_constante": "74f44ca2e6c3519dc3204591a0d75cccc87c937baf8f890a6fc3b65379426ed2",
+    "v3_ref_equipondere_5": "fed25f910f03fd89cc9df906d41dccff9a41d3a519d4a5a7c3727bd31d873333"
+  },
+  "regles": "reports/prospective/v3/regle_v3.md (sha256 002e9ab55679b8ac234db2860bb75c52ca2f325f7eff09232cbaeb0c338abf03)",
+  "candidats": [
+    {
+      "id": "v3_rotation_largeur",
+      "type": "rotation",
+      "interval": "4h",
+      "params": {
+        "regime": "largeur"
+      },
+      "execution": {
+        "mode": "market"
+      }
+    },
+    {
+      "id": "v3_rotation_largeur_volatilite",
+      "type": "rotation",
+      "interval": "4h",
+      "params": {
+        "regime": "largeur",
+        "sizing": "volatilite",
+        "target_daily_vol": 0.04
+      },
+      "execution": {
+        "mode": "market"
+      }
+    },
+    {
+      "id": "v3_rotation_largeur_limite",
+      "type": "rotation",
+      "interval": "4h",
+      "params": {
+        "regime": "largeur"
+      },
+      "execution": {
+        "mode": "limit",
+        "ttl_bars": 1
+      }
+    },
+    {
+      "id": "v3_rotation_sans_filtre",
+      "type": "rotation",
+      "interval": "4h",
+      "params": {
+        "regime": "aucun"
+      },
+      "execution": {
+        "mode": "market"
+      }
+    },
+    {
+      "id": "v3_ref_btc_filtre",
+      "type": "ref_btc_filtre",
+      "interval": "4h",
+      "execution": {
+        "mode": "market"
+      }
+    },
+    {
+      "id": "v3_ref_btc_exposition_constante",
+      "type": "ref_constante",
+      "interval": "4h",
+      "marche": "BTC-EUR",
+      "poids": 0.25,
+      "execution": {
+        "mode": "market"
+      }
+    },
+    {
+      "id": "v3_ref_equipondere_5",
+      "type": "ref_equipondere",
+      "interval": "4h",
+      "n": 5,
+      "jours": 30,
+      "execution": {
+        "mode": "market"
+      }
+    }
+  ]
+}

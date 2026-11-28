@@ -1,0 +1,9 @@
+[
+ {"id": "v3_rotation_largeur", "type": "rotation", "interval": "4h", "params": {"regime": "largeur"}, "execution": {"mode": "market"}},
+ {"id": "v3_rotation_largeur_volatilite", "type": "rotation", "interval": "4h", "params": {"regime": "largeur", "sizing": "volatilite", "target_daily_vol": 0.04}, "execution": {"mode": "market"}},
+ {"id": "v3_rotation_largeur_limite", "type": "rotation", "interval": "4h", "params": {"regime": "largeur"}, "execution": {"mode": "limit", "ttl_bars": 1}},
+ {"id": "v3_rotation_sans_filtre", "type": "rotation", "interval": "4h", "params": {"regime": "aucun"}, "execution": {"mode": "market"}},
+ {"id": "v3_ref_btc_filtre", "type": "ref_btc_filtre", "interval": "4h", "execution": {"mode": "market"}},
+ {"id": "v3_ref_btc_exposition_constante", "type": "ref_constante", "interval": "4h", "marche": "BTC-EUR", "poids": 0.25, "execution": {"mode": "market"}},
+ {"id": "v3_ref_equipondere_5", "type": "ref_equipondere", "interval": "4h", "n": 5, "jours": 30, "execution": {"mode": "market"}}
+]

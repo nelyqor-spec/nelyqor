@@ -1,0 +1,58 @@
+{
+  "fige_le_utc": "2026-11-26T16:17:48+00:00",
+  "commit_parent": "fc6b43f0565ddbf6a00ceefe039ff62f5122dce9",
+  "cutoff_ms": 1795737600000,
+  "cutoff_utc": "2026-11-27T00:00:00+00:00",
+  "empreinte_code": {
+    "backend/research/directional.py": "dcde9338ffa91b031bcdb91ad84b162620633fe0b50103314cc206b7579f1ddd",
+    "backend/research/directional_rules.py": "9c54675c823986942738b1a9d3f2cd4888aeff91f62cc86ba37366d0d8875162",
+    "backend/research/xsection_v4.py": "4032e0a32df047cac9e1e55744391019a8e147df815c3dce13595917e24704ca",
+    "backend/research/strategies_v4.py": "56fc107df81b2659442fa6315349e9a6ef6b318766a7439b56ae173e20ac2d4a",
+    "backend/events/hygiene.py": "fca4f054aa213d9d90dd664a1b9c0c214e830df3ef55945608ec921319506dd7",
+    "backend/events/lexicon.py": "6e1e7d078a97cf4b7605c8a80dfaf6613ee24dc12b3068a87eb3eee9d8b27680",
+    "backend/events/model.py": "530ae540314fd03facbea5e5ab98c856dddc163a6228658a16b1c146dd033461",
+    "backend/events/journal.py": "4738401b85dd40613c5e862ff8ed7e7b39de8b3f83b2ffa4a54cd44cce5f7a6d",
+    "scripts/prospective_e1.py": "10e8d24a320d9c7182d6892fb4c3ed6e8b6cea77e24d8e5e51892b4845214bc1"
+  },
+  "empreintes_candidats": {
+    "e1_ls": "16b2b11d00a896dbdb738aa6d0f1768f9485bf97075811d1e48b5b05d677b9a2",
+    "e1_lc": "aae08d25d2348e1e7869d612a260807e20af6c89986dd1801596bdfd4efc47b0",
+    "e1_ls_evt": "4b93725d8218119a6ae7504f47eee7fb5a38c58692676d3a49331d342ced625b",
+    "e1_lc_evt": "ff22e0248698b3f5261158609535f31d310bdb35f30e072c83cc342d39e51999",
+    "e1_cash": "414a6d429ab6cc31720ef38313b1a34e46b154f9462fc284a106ac90b7408076"
+  },
+  "regles": "reports/prospective/e1/regle_e1.md (sha256 a8301e1bb785c5b1d2dbed746b79c607043fca082f75a354f26137943ed57ba7)",
+  "statut": "EXPÉRIMENTAL, NON DÉPLOYABLE (Short indisponible par API)",
+  "candidats": [
+    {
+      "id": "e1_ls",
+      "type": "tendance",
+      "short": true,
+      "evt": false
+    },
+    {
+      "id": "e1_lc",
+      "type": "tendance",
+      "short": false,
+      "evt": false
+    },
+    {
+      "id": "e1_ls_evt",
+      "type": "tendance",
+      "short": true,
+      "evt": true
+    },
+    {
+      "id": "e1_lc_evt",
+      "type": "tendance",
+      "short": false,
+      "evt": true
+    },
+    {
+      "id": "e1_cash",
+      "type": "cash",
+      "short": false,
+      "evt": false
+    }
+  ]
+}

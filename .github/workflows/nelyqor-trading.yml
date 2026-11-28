@@ -1,0 +1,68 @@
+# Nelyqor Trading — recette + données réelles Bitvavo + laboratoire, sur les machines gratuites de GitHub.
+# - Aucune clé Bitvavo, aucun secret : uniquement l'API PUBLIQUE de bougies.
+# - Ne passe AUCUN ordre ; le laboratoire n'a pas accès à la base de production.
+# - Données téléchargées publiées comme artefact (7 jours), jamais commitées dans le dépôt.
+name: nelyqor-trading
+
+on:
+  workflow_dispatch:
+    inputs:
+      all_markets:
+        description: "Télécharger tous les marchés EUR (plus long)"
+        type: boolean
+        default: false
+  push:
+    branches: ["claude/**"]
+    paths: ["nelyqor-trading/**", ".github/workflows/nelyqor-trading.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nelyqor-trading-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+jobs:
+  recette:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - run: python -m ruff check backend tests
+      - run: python -m mypy
+      - run: python -m pytest tests -q -p no:warnings
+
+  donnees-et-laboratoire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
+      - run: pip install -r requirements.lock
+      - name: Téléchargement incrémental + validation (API publique Bitvavo)
+        run: |
+          python scripts/download_candles.py --markets BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR --interval 1h --days 1100 || echo "code=$?"
+          if [ "${{ inputs.all_markets }}" = "true" ]; then python scripts/download_candles.py --all-eur --interval 1h --days 1100 || true; fi
+          python scripts/download_candles.py --report --interval 1h
+      - name: Laboratoire sur données réelles
+        run: |
+          python scripts/run_lab.py --source real --markets BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR --lab-db data/lab/lab.db --out reports-ci
+          python scripts/run_lab.py --source real --resample 4h --min-bars 1500 --markets BTC-EUR,ETH-EUR,SOL-EUR,XRP-EUR,ADA-EUR --lab-db data/lab/lab.db --out reports-ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: donnees-bitvavo-et-rapport
+          retention-days: 7
+          path: |
+            nelyqor-trading/data/market
+            nelyqor-trading/reports-ci

@@ -1,0 +1,90 @@
+{
+  "fige_le_utc": "2026-11-25T21:45:18+00:00",
+  "commit_parent": "68ec93fe4f08b1a38ade3e0e9338d77075c46adc",
+  "cutoff_ms": 1795651200000,
+  "cutoff_utc": "2026-11-26T00:00:00+00:00",
+  "empreinte_code": {
+    "backend/research/xsection.py": "354e47b1d5fb6640b773a659b2dd235fa1aa52655cba794aee79aadca22bde4f",
+    "backend/research/xsection_v2.py": "f93359ed1f66f8c9faba88e09e565af94e0550c14b3266a1020e8cb55152b26e",
+    "backend/data/resample.py": "f1993f311e18b6777dc99dc49ec2975555398dd888044421fc3cc3393372c9b7",
+    "backend/features/indicators.py": "ca7b183fff61bde583fc966436fdd69b2574012f72361e657a852d1ba4094961",
+    "scripts/research_phase3.py": "2544d89c464042ebfd558feb270e5c20a1b74e5f4f8bed7c1bf5c3b87df9d776",
+    "scripts/research_phase4.py": "8712a4cc4d4ebf0a32827119d466654853460cdbf355670cc72f6d0e53c315a0",
+    "scripts/prospective_v2.py": "6ef17e9d4d20cf2b3d455e7be2c3d424baad29353c0750adbd02f04fa95277e9"
+  },
+  "empreintes_candidats": {
+    "v2_hyp_4h_H5_rotation_si_gain_net_det3j": "3a24601fb5639540585ca219f41ffedf9dddfee5926b24d1cec7dd0cecc19fac",
+    "v2_regime_4h_btc_et_proportion_haussiere": "f496fbd10d3b6f998efa9adce35db3b6e6abe79d33075f9f7514fd657c9b84f6",
+    "v2_dimensionnement_4h_kelly": "74d975eec689224f96bb1c5716035658dfcf5053e3cee080b87909a2054459db",
+    "v2_temoin_4h_sans_filtre": "c1a8c032275877be5452d00aba9693797ad1972749e93d9f37e31e0e2ecbe78d"
+  },
+  "regles": "aucune modification ; prédictions enregistrées avant observation ; notation à horizon ; le rétrospectif sur données nouvelles est publié séparément",
+  "candidats": [
+    {
+      "id": "v2_hyp_4h_H5_rotation_si_gain_net_det3j",
+      "type": "xs2",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "base",
+      "overrides": {
+        "min_hold_bars": 18
+      },
+      "exposure": "btc",
+      "options": {
+        "rotation_hurdle": 1.0
+      },
+      "recherche": {
+        "rendement_net": 0.9945560365316368,
+        "moitie_1": 0.8074549141861433,
+        "moitie_2": 0.10351634271870114,
+        "trades": 228,
+        "max_drawdown": -0.5617457151029919,
+        "sharpe": 0.744080274495106
+      }
+    },
+    {
+      "id": "v2_regime_4h_btc_et_proportion_haussiere",
+      "type": "xs2",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "base",
+      "exposure": "btc_et_proportion_haussiere",
+      "options": {},
+      "recherche": {
+        "rendement_net": 0.893139399253283,
+        "moitie_1": 0.5781073056680908,
+        "moitie_2": 0.1996265351878741,
+        "trades": 135,
+        "max_drawdown": -0.48979127977849257
+      }
+    },
+    {
+      "id": "v2_dimensionnement_4h_kelly",
+      "type": "xs2",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "base",
+      "exposure": "btc",
+      "options": {
+        "sizing": "kelly"
+      },
+      "recherche": {
+        "rendement_net": 1.1473377546850685,
+        "max_drawdown": -0.5133239368099162,
+        "trades": 211
+      }
+    },
+    {
+      "id": "v2_temoin_4h_sans_filtre",
+      "type": "xs2",
+      "quote": "EUR",
+      "interval": "4h",
+      "variant": "base",
+      "exposure": "aucun",
+      "options": {},
+      "recherche": {
+        "note": "témoin de la valeur du filtre BTC"
+      }
+    }
+  ]
+}

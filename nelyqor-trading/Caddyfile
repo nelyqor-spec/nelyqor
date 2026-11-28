@@ -1,0 +1,57 @@
+# Phase 7 : mode TLS choisi par NELYQOR_TLS (.env) — « acme » (défaut) : Let's Encrypt pour un domaine public ;
+# « internal » : certificat signé par l'autorité INTERNE de Caddy (sans domaine : Tailscale, WireGuard, réseau local).
+# En « internal », l'iPhone doit faire confiance à la racine de Caddy (docs/INSTALLATION.md, option B).
+{
+	# ne jamais tenter d'installer la racine interne dans le magasin du conteneur (lecture seule)
+	skip_install_trust
+}
+
+(tls_acme) {
+	# rien : HTTPS automatique (Let's Encrypt / ZeroSSL) pour {$NELYQOR_DOMAIN}
+}
+
+(tls_internal) {
+	tls internal
+}
+
+{$NELYQOR_DOMAIN} {
+	import tls_{$NELYQOR_TLS:acme}
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# « ? » : posée seulement si absente — les en-têtes sont différés et ce bloc extérieur s'applique EN DERNIER :
+		# sans « ? », il écrasait la CSP « sandbox » des réponses /api/* (défaut mesuré en phase 7)
+		?Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+		-Server
+	}
+	# limite basique de taille de requête
+	request_body {
+		max_size 64KB
+	}
+	# API : seul chemin relayé vers le conteneur api. Ses réponses sont « sandboxées » : même si une API
+	# compromise renvoyait du HTML, aucun script ne s'exécuterait sur l'origine de la PWA (phase 4, D5).
+	handle /api/* {
+		header >Content-Security-Policy "sandbox; default-src 'none'; frame-ancestors 'none'"
+		header -Service-Worker-Allowed
+		reverse_proxy api:8000 {
+			header_down -Service-Worker-Allowed
+			header_down -Content-Security-Policy
+		}
+	}
+	# Sel public de signature servi depuis un fichier en LECTURE SEULE (l'API ne peut pas l'altérer, D1)
+	handle /meta/command_salt {
+		root * /srv/meta
+		rewrite * /owner_command_salt
+		header Cache-Control "no-store"
+		file_server
+	}
+	# PWA servie par Caddy depuis un montage en LECTURE SEULE (phase 4) : une API compromise ne peut plus
+	# servir un JavaScript piégé qui capterait la phrase de signature saisie dans l'iPhone.
+	handle {
+		root * /srv/frontend
+		file_server
+	}
+}
