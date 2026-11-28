@@ -1,43 +1,80 @@
-# Registre des défauts et limitations restants
+# Registre des défauts, limitations et améliorations
 
-Créé à la clôture de la phase 7 (28/11/2026) pour suivre les remarques non bloquantes et préparer leur correction.
+Créé à la clôture de la phase 7 (28/11/2026), réorganisé en phase 8.
+
+**Priorités** :
+- **P0** : compromet la sécurité ou la fiabilité de la simulation. Corrigé AVANT la mise en service.
+- **P1** : à corriger dans la mission de corrections qui suit la phase 8.
+- **P2** : amélioration utile, sans risque.
+- **P3** : accepté ou cosmétique.
 
 **État** :
-- **TRAITÉ** : corrigé, avec un test de non-régression.
-- **ATTÉNUÉ** : risque réduit, limite résiduelle documentée.
-- **OUVERT** : à corriger plus tard, sans danger pour la simulation.
-- **ACCEPTÉ** : limite assumée.
+- TRAITÉ : corrigé, avec un test de non-régression.
+- ATTÉNUÉ : risque réduit, reste documenté.
+- OUVERT : à faire.
+- ACCEPTÉ : limite assumée.
 
-**Critère « avant mise en service »** : une remarque est traitée avant de faire tourner la simulation 24 h/24 si elle
-peut compromettre la **sécurité** (accès, secrets, réel) ou la **fiabilité de la simulation** : alertes, données,
-reprise, sauvegardes.
+Les numéros R1 à R14 sont ceux de la clôture de la phase 7 ; N1 et suivants sont nouveaux en phase 8.
 
-| # | Remarque | Gravité pour la simulation | Avant mise en service ? | État | Preuve / suite |
-|---|---|---|---|---|---|
-| 1 | Envoi des alertes **bloquant** : jusqu'à 10 s par canal, la boucle et la vigie attendent | fiabilité : décisions et battement retardés pendant une panne de ntfy | **oui** | **TRAITÉ** | fil d'envoi dédié en production, file bornée à 100, rien n'attend côté moteur : `test_R1_*` |
-| 2 | Sauvegardes **non authentifiées** : l'empreinte sha256 est remplaçable avec le fichier | sécurité : restauration d'une sauvegarde substituée | **oui** | **TRAITÉ** | HMAC-SHA256 par fichier (`scripts/backup_mac.py`, clé dérivée de la phrase, lue dans un fichier) ; `restore.sh` refuse une sauvegarde modifiée ou sans HMAC (dérogation explicite pour les sauvegardes antérieures) ; vérifié par `sauvegarde_auto.sh` : `test_R2_*` |
-| 3 | Rétention **par type** : une sauvegarde partielle peut laisser une base du moteur sans son magasin d'état | fiabilité : la restauration devient impossible | **oui** | **TRAITÉ** | rétention par jeu complet (`scripts/backup_retention.py`) : `test_R3_*` |
-| 4 | Actions GitHub non épinglées par SHA ; dépréciation de Node 20 | faible (actions officielles, aucun secret) | non | OUVERT | épingler `actions/*` par SHA et passer à des versions compatibles avec Node 24 |
-| 5 | Le verrouillage SSH se fonde sur la présence d'une clé autorisée (qui peut être une clé de l'hébergeur à commande forcée) | sécurité de l'installation (risque de se fermer soi-même dehors) | non : atténué par la confirmation « OUI » et le test d'une 2e connexion | ATTÉNUÉ | vérifier que la clé de l'utilisateur sudo existe avant d'interdire les mots de passe |
-| 6 | `set_password.py` : `--phrase-seule` ne compare pas la phrase au mot de passe existant ; en `--les-deux`, un refus de la phrase laisse le nouveau mot de passe écrit sans redémarrer l'API | faible : la séparation des secrets reste exigée à l'installation | non | OUVERT | comparer au hash existant ; écrire les deux secrets d'un coup, ou aucun |
-| 7 | Caddy n'écoute pas en IPv6 | nulle (IPv4 fournie par l'hébergeur) | non | ACCEPTÉ | — |
-| 8 | Boucle figée **signalée mais jamais redémarrée** | fiabilité : la simulation reste arrêtée jusqu'à une action humaine | **oui** | **TRAITÉ** | sortie du processus après 15 min de boucle figée, relance par Docker. Le redémarrage est éprouvé par les `kill -9` (aucun doublon) : `test_R8_*` |
-| 9 | `/ticker/book` **sans horodatage de l'échange** : un flux figé passait pour frais | fiabilité : décisions sur des prix figés | **oui** | **ATTÉNUÉ** | détection d'un flux figé (3 lectures identiques sur plus de 2 min ⇒ données périmées, alerte unique) : `test_R9_*`, scénario « flux figé » d'`incident_check.sh`. **Reste ouvert** : brancher le carnet WebSocket horodaté (`BookManager`), seule vraie mesure de fraîcheur côté échange |
-| 10 | Démarrage à froid : environ 8 min avant d'avoir des bougies fraîches pour tout l'univers | nulle : les marchés sans bougies fraîches sont écartés | non | ACCEPTÉ | — |
-| 11 | Sans fusion, le cache événementiel n'est pas rafraîchi | E1 : filtre événementiel figé à 807 groupes | non (résolu par la fusion) | OUVERT | fusion de la PR n° 1 (collecte horaire) |
-| 12 | v1 publie `achat_passif_btc: NaN` | nulle : v1 est **figée** et ne peut pas être modifiée ; la référence BTC est publiée par v3 et E1 | non | ACCEPTÉ | ne jamais modifier v1 |
-| 13 | « Téléchargement incomplet (code 2) » à chaque mise à jour des données | nulle : marchés radiés ; rejeu exact vérifié | non | ACCEPTÉ | — |
-| 14 | Avertissement de dépréciation `httpx` / Starlette dans les tests | nulle | non | OUVERT | mise à jour des dépendances (phase 8) |
+## 1. Anomalies corrigées à retester sur le serveur définitif
+Tout est corrigé et testé en CI (Docker réel) ou hors ligne. Il reste à l'observer **sur la vraie machine**.
 
-## Défaut introduit puis corrigé à la clôture
-- **Régression D2** :
-  - **Cause** : le maintien en « critique » 10 min après un refus d'écriture s'appliquait aussi à un disque
-    **réellement** plein.
-  - **Effet** : la reprise des écritures était retardée de 10 min après libération de la place.
-  - **Détection** : `incident_check.sh`, run 46122339771, 105 réussis / 3 échecs (« disque libéré »).
-  - **Correction** : maintien seulement si la mesure d'espace contredit le refus (inodes ou quota) ; test
-    `test_D2_truly_full_disk_recovers_as_soon_as_space_returns`.
+| # | Anomalie corrigée | Priorité | Critère de validation sur le serveur |
+|---|---|---|---|
+| R1 | Alertes envoyées hors de la boucle (plus de blocage de 10 s) | P0 TRAITÉ | `alerte.sh` de test reçue ; aucun retard du battement pendant un envoi (`docs/VERIFICATION_SERVEUR.md` l. 11) |
+| R2 | Sauvegardes authentifiées (HMAC), refus d'une sauvegarde modifiée | P0 TRAITÉ | fichiers `.hmac` présents ; « authentification + déchiffrement + intégrité ok » (l. 9) |
+| R3 | Rétention par jeu complet (moteur + état) | P0 TRAITÉ | après 31 nuits : 30 jeux complets, restauration d'un jeu ancien réussie |
+| R8 | Redémarrage automatique d'une boucle figée (> 15 min) | P0 TRAITÉ | `docker compose ps` après un `kill` : relance seule, sans doublon (l. 8) |
+| R9 | Flux REST figé détecté (données périmées, alerte) | P0 ATTÉNUÉ | complété par N1 (flux WebSocket horodaté) |
+| D1 à D10 | Défauts de la contre-expertise (mode affiché, disque, boucle figée, installation sans domaine, restauration…) | P0 TRAITÉ | lignes 2 à 10 et 17 de la fiche de vérification ; recette iPhone 33 étapes |
+| E1 à E9 | Défauts trouvés par les essais d'incidents | P0 TRAITÉ | `incident_check.sh` vert (113 contrôles en CI) ; à relancer une fois sur le serveur si possible |
 
-## Défauts déjà corrigés pendant la phase 7 (pour mémoire)
-E1 à E9 (essais d'incidents) et D1 à D10 (contre-expertise indépendante) : `reports/RAPPORT_AUDIT_PHASE_7.md`,
-§ 7 et § 11.1.
+## 2. Défauts persistants
+| # | Défaut | Priorité | État | Critère de validation |
+|---|---|---|---|---|
+| R6 | `set_password.py --phrase-seule` ne compare pas la phrase au mot de passe ; en `--les-deux`, un refus de la phrase laisse le nouveau mot de passe écrit sans redémarrer l'API | P1 | OUVERT | test : phrase identique au mot de passe refusée ; `--les-deux` atomique (les deux secrets ou aucun) |
+| R5 | Verrouillage SSH fondé sur la seule présence d'une clé autorisée (clé de l'hébergeur à commande forcée possible) | P1 | ATTÉNUÉ (« OUI » + 2e connexion testée) | le script vérifie que la clé de l'utilisateur sudo existe avant d'interdire les mots de passe |
+| N2 | Une proposition d'apprentissage altérée bloque le cycle d'apprentissage. Le défaut est journalisé, mais aucune alerte n'est envoyée | P1 | OUVERT | alerte « incident » unique ; la simulation continue (déjà le cas) |
+
+## 3. Limitations techniques
+| # | Limitation | Priorité | État | Critère de validation |
+|---|---|---|---|---|
+| N1 | Carnet WebSocket horodaté branché (garde-fou : desynchro / incohérent / retard ⇒ entrée refusée ; flux coupé ⇒ repli REST et alerte) | P0 | TRAITÉ hors ligne (18 tests). **Vrai flux** : `nelyqor-ws-check` (§ 2 du rapport de la phase 8) | ligne 14 de la fiche : `vivant`, ≈ 30 marchés, retard médian < 500 ms |
+| N3 | Le WebSocket ne couvre que les marchés détenus et les 30 plus liquides ; les autres marchés restent sous les seules règles REST | P2 | ACCEPTÉ (charge réseau) | à revoir si le moteur trade hors de ce périmètre |
+| N4 | La source de prix reste le REST ; le WebSocket ne sert que de garde-fou | P2 | ACCEPTÉ (comportement validé conservé) | évaluer le passage au carnet WS comme source principale après 30 jours de garde-fou sans anomalie |
+| R4 | Actions GitHub non épinglées par SHA ; dépréciation de Node 20 | P2 | OUVERT | `actions/*` épinglées par SHA et compatibles avec Node 24 ; tests de sécurité des workflows verts |
+| R7 | Caddy n'écoute pas en IPv6 | P3 | ACCEPTÉ | — |
+| R10 | Démarrage à froid : ≈ 8 min avant des bougies fraîches pour tout l'univers | P3 | ACCEPTÉ (marchés écartés, jamais devinés) | — |
+| R11 | Sans fusion, le cache événementiel n'était pas rafraîchi | P2 | résolu par la fusion du 28/11 | `nelyqor-events` planifié vert sur `main` |
+| R13 | « Téléchargement incomplet (code 2) » : marchés radiés | P3 | ACCEPTÉ | — |
+| R14 | Dépréciation `httpx` / Starlette dans les tests | P3 | OUVERT | mise à jour des dépendances, suite verte |
+
+## 4. Améliorations financières
+| # | Amélioration | Priorité | État | Critère de validation |
+|---|---|---|---|---|
+| N5 | Coûts d'exécution non mesurables pour les ordres au marché : pas de prix de référence enregistré | P1 | OUVERT | enregistrer le milieu de carnet à la décision ; bilan : `fills_sans_reference` = 0 |
+| N6 | Fiabilité des prédictions du moteur : la table `predictions` n'est pas alimentée. Celle des générations prospectives est suivie par `suivi_prospectif.py` | P2 | OUVERT | prédictions du moteur enregistrées et réalisées ; Brier publié dans le bilan |
+| N7 | Apprentissage en ombre : multiplicateur de taille seulement. Le choix des marchés et les sorties ne sont pas appris | P2 | OUVERT (par prudence) | nouvelle proposition évaluée en ombre selon le même critère pré-enregistré |
+| R12 | v1 publie `achat_passif_btc: NaN` | P3 | ACCEPTÉ (v1 figée, à ne jamais modifier) | — |
+
+## 5. Risques potentiels
+| # | Risque | Priorité | Mesure en place | Critère de suivi |
+|---|---|---|---|---|
+| X1 | Promotion d'une amélioration par hasard | P1 | critère pré-enregistré (IC95 > 0 sur l'inédit, baisse maximale non aggravée), activation seulement par le propriétaire | toute promotion est relue avec le propriétaire |
+| X2 | Confusion simulation / réel | P0 | bandeau permanent, « ARGENT RÉEL (entrées suspendues) », drapeau serveur absent | recette iPhone étapes 9 à 12 |
+| X3 | Panne de l'hébergeur | P1 | sauvegardes chiffrées et authentifiées, copie hebdomadaire hors du serveur | restauration d'essai mensuelle |
+| X4 | Rentabilité non démontrée | — | aucune promesse ; bilan net après frais et hébergement | échéances de 6 et 12 mois des générations figées |
+
+## 6. Ergonomie
+| # | Point | Priorité | État | Critère de validation |
+|---|---|---|---|---|
+| N8 | Le bilan financier et l'apprentissage en ombre sont disponibles par l'API (`/api/bilan`) mais pas encore dans l'application | P1 | OUVERT | carte « Bilan » dans l'onglet Capital ; recette iPhone mise à jour |
+| N9 | L'état du flux WebSocket n'est pas affiché dans « État du robot » | P2 | OUVERT | ligne « Flux échange ● vivant (retard x ms) » |
+| N10 | Safari n'est pas testé automatiquement (WebKit absent) | P2 | OUVERT | recette réelle sur l'iPhone (33 étapes) |
+
+## Mission de corrections après la phase 8
+Elle regroupe, dans cet ordre :
+1. **P1** : R6, R5, N2, N5, N8 ;
+2. **P2** : R4, N6, N7, N9, N10, R14.
+
+Les P0 sont tous traités ou atténués ; leur validation finale se fait sur le serveur définitif.

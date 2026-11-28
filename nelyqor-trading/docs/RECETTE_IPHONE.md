@@ -74,8 +74,19 @@ l'adresse HTTPS du robot est connue, le mot de passe et la phrase de signature s
     (message d'erreur) : **aucun ancien chiffre n'est présenté comme actuel**. Désactiver le mode Avion.
 30. Toucher « Se déconnecter » (Réglages). → Retour à l'écran du mot de passe.
 
+## 10. Le robot n'a pas besoin du téléphone (phase 8)
+31. Noter l'heure, puis **éteindre complètement l'iPhone** (bouton latéral + volume, « Éteindre ») pendant au moins
+    **15 minutes**. Le rallumer, rouvrir l'application. → « Robot ● vivant » ; « Dernier signe de vie » il y a moins
+    d'une minute ; dans **Capital**, la courbe du capital fictif n'a **pas de trou** pendant les 15 minutes : le robot a
+    continué sur le serveur.
+32. Fermer l'application (glisser vers le haut) et verrouiller l'iPhone. Sur le serveur, la personne qui installe
+    lance `sudo bash scripts/alerte.sh "Test" "Alerte de test"`. → La notification **ntfy** arrive sur l'écran
+    verrouillé, sans montant ni marché.
+33. Rouvrir l'application, onglet **IA**. → « Laboratoire expérimental » à jour ; les générations v1, v2, v3 et E1
+    sont toujours marquées figées ; aucune n'est « déployée ».
+
 ## Bilan
-- Nombre d'étapes ✅ / ❌ : ____ / ____ ; modèle d'iPhone et version d'iOS : ____________
+- Nombre d'étapes ✅ / ❌ : ____ / 33 ; modèle d'iPhone et version d'iOS : ____________
 - Le propriétaire sait : reconnaître SIMULATION/RÉEL ☐, lire réalisé/latent/frais ☐, repérer une position non
   protégée ☐, utiliser STOP ☐, expliquer la règle 45/100 ☐.
 - Toute étape ❌ est corrigée puis la recette est refaite avant d'envisager quoi que ce soit en argent réel.
