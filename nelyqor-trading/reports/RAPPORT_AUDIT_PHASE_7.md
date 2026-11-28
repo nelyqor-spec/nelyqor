@@ -493,3 +493,86 @@ Il renvoie aux commandes exactes de `docs/INSTALLATION.md` et à la recette `doc
   - Safari sur un vrai iPhone ;
   - mesures depuis le serveur définitif.
 - **Jamais vérifié** : l'exécution d'ordres réels (aucune transaction).
+
+---
+
+## 14. Clôture définitive de la phase 7 (28/11/2026)
+
+### 14.1 Chronologie des derniers contrôles (aucun échec masqué)
+| Commit | Contrôle | Résultat | Suite donnée |
+|---|---|---|---|
+| 6166046 (corrections D1 à D10) | déploiement 46122339820 | ✅ 100 / 0 / 0 | — |
+| 6166046 | incidents 46122339771 | ❌ 105 / 3 | régression D2 : reprise retardée de 10 min après un vrai disque plein |
+| e7ddbff (régression D2 et remarques 1, 2, 3, 8, 9) | déploiement 46124328512 | ✅ 100 / 0 / 0 | — |
+| e7ddbff | incidents 46124328537 | ❌ 112 / 1 | nouveau scénario « flux figé » : marchés écartés, mais état global publié encore « frais » |
+| **7bb63b2** (état global en cas de flux figé) | tests 46126279157 | ✅ | 717 tests, ruff, mypy, empreintes figées |
+| **7bb63b2** | **incidents 46126279187** | ✅ **113 / 0 / 0** | dont « flux figé » (5 contrôles) et « disque libéré » (3 contrôles) |
+| **7bb63b2** | déploiement (lancé à la main, `backend/` absent des filtres de push) | ⏳ en cours (run 46128131422 sur 7bb63b2, puis relancé sur la tête de la PR) | recette PWA Chromium incluse |
+
+Chaque échec a été analysé et corrigé, avec un test unitaire qui échoue sans la correction. Aucun contrôle n'a été
+assoupli ni retiré.
+
+### 14.2 Remarques restantes : traitement avant la mise en service
+Registre complet : `docs/REGISTRE_DEFAUTS.md`. Les remarques qui pouvaient compromettre la sécurité ou la fiabilité
+de la simulation ont été traitées :
+- **Alertes bloquantes** (1) : TRAITÉ.
+- **Intégrité des sauvegardes** (2, 3) : TRAITÉ (authentification HMAC, rétention par jeu complet).
+- **Redémarrage sécurisé** (8) : TRAITÉ (redémarrage automatique après 15 min de boucle figée).
+- **Horodatage Bitvavo** (9) : ATTÉNUÉ. La détection d'un flux figé est éprouvée en Docker ; reste ouvert le
+  branchement du carnet WebSocket horodaté.
+
+Les autres remarques (4, 5, 6, 7, 10 à 14) sont sans danger pour la simulation.
+
+Tests de clôture : `tests/test_phase7_cloture.py` (11 tests) et
+`test_D2_truly_full_disk_recovers_as_soon_as_space_returns`. 11 de ces 12 tests échouent sur le code d'avant ; le
+12ᵉ porte sur un module nouveau.
+
+### 14.3 PR n° 1 : prête à être fusionnée (en attente de votre autorisation)
+- **Code testé = code de la PR** : la tête de la PR ne diffère de 7bb63b2 que par la documentation, et par l'ajout
+  de `backend/` et `frontend/` aux filtres du contrôle de déploiement.
+- Aucun conflit : `main` est un ancêtre direct de la branche.
+- Générations v1, v2, v3 et E1 préservées : dernier fichier figé modifié le 26/11 à 16:17:48 UTC (avant le départ),
+  `test_gel_dependances` vert à chaque CI.
+- **Run prospectif à importer** : **46121817643** (28/11, 07:34 UTC). C'est le dernier run réussi ; aucun run plus
+  récent n'existe.
+  - Résumé : « aucun problème », v1, v2, v3 et E1 valides, rejeu 0 divergence.
+  - Têtes de chaîne : v3 `88b3f22f…` (84 lignes), E1 `72b92900…` (10 lignes), v2 `1f6bff59…` (52 lignes).
+  - Artefact `journal-prospectif` : 12 136 octets, empreinte GitHub `sha256:d98aa9b5…`, expire le 26/02/2027 à
+    07:34 UTC.
+- **Intégrité du journal** :
+  - recontrôlée à l'import par le workflow : chaînes, rejeu exact, préfixe de l'archive (`prospective_check.py`) ;
+  - le téléchargement local de l'artefact est impossible ici, car le proxy du conteneur refuse le stockage des
+    artefacts.
+- **Pré-remplissage** : `nelyqor-donnees` sur `main`, à relancer jusqu'à « COMPLET » (au moins 400 marchés EUR, au
+  moins 90 % à jour depuis moins de 3 h). Il partage le groupe de concurrence du prospectif.
+
+### 14.4 Conditions nécessaires au passage à la phase 8
+1. **Votre autorisation explicite** de fusionner, puis la procédure `docs/FUSION_PR1.md` :
+   - pré-remplissage jusqu'à COMPLET ;
+   - import du run 46121817643 (ou d'un run réussi plus récent) ;
+   - contrôle « aucun problème » ;
+   - branche `prospective-journal` créée.
+2. **Votre choix de machine**, et une éventuelle commande (≈ 7,19 € TTC/mois pour un Hetzner CX23) : décision et
+   dépense à vous.
+3. L'installation sur cette machine (`docs/GUIDE_PROPRIETAIRE.md`), puis, sur place :
+   - `scripts/deploy_check.sh` vert ;
+   - `scripts/bench_bitvavo.py --minutes 5`.
+4. La recette iPhone ensemble (`docs/RECETTE_IPHONE.md`, 30 étapes).
+5. Les premiers jours de simulation 24 h/24 surveillés : alertes reçues, sauvegardes nocturnes vérifiées, aucune
+   boucle figée.
+
+### 14.5 Testé réellement / à vérifier sur le serveur définitif et sur l'iPhone
+| Testé réellement (CI ou conteneur, vraie pile Docker, données publiques Bitvavo) | À vérifier sur le serveur définitif | À vérifier sur l'iPhone |
+|---|---|---|
+| pile Docker, isolation, aucun port de l'API | `install_serveur.sh` réel (apt, Docker officiel, systemd) | installation depuis Safari |
+| HTTPS interne, TLS 1.2/1.3, en-têtes, CSRF, verrouillage, rejeu | Let's Encrypt (domaine) ou Tailscale | confiance au certificat interne (option Tailscale) |
+| sauvegarde chiffrée et **authentifiée** → destruction → restauration | UFW, SSH par clé, fail2ban | connexion, bandeau SIMULATION, alertes rouges |
+| Bitvavo en erreur, en 429, sans réponse, incohérent, **figé** ; Internet coupé | horloge synchronisée, démarrage au boot | arrêt d'urgence (un geste et une confirmation) |
+| `kill -9`, redémarrage de la pile et de Docker, sans doublon | latence Bitvavo depuis le serveur | réception des alertes ntfy |
+| disque saturé jusqu'à 100 %, puis reprise | tenue sur plusieurs jours | lisibilité, encoche, mode sombre |
+| PWA dans Chromium (Playwright) | — | — |
+| **Jamais vérifié** : exécution d'ordres réels | — | — |
+
+**Fin de la phase 7.** Ni fusion, ni phase 8 sans vos instructions. Pendant toute la phase : aucun ordre réel,
+aucun emprunt, aucun dépôt ni retrait, aucune dépense, et aucune nouvelle recherche historique. Seule exception : la
+relance accidentelle, annulée en environ 1 min (§ 11.1 bis).

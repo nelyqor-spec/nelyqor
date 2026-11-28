@@ -10,6 +10,8 @@ on:
   push:
     branches: ["claude/**"]
     paths:
+      - "nelyqor-trading/backend/**"      # clôture phase 7 : tout changement du code exécuté relance la recette Docker
+      - "nelyqor-trading/frontend/**"
       - "nelyqor-trading/compose.yaml"
       - "nelyqor-trading/Dockerfile"
       - "nelyqor-trading/.dockerignore"
