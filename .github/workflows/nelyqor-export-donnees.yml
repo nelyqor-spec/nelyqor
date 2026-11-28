@@ -1,0 +1,50 @@
+# Nelyqor Trading — EXPORT du cache de bougies exact utilisé par les prédictions prospectives enregistrées (phase 8).
+# Pourquoi : le rejeu exact de v3 dépend des données. Le cache neuf de `main` diffère de celui de la branche (bougies
+# perdues aux limites de fenêtre du téléchargeur, à des heures différentes) : 6 divergences à l'import (run
+# 46134632301). Ce workflow fige le cache EXACT de l'évaluation 46121817643 (celle dont le journal sera importé)
+# dans un artefact vérifiable (sha256), pour que `main` puisse le reprendre tel quel (nelyqor-donnees, seed_data_run_id).
+# Lecture seule : aucune clé, aucun ordre, aucun calcul de stratégie.
+name: nelyqor-export-donnees
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths: [".github/workflows/nelyqor-export-donnees.yml"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: nelyqor-trading
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Cache exact de l'évaluation 46121817643
+        uses: actions/cache/restore@v4
+        with:
+          path: nelyqor-trading/data/market
+          key: bitvavo-market-v1-46121817643
+          fail-on-cache-miss: true
+      - name: Archive et empreintes
+        run: |
+          mkdir -p ../export
+          tar -C data -cf ../export/donnees_marche.tar market
+          (cd ../export && sha256sum donnees_marche.tar > donnees_marche.tar.sha256)
+          find data/market -name '*.manifest.json' | wc -l | xargs echo "manifestes :"
+          du -sh data/market ../export/donnees_marche.tar
+          cat ../export/donnees_marche.tar.sha256
+          {
+            echo "## Export du cache de données (évaluation 46121817643)"
+            echo ""
+            echo "- sha256 : \`$(cut -d' ' -f1 ../export/donnees_marche.tar.sha256)\`"
+            echo "- taille : $(du -h ../export/donnees_marche.tar | cut -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: {name: donnees-marche-46121817643, path: export, retention-days: 90, compression-level: 0}
