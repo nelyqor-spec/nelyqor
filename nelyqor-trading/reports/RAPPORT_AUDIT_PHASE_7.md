@@ -425,7 +425,7 @@ Ensuite, sur le serveur, lancez `python scripts/bench_bitvavo.py --minutes 5` et
 |---|---|---|
 | `nelyqor-trading` (suite de tests, ruff, mypy, empreintes figées) | 46122339817 | ✅ réussi |
 | `nelyqor-deploy-check` (vrai Dockerfile, pile complète, **recette PWA Chromium incluse**) | 46122339820 | ✅ **100 réussis / 0 échec / 0 ignoré** |
-| `nelyqor-incident-check` (incidents sur vraie pile Docker) | 46122339771 | ⏳ en cours au moment de ce commit ; résultat reporté dès réception |
+| `nelyqor-incident-check` (incidents sur vraie pile Docker) | 46122339771 | ❌ **105 réussis / 3 échecs** : régression de la correction D2 (reprise retardée de 10 min après un vrai disque plein), corrigée dans e7ddbff (§ 14) |
 | `nelyqor-trading` sur la tête 5edc32d | 46122591276 | ✅ réussi |
 
 ### 13.2 Le dernier commit de la PR correspond-il au code testé ?
@@ -457,22 +457,8 @@ donc pour le code de la tête.
   - Le run du 28/11 (46121817643), antérieur à l'incident, n'est pas concerné.
 
 ### 13.4 Remarques mineures restantes (non bloquantes)
-| # | Remarque | Pourquoi ce n'est pas bloquant / suite proposée |
-|---|---|---|
-| 1 | Les envois d'alerte (ntfy, Telegram) sont synchrones : jusqu'à 10 s par canal, pendant lesquelles la boucle et la vigie attendent | rares (alertes critiques seulement, dédupliquées) ; phase 8 : envoi en tâche de fond |
-| 2 | Le chiffrement des sauvegardes n'a pas de MAC : l'empreinte sha256 est stockée à côté, sans signature | protège contre la corruption, pas contre une substitution délibérée par quelqu'un qui a déjà accès au disque ; amélioration possible : signature HMAC |
-| 3 | La rétention des sauvegardes est appliquée par type de fichier : une sauvegarde partielle peut décaler les paires restaurables | `restore.sh` exige la paire moteur + état du même horodatage et refuse sinon |
-| 4 | Les actions GitHub ne sont pas épinglées par SHA | actions officielles `actions/*` seulement, sans secret ; dépréciation de Node 20 signalée par GitHub, mise à jour à prévoir |
-| 5 | Le verrouillage SSH se fonde sur la présence d'une clé autorisée (qui peut être une clé à commande forcée de l'hébergeur) | confirmation « OUI », consigne de tester une 2e connexion avant de fermer ; amélioration : vérifier la clé de l'utilisateur sudo |
-| 6 | `set_password.py --phrase-seule` ne compare pas la nouvelle phrase au mot de passe existant ; en `--les-deux`, un refus de la phrase laisse le nouveau mot de passe écrit sans redémarrer l'API | correctif simple, à faire en phase 8 |
-| 7 | Caddy n'écoute pas en IPv6 | IPv4 suffit (Hetzner fournit une IPv4) |
-| 8 | Une boucle figée est signalée mais **pas redémarrée automatiquement** | redémarrage manuel documenté ; un redémarrage automatique est possible plus tard |
-| 9 | `/ticker/book` n'a pas d'horodatage de l'échange : la fraîcheur repose sur la réception (§ 5) | phase 8 : brancher le carnet WebSocket horodaté (`BookManager`) |
-| 10 | Démarrage à froid : environ 8 min avant d'avoir des bougies fraîches pour tout l'univers | les marchés sans bougies fraîches sont écartés, pas devinés |
-| 11 | Sans fusion, le cache événementiel n'est pas rafraîchi (807 groupes le 27 et le 28/11) | la fusion active la collecte horaire |
-| 12 | v1 publie `achat_passif_btc: NaN` dans son résultat | v1 est **figée** et ne peut pas être corrigée ; la référence BTC est publiée par v3 et E1 |
-| 13 | Chaque mise à jour des données signale « téléchargement incomplet (code 2) » | marchés radiés par Bitvavo ; sans effet sur les candidats (rejeu exact vérifié) |
-| 14 | Avertissement de dépréciation `httpx` / Starlette dans les tests | maintenance des dépendances |
+Elles sont tenues dans un **registre dédié** : `docs/REGISTRE_DEFAUTS.md`. Le § 14.2 dit lesquelles ont été traitées
+avant la mise en service.
 
 ### 13.5 Procédure définitive de fusion
 `docs/FUSION_PR1.md`, mis à jour :
