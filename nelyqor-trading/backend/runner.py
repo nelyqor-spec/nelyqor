@@ -31,7 +31,7 @@ from .accounting.ledger import ExternalFlow, Fill, Ledger
 from .accounting.reconcile import reconcile
 from .core.clock import Clock, new_id
 from .core.config import HardLimits, Settings, load_strategy_params
-from .core.disk import CRITIQUE, OK, DiskThresholds, free_mb, is_disk_full_error, next_level
+from .core.disk import CRITIQUE, OK, DiskThresholds, free_mb, inodes_exhausted, is_disk_full_error, next_level
 from .core.logging import get_logger, register_secret, setup_logging
 from .core.num import ZERO, D, fmt
 from .execution.engine import ExecutionEngine, InstanceLock, OrderRequest, SubmitResult
@@ -135,6 +135,14 @@ class Engine:
         self.disk_free_mb: float | None = None
         self.disk_full_errors = 0
         self._last_hb_ms = 0
+        # contre-expertise phase 7 (D2) : après un refus d'écriture (ENOSPC / SQLITE_FULL) le niveau reste
+        # « critique » au moins ce délai, même si statvfs voit de la place (inodes, quota, tmpfs) : pas d'oscillation
+        self._enospc_until_ms = 0
+        self.enospc_hold_ms = 10 * 60_000
+        # (D3) fin du dernier cycle de boucle : la vigie ne doit pas masquer une boucle figée
+        self.last_cycle_ms = 0
+        self.frozen_after_ms = 10 * 60_000
+        self._display_crit_ms = 0
 
     @property
     def writes_suspended(self) -> bool:
@@ -156,11 +164,15 @@ class Engine:
             return self.disk_level
         try:
             free = min(free_mb(p)[0] for p in paths)
+            inodes_low = any(inodes_exhausted(p) for p in paths)
         except OSError as e:
             log.warning("mesure de l'espace disque impossible", extra={"data": {"err": repr(e)}})
             return self.disk_level
         self.disk_free_mb = free
-        self._set_disk_level(next_level(self.disk_level, free, self.disk_th))
+        new = CRITIQUE if inodes_low else next_level(self.disk_level, free, self.disk_th)
+        if new != CRITIQUE and self.clock.now_ms() < self._enospc_until_ms:
+            new = CRITIQUE  # refus d'écriture récent : statvfs ne dit pas tout (inodes, quota) — D2
+        self._set_disk_level(new)
         return self.disk_level
 
     def _set_disk_level(self, new: str) -> None:
@@ -172,12 +184,12 @@ class Engine:
             log.error("DISQUE PRESQUE PLEIN : écritures non critiques suspendues", extra={"data": {"libre_mo": self.disk_free_mb}})
             self.notifier.notify("disque", f"Disque presque plein ({free}) : décisions et nouvelles entrées SUSPENDUES, "
                                  "protections et ventes maintenues. Libérer de l'espace (docs/RUNBOOKS.md).",
-                                 dedup_key=f"disque-critique-{self.clock.now_ms()}")
+                                 dedup_key="disque-critique")  # clé STABLE : jamais de rafale (D2)
         elif new == OK and old == CRITIQUE or new != OK and old == OK:
             msg = (f"Espace disque revenu ({free}) : écritures reprises." if new == OK
                    else f"Espace disque faible ({free}) : libérer de l'espace avant saturation.")
             log.warning(msg)
-            self.notifier.notify("disque", msg, dedup_key=f"disque-{new}-{self.clock.now_ms()}")
+            self.notifier.notify("disque", msg, dedup_key=f"disque-{new}")
         else:
             log.warning("niveau disque", extra={"data": {"de": old, "vers": new, "libre_mo": self.disk_free_mb}})
 
@@ -185,6 +197,7 @@ class Engine:
         """Écriture refusée faute de place (SQLITE_FULL / ENOSPC) : la transaction est annulée par SQLite (base
         intacte) ; passage immédiat en « critique »."""
         self.disk_full_errors += 1
+        self._enospc_until_ms = self.clock.now_ms() + self.enospc_hold_ms
         if self.disk_level != CRITIQUE:
             self._set_disk_level(CRITIQUE)
         log.error("écriture refusée : disque plein", extra={"data": {"err": repr(e)[:200], "n": self.disk_full_errors}})
@@ -194,12 +207,18 @@ class Engine:
             return
         flag = self.store.path.parent / "ARRET_URGENCE"
         if flag.exists():
+            try:
+                stamp = flag.stat().st_mtime_ns
+            except OSError:
+                stamp = 0
             self.guardian.emergency_stop("ssh")
             try:
                 flag.rename(flag.with_name(f"ARRET_URGENCE.applique-{self.clock.now_ms()}"))
             except OSError:
                 pass  # le blocage en mémoire reste actif
-            self.notifier.notify("incident", "Arrêt d'urgence appliqué (canal SSH du moteur)", dedup_key=new_id())
+            # une clé par DÉPÔT du drapeau (date du fichier) : si le renommage échoue, pas d'alerte toutes les 5 s
+            self.notifier.notify("incident", "Arrêt d'urgence appliqué (canal SSH du moteur)",
+                                 dedup_key=f"arret-urgence-ssh-{stamp}")
 
     # ------------------------------------------------------------ état réel protégé
     def _kv_get(self, key: str, default: Any, mode: str) -> Any:
@@ -227,6 +246,7 @@ class Engine:
     # ------------------------------------------------------------ démarrage
     def start(self) -> None:
         now = self.clock.now_ms()
+        self.last_cycle_ms = now  # D3 : une boucle qui ne termine jamais son PREMIER cycle est aussi détectée
         self.db.kv_set("hard_limits_sha256", self.limits.sha256, now)
         self.db.kv_set("strategy_params_version", self.params.get("version"), now)
         self.guardian.init_state()
@@ -552,7 +572,14 @@ class Engine:
             self.publish_display(force=True)  # résultat visible sans attendre le prochain instantané
 
     def publish_display(self, force: bool = False) -> None:
-        """Copie d'affichage pour l'API. Un échec (disque plein…) ne doit jamais bloquer le moteur."""
+        """Copie d'affichage pour l'API. Un échec (disque plein…) ne doit jamais bloquer le moteur.
+        Disque critique (D10) : la copie complète n'est republiée qu'une fois toutes les 5 min (ou sur commande),
+        pour préserver la réserve des écritures critiques."""
+        if self.writes_suspended and not force:
+            now = self.clock.now_ms()
+            if now - self._display_crit_ms < 300_000:
+                return
+            self._display_crit_ms = now
         try:
             self.display.publish(force=force)
         except Exception as e:  # noqa: BLE001
@@ -1233,10 +1260,19 @@ class Engine:
         self._last_hb_ms = self.clock.now_ms()
         ex = self.exec
         mode = ex.mode if ex else "simulation"
+        reelles = 0
+        if self.real_exec is not None:
+            try:  # D1 : exposition RÉELLE encore gérée même si les nouvelles entrées passent par la simulation
+                reelles = len(self.held_positions("real"))
+            except Exception:  # noqa: BLE001
+                reelles = -1  # inconnu : l'affichage doit prendre la prudence (RÉEL)
+        frozen = self.loop_frozen()
         self.db.kv_set("engine_heartbeat", {"ts": self.clock.now_ms(), "mode": mode, "pid": os.getpid(),
                                             "n_markets": len(self.markets), "data_ok": data_ok,
                                             "last_data_ms": self.last_data_ms,
                                             "real_exec": self.real_exec is not None,
+                                            "positions_reelles_ouvertes": reelles,
+                                            "last_cycle_ms": self.last_cycle_ms, "boucle_figee": frozen,
                                             "disque": {"niveau": self.disk_level, "libre_mo": self.disk_free_mb,
                                                        "ecritures_suspendues": self.writes_suspended}},
                          self.clock.now_ms())
@@ -1252,6 +1288,10 @@ class Engine:
             self._check_emergency_file()
         except Exception:  # noqa: BLE001
             log.exception("vigie : drapeau d'arrêt d'urgence non lu")
+        if self.loop_frozen():
+            self.notifier.notify("panne_prolongee", "Boucle du moteur figée depuis plus de 10 min : aucune décision ni "
+                                 "audit des protections. Redémarrer le moteur (docs/RUNBOOKS.md).",
+                                 dedup_key=f"boucle-figee-{self.last_cycle_ms}")
         if now - self._last_hb_ms < 10_000:
             return
         try:
@@ -1261,6 +1301,10 @@ class Engine:
                 self.on_disk_full(e)
             else:
                 log.exception("vigie : battement de cœur non écrit")
+
+    def loop_frozen(self) -> bool:
+        """Aucun cycle de boucle terminé depuis `frozen_after_ms` (D3) ; faux avant le premier cycle."""
+        return self.last_cycle_ms > 0 and self.clock.now_ms() - self.last_cycle_ms > self.frozen_after_ms
 
     async def vigil(self, every_s: float = 5.0) -> None:  # pragma: no cover - boucle de production
         while True:
@@ -1292,6 +1336,7 @@ class Engine:
             await self._step()
         finally:
             self._audit_protections()  # invariant de protection, même si le cycle échoue (P1, P4)
+            self.last_cycle_ms = self.clock.now_ms()  # cycle terminé (même en erreur) : la boucle n'est pas figée
 
     async def _step(self) -> None:
         now = self.clock.now_ms()

@@ -11,6 +11,7 @@ cd "$(dirname "$0")/.."
 TITRE=${1:?usage : scripts/alerte.sh "Titre" "Message"}
 MSG=${2:-$TITRE}
 NTFY_FILE=${NELYQOR_ALERT_NTFY_FILE:-secrets/ntfy_url}
+# ntfy est un service TIERS : le nom de l'hôte n'y est pas envoyé (contre-expertise phase 7) ; seulement par e-mail
 HOTE=$(hostname -s 2>/dev/null || echo serveur)
 ascii() { printf '%s' "$1" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null || printf '%s' "$1" | tr -cd '[:alnum:][:space:][:punct:]'; }
 logger -t nelyqor -p user.crit -- "$TITRE : $MSG" 2>/dev/null || true
@@ -19,7 +20,7 @@ livre=1
 if [ -r "$NTFY_FILE" ] && [ -s "$NTFY_FILE" ]; then
   url=$(head -1 "$NTFY_FILE" | tr -d '[:space:]')
   # corps lu sur l'entrée standard (--data-binary @-) : un message commençant par « @ » n'est jamais un fichier
-  if printf '%s' "$MSG" | curl -fsS --max-time 15 -o /dev/null -H "Title: $(ascii "Nelyqor ($HOTE) : $TITRE")" \
+  if printf '%s' "$MSG" | curl -fsS --max-time 15 -o /dev/null -H "Title: $(ascii "Nelyqor : $TITRE")" \
        -H "Priority: high" -H "Tags: warning" --data-binary @- "$url"; then
     livre=0
   else

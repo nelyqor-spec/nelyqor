@@ -27,6 +27,9 @@ CRITICAL_KINDS = {"panne_prolongee", "ordre_inconnu", "securite", "perte_inhabit
 NTFY_TITLES = {"panne_prolongee": "Moteur en panne", "ordre_inconnu": "Ordre inconnu", "securite": "Sécurité",
                "perte_inhabituelle": "Perte inhabituelle", "krach": "Krach", "arret_protection": "Protection",
                "flux_non_identifie": "Flux non identifié", "incident": "Incident", "disque": "Disque"}
+# Quota séparé (contre-expertise phase 7, D2) : une rafale d'alertes « disque » ne doit jamais consommer le quota
+# des alertes de sécurité (ordre inconnu, incident, protection…).
+LOW_PRIORITY_KINDS = {"disque"}
 
 
 def _ascii(s: str) -> str:
@@ -45,7 +48,7 @@ class Notifier:
                              if ntfy_details is None else ntfy_details)
         self.window, self.max_per_day = dedup_window_ms, max_per_day
         self._recent: dict[str, int] = {}  # déduplication en mémoire (base pleine ou illisible)
-        self._sent_mem: list[int] = []
+        self._sent_mem: list[tuple[int, bool]] = []  # (horodatage, basse priorité)
 
     def _seen(self, key: str, now: int) -> bool:
         if now - self._recent.get(key, -self.window - 1) <= self.window:
@@ -55,13 +58,17 @@ class Notifier:
         except Exception:  # noqa: BLE001 — base indisponible : la mémoire suffit
             return False
 
-    def _sent_today(self, now: int) -> int:
-        self._sent_mem = [t for t in self._sent_mem if t > now - 86_400_000]
+    def _sent_today(self, now: int, low: bool) -> int:
+        """Envois des dernières 24 h dans la MÊME classe (basse priorité ou non)."""
+        self._sent_mem = [x for x in self._sent_mem if x[0] > now - 86_400_000]
+        mem = sum(1 for _, lo in self._sent_mem if lo == low)
         try:
-            r = self.db.one("SELECT COUNT(*) n FROM notifications WHERE ts>? AND sent=1", (now - 86_400_000,))
-            return max(int(r["n"]) if r else 0, len(self._sent_mem))
+            rows = self.db.q("SELECT kind, COUNT(*) n FROM notifications WHERE ts>? AND sent=1 GROUP BY kind",
+                             (now - 86_400_000,))
+            n = sum(int(r["n"]) for r in rows if (r["kind"] in LOW_PRIORITY_KINDS) == low)
+            return max(n, mem)
         except Exception:  # noqa: BLE001
-            return len(self._sent_mem)
+            return mem
 
     def notify(self, kind: str, message: str, severity: str = "critique", dedup_key: str | None = None) -> bool:
         if kind not in CRITICAL_KINDS:
@@ -72,10 +79,11 @@ class Notifier:
             return False
         self._recent[key] = now
         sent = 0
-        if self._sent_today(now) < self.max_per_day:
+        low = kind in LOW_PRIORITY_KINDS
+        if self._sent_today(now, low) < self.max_per_day:
             sent = int(self._telegram(message) | self._ntfy(kind, message))
             if sent:
-                self._sent_mem.append(now)
+                self._sent_mem.append((now, low))
         log.warning("notification critique", extra={"data": {"kind": kind, "sent": sent}})
         try:
             self.db.exec("INSERT INTO notifications(id,ts,severity,kind,dedup_key,message,sent) VALUES(?,?,?,?,?,?,?)",

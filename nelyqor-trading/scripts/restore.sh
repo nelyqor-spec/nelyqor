@@ -21,9 +21,14 @@ API_SRC="$(dirname "$SRC")/api-$TS.db.enc"
 [ -d "$(dirname "$TARGET")" ] || { echo "REFUS : dossier cible absent : $(dirname "$TARGET")" >&2; exit 1; }
 [ -d "$STATE_DIR" ] || { echo "REFUS : magasin d'état cible absent : $STATE_DIR" >&2; exit 1; }
 [ -f "$STATE_SRC" ] || { echo "REFUS : sauvegarde du magasin d'état absente : $STATE_SRC" >&2; exit 1; }
-if command -v docker > /dev/null && [ -n "$(docker ps -q --filter label=com.docker.compose.project=nelyqor \
-    --filter label=com.docker.compose.service=engine 2>/dev/null)" ]; then
-  echo "REFUS : le moteur de production tourne (docker compose stop engine api)" >&2; exit 1
+# contre-expertise phase 7 (D6) : ni le moteur NI l'API ne doivent tourner (l'API écrit api.db)
+if command -v docker > /dev/null; then
+  for svc in engine api; do
+    if [ -n "$(docker ps -q --filter label=com.docker.compose.project=nelyqor \
+        --filter label=com.docker.compose.service=$svc 2>/dev/null)" ]; then
+      echo "REFUS : le service « $svc » de production tourne (docker compose stop engine api)" >&2; exit 1
+    fi
+  done
 fi
 own() { [ "$OWNER" = - ] || chown "$OWNER" "$@"; }
 TMP="$(mktemp)"; TMPD="$(mktemp -d)"
@@ -41,8 +46,15 @@ restore_db() {  # restore_db FICHIER_CHIFFRÉ CIBLE
 sha256sum -c "$STATE_SRC.sha256"
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$STATE_SRC" -pass "file:$PASS" | tar -C "$TMPD" -xf -
 [ -f "$TMPD/etat_moteur.json" ] || { echo "REFUS : archive du magasin d'état sans etat_moteur.json" >&2; exit 1; }
+# D5 : copie de sécurité de l'état courant OBLIGATOIRE et faite AVANT toute modification ; si elle échoue (disque
+# plein…), rien n'est touché
+SAFE="$STATE_DIR/../etat-avant-restauration.$STAMP.tar"
+if ! tar -C "$STATE_DIR" -cf "$SAFE" . || [ ! -f "$SAFE" ]; then
+  echo "REFUS : copie de sécurité de l'état courant impossible ($SAFE) : rien n'a été modifié. Libérer de la place." >&2
+  exit 1
+fi
+echo "Copie de sécurité de l'état courant : $SAFE"
 restore_db "$SRC" "$TARGET"
-tar -C "$STATE_DIR" -cf "$STATE_DIR/../etat-avant-restauration.$STAMP.tar" . 2>/dev/null || true
 find "$STATE_DIR" -mindepth 1 -delete
 cp -a "$TMPD/." "$STATE_DIR/"; own -R "$STATE_DIR"
 echo "Restauré : magasin d'état $STATE_DIR"

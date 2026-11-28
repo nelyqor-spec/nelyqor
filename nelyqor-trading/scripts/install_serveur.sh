@@ -27,8 +27,8 @@
 #   --dry-run              n'exécute RIEN : affiche ce qui serait fait (aucun droit root nécessaire)
 #   --oui                  répond oui aux questions NON destructives
 #   --domaine NOM          domaine public (HTTPS Let's Encrypt), ex. nelyqor.mondomaine.fr
-#   --sans-domaine ADRESSE pas de domaine : certificat INTERNE de Caddy pour ADRESSE (IP Tailscale/WireGuard ou nom)
-#   --ecoute IP            n'écouter que sur cette IP (défaut : toutes ; avec --sans-domaine : ADRESSE si c'est une IP)
+#   --sans-domaine ADRESSE pas de domaine : certificat INTERNE de Caddy pour ADRESSE (IP Tailscale/WireGuard ; un NOM exige --ecoute IP)
+#   --ecoute IP            n'écouter que sur cette IPv4 (défaut : toutes avec --domaine ; avec --sans-domaine : ADRESSE, jamais 0.0.0.0)
 #   --ntfy | --sans-ntfy   créer (ou non) un sujet ntfy.sh aléatoire pour les alertes
 #   --pas-de-pare-feu      ne pas toucher à UFW        --pas-de-ssh    ne pas toucher à la configuration SSH
 #   --fail2ban             installer fail2ban (prison sshd)
@@ -58,6 +58,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$DOMAINE" ] && [ -n "$SANS_DOMAINE" ] && { echo "--domaine et --sans-domaine sont exclusifs" >&2; exit 2; }
+# --ecoute : une adresse IPv4 (contre-expertise phase 7, D7 : la valeur est écrite dans .env et lue par compose)
+is_ipv4() {
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local o; for o in "${BASH_REMATCH[@]:1}"; do [ "$o" -le 255 ] || return 1; done
+}
+if [ -n "$ECOUTE" ] && ! is_ipv4 "$ECOUTE"; then echo "--ecoute : adresse IPv4 attendue (ex. 100.64.1.2), reçu : $ECOUTE" >&2; exit 2; fi
 PREFIX=${NELYQOR_PREFIX:-}
 OS_RELEASE=${NELYQOR_OS_RELEASE:-/etc/os-release}
 MARQUE="# Géré par NELYQOR scripts/install_serveur.sh — modifications locales écrasées à la prochaine installation"
@@ -412,14 +418,18 @@ if [ -n "$DOMAINE" ]; then
 elif [ -n "$SANS_DOMAINE" ]; then
   [[ "$SANS_DOMAINE" =~ ^[A-Za-z0-9.:-]+$ ]] || echec "adresse invalide : $SANS_DOMAINE"
   env_set NELYQOR_DOMAIN "$SANS_DOMAINE"; env_set NELYQOR_TLS internal
+  # Sans domaine = accès PRIVÉ (Tailscale/WireGuard) : jamais d'écoute sur toutes les interfaces, car Docker
+  # contourne UFW pour les ports publiés (contre-expertise phase 7, D4).
   if [ -n "$ECOUTE" ]; then BIND_IP=$ECOUTE
-  elif [[ "$SANS_DOMAINE" =~ ^[0-9.]+$ ]]; then BIND_IP=$SANS_DOMAINE
-  else BIND_IP=0.0.0.0; fi
+  elif is_ipv4 "$SANS_DOMAINE"; then BIND_IP=$SANS_DOMAINE
+  else echec "--sans-domaine $SANS_DOMAINE est un NOM : ajouter --ecoute <IP Tailscale du serveur> (commande : tailscale ip -4), sinon Caddy serait joignable depuis tout Internet"; fi
+  [ "$BIND_IP" = 0.0.0.0 ] && echec "--sans-domaine avec --ecoute 0.0.0.0 exposerait Caddy à tout Internet : indiquer l'IP privée"
 else
   BIND_IP=${ECOUTE:-$(env_get NELYQOR_BIND_IP)}; BIND_IP=${BIND_IP:-0.0.0.0}
 fi
 env_set NELYQOR_BIND_IP "$BIND_IP"
-env_set NELYQOR_REAL_TRADING_ALLOWED false
+env_set NELYQOR_REAL_TRADING_ALLOWED false  # à CHAQUE passage, volontairement : l'installation ne laisse jamais le réel permis
+info "drapeau du réel : NELYQOR_REAL_TRADING_ALLOWED=false (remis à faux à chaque installation ; docs/DEPLOIEMENT.md § 6)"
 [ "$DRY" = 0 ] && chmod 600 "$ENVF"
 
 SEC="$APP/secrets"
@@ -442,8 +452,8 @@ else cree_vide ntfy_url; info "alertes ntfy désactivées (fichier vide) ; activ
 
 titre "7. Construction de l'image Docker"
 if [ "$DRY" = 1 ]; then run docker compose build
-elif docker compose build > /tmp/nelyqor-build.log 2>&1; then ok "image nelyqor-trading:local construite"
-else tail -20 /tmp/nelyqor-build.log; echec "construction de l'image impossible (journal : /tmp/nelyqor-build.log)"; fi
+elif BUILD_LOG=$(mktemp /tmp/nelyqor-build.XXXXXX.log) && docker compose build > "$BUILD_LOG" 2>&1; then ok "image nelyqor-trading:local construite"
+else tail -20 "${BUILD_LOG:-/dev/null}"; echec "construction de l'image impossible (journal : ${BUILD_LOG:-absent})"; fi
 
 if [ -s "$SEC/owner_password_hash" ] && [ -s "$SEC/owner_command_key" ] && [ -s "$SEC/owner_command_salt" ]; then
   ok "mot de passe et phrase de signature : déjà définis (changer : scripts/revoquer_acces.sh)"

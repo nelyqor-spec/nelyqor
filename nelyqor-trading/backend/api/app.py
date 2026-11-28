@@ -126,7 +126,8 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
     def health() -> dict[str, Any]:
         hb = database.kv_get("engine_heartbeat")
         age = (int(time.time() * 1000) - hb["ts"]) if hb else None
-        return {"api": "ok", "engine_alive": age is not None and age < 120_000}
+        # D3 : battement frais mais boucle figée (la vigie écrit le battement) = moteur NON vivant
+        return {"api": "ok", "engine_alive": age is not None and age < 120_000 and not (hb or {}).get("boucle_figee")}
 
     @app.post("/api/login")
     def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
@@ -169,7 +170,12 @@ def create_app(settings: Settings | None = None, auth: AuthManager | None = None
             "heartbeat_age_s": (now - hb["ts"]) / 1000 if hb else None,
             "moteur_perime": hb is None or now - hb["ts"] > 120_000 or not hb.get("data_ok", True)
             or now - int(hb.get("last_data_ms") or hb["ts"]) > 120_000,
-            "moteur_vivant": hb is not None and now - hb["ts"] <= 120_000,
+            "moteur_vivant": hb is not None and now - hb["ts"] <= 120_000 and not hb.get("boucle_figee"),
+            "boucle_figee": bool((hb or {}).get("boucle_figee")),
+            "dernier_cycle": paris_str(hb["last_cycle_ms"]) if hb and hb.get("last_cycle_ms") else None,
+            # D1 : positions RÉELLES encore ouvertes et gérées alors que les nouvelles entrées sont en simulation
+            # (-1 = inconnu : l'affichage choisit la prudence)
+            "positions_reelles_ouvertes": int((hb or {}).get("positions_reelles_ouvertes") or 0),
             "derniere_donnee_marche": paris_str(hb["last_data_ms"]) if hb and hb.get("last_data_ms") else None,
             "hard_limits_sha256": database.kv_get("hard_limits_sha256"),
             "version_parametres": database.kv_get("strategy_params_version"),

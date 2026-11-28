@@ -41,6 +41,15 @@ def free_mb(path: Path | str) -> tuple[float, float]:
     return st.f_bavail * st.f_frsize / 1e6, st.f_blocks * st.f_frsize / 1e6
 
 
+def inodes_exhausted(path: Path | str, min_free: int = 1000, min_ratio: float = 0.01) -> bool:
+    """Inodes presque épuisés (contre-expertise phase 7, D9) : l'écriture échoue (ENOSPC) alors que des blocs sont
+    libres. Faux si le système de fichiers ne publie pas d'inodes (f_files = 0, ex. certains montages)."""
+    st = os.statvfs(path)
+    if st.f_files <= 0:
+        return False
+    return st.f_favail < max(min_free, int(st.f_files * min_ratio)) and st.f_favail < st.f_files
+
+
 def next_level(previous: str, free: float, th: DiskThresholds) -> str:
     if free < th.crit_free_mb:
         return CRITIQUE

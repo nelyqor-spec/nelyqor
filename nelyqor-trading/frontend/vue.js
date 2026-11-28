@@ -9,6 +9,13 @@ export function modeInfo(st) {
   if (!st || typeof st !== "object") return { kind: "inconnu", titre: "MODE INCONNU", detail: "état du robot non lu : ne rien supposer" };
   if (st.mode === "real" || st.etat === "REEL_AUTORISE")
     return { kind: "real", titre: "ARGENT RÉEL", detail: "les ordres engagent votre argent sur Bitvavo" };
+  // Contre-expertise phase 7 (D1) : après un arrêt d'urgence en réel, les NOUVELLES entrées passent en simulation mais
+  // des positions RÉELLES restent ouvertes et gérées (stops, ventes) : jamais « argent fictif » dans ce cas.
+  const pr = Number(st.positions_reelles_ouvertes || 0);
+  if (pr !== 0)
+    return { kind: "real", titre: "ARGENT RÉEL (entrées suspendues)",
+      detail: pr > 0 ? `${pr} position(s) RÉELLE(S) encore ouverte(s) et gérée(s) ; aucune nouvelle entrée réelle`
+        : "positions réelles : état inconnu, vérifier sur Bitvavo ; aucune nouvelle entrée réelle" };
   return { kind: "sim", titre: "SIMULATION", detail: "argent FICTIF : aucun ordre réel n'est envoyé" };
 }
 
@@ -55,7 +62,8 @@ export function alertsFrom(st, pf) {
     });
   }
   if (st) {
-    if (st.moteur_vivant === false) out.push({ niveau: "rouge", cle: "robot_silencieux", titre: "Robot silencieux", texte: `Aucun signe de vie depuis ${st.dernier_heartbeat ?? "le démarrage"}. Les chiffres affichés peuvent être anciens.` });
+    if (st.boucle_figee === true) out.push({ niveau: "rouge", cle: "boucle_figee", titre: "Robot bloqué", texte: `La boucle du robot ne termine plus ses cycles (dernier cycle : ${st.dernier_cycle ?? "inconnu"}) : aucune décision ni vérification des protections. Redémarrer le moteur.` });
+    else if (st.moteur_vivant === false) out.push({ niveau: "rouge", cle: "robot_silencieux", titre: "Robot silencieux", texte: `Aucun signe de vie depuis ${st.dernier_heartbeat ?? "le démarrage"}. Les chiffres affichés peuvent être anciens.` });
     else if (st.moteur_perime) out.push({ niveau: "orange", cle: "donnees_perimees", titre: "Données de marché périmées", texte: `Le robot n'achète rien tant que les prix ne sont pas à jour (dernière donnée : ${st.derniere_donnee_marche ?? "aucune"}).` });
     if (st.etat === "INCIDENT") out.push({ niveau: "rouge", cle: "incident", titre: "Incident : robot bloqué par sécurité", texte: st.raison || "voir le journal" });
     if (st.etat === "RECONCILIATION") out.push({ niveau: "orange", cle: "reconciliation", titre: "Vérification des comptes en cours", texte: st.raison || "" });

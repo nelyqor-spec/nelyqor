@@ -34,6 +34,13 @@ alerte ; PWA › Capital › « Rapprocher » après vérification.
 si le réel était actif → état `RECONCILIATION` puis reprise automatique si la réconciliation est propre.
 **Pendant la panne, aucun stop n'est exécuté** (stops gérés par le moteur en V1).
 
+## Robot bloqué (boucle figée, phase 7)
+Alerte « Moteur en panne » (ntfy) et alerte rouge « Robot bloqué » dans l'application : la boucle n'a terminé aucun
+cycle depuis plus de 10 min (aucune décision, aucun audit des protections), alors que la vigie maintient le battement
+de cœur. Le contrôle de santé Docker passe alors à « unhealthy » (`docker compose ps`). Docker ne redémarre **pas**
+automatiquement un conteneur « unhealthy » : `docker compose restart engine`, puis vérifier « dernier cycle » dans
+l'application. Le redémarrage est sûr (journal idempotent, aucun ordre dupliqué : vérifié par `incident_check.sh`).
+
 ## Sauvegarde / restauration
 Quotidien (phase 7) : timer systemd `nelyqor-backup.timer` (03:17, rattrapé au démarrage) → `scripts/sauvegarde_auto.sh
 /var/backups/nelyqor` : sauvegarde chiffrée (moteur, magasin d'état, api.db, autorité interne de Caddy), vérification
@@ -42,7 +49,8 @@ dépasse 90 %. Copier les sauvegardes hors du VPS (docs/INSTALLATION.md) et gard
 un gestionnaire de mots de passe. Restaurer (1 seul argument : le fichier engine-…) :
 `docker compose stop engine api && scripts/restore.sh /var/backups/nelyqor/engine-<horodatage>.db.enc && docker compose up -d`.
 Testé en conditions réelles (`scripts/incident_check.sh`) : sauvegarde des vrais volumes Docker, destruction
-(`down -v`), restauration, reprise sans fill ni achat dupliqué, même autorité TLS interne.
+(`down -v`), restauration, reprise sans fill ni achat dupliqué, même autorité TLS interne. `restore.sh` refuse si le
+moteur **ou l'API** tourne, et si la copie de sécurité de l'état courant échoue (rien n'est alors modifié).
 
 ## Mise à jour / rollback
 ```bash

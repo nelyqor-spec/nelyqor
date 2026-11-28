@@ -39,6 +39,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - uses: actions/setup-node@v4
         with: {node-version: "22"}
       - name: Playwright + Chromium (recette PWA)

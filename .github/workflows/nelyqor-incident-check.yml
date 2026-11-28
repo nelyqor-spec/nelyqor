@@ -47,6 +47,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - name: Versions
         run: docker version && docker compose version && openssl version
       - name: Vérification des incidents

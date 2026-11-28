@@ -58,7 +58,7 @@ services:
       resources:
         limits: {cpus: "1.5", memory: 1200M}
     healthcheck:
-      test: ["CMD", "python", "-c", "import sqlite3,json,time,sys;r=sqlite3.connect('file:/engine/engine.db?mode=ro',uri=True).execute(\"select v from kv where k='engine_heartbeat'\").fetchone();sys.exit(0 if r and time.time()*1000-json.loads(r[0])['ts']<180000 else 1)"]
+      test: ["CMD", "python", "-c", "import sqlite3,json,time,sys;r=sqlite3.connect('file:/engine/engine.db?mode=ro',uri=True).execute(\"select v from kv where k='engine_heartbeat'\").fetchone();h=json.loads(r[0]) if r else {};sys.exit(0 if h and time.time()*1000-h['ts']<180000 and not h.get('boucle_figee') else 1)"]
       interval: 60s
       timeout: 10s
       retries: 3

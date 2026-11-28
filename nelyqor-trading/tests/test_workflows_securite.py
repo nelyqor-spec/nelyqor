@@ -26,6 +26,51 @@ def test_no_secrets_no_bitvavo_keys_no_real_flag():
         assert not re.search(r"NELYQOR_REAL_TRADING_ALLOWED\s*[:=]\s*['\"]?true", t, re.I), f"{f.name} active le réel"
 
 
+SECRETS_EXPR = re.compile(r"\$\{\{[^}]*\bsecrets\b", re.I)
+REAL_FLAG = re.compile(r"NELYQOR_REAL_TRADING_ALLOWED", re.I)
+
+
+def _real_flag_lines_ok(text: str) -> list[str]:
+    """Toute ligne de CODE (hors commentaire) qui nomme le drapeau du réel doit le fixer littéralement à faux."""
+    bad = []
+    for ln in text.splitlines():
+        code = ln.split("#", 1)[0] if not ln.lstrip().startswith("#") else ""
+        if REAL_FLAG.search(code) and not re.search(r"NELYQOR_REAL_TRADING_ALLOWED\s*[:=]\s*['\"]?false['\"]?\s*$",
+                                                     code.strip(), re.I):
+            bad.append(ln.strip())
+    return bad
+
+
+def test_secrets_and_real_flag_strict_forms():
+    """Contre-expertise phase 7 (D8) : « secrets. » ne suffisait pas (toJSON(secrets), secrets['X']) ; le drapeau du
+    réel pouvait être fixé par une expression, ou écrit dans $GITHUB_ENV."""
+    for f in WF:
+        t = f.read_text()
+        assert not SECRETS_EXPR.search(t), f"{f.name} : expression utilisant secrets"
+        assert not _real_flag_lines_ok(t), f"{f.name} : drapeau du réel hors « false » littéral : {_real_flag_lines_ok(t)}"
+    # le contrôle lui-même attrape les formes contournées
+    for evil in ("run: echo '${{ toJSON(secrets) }}'", "env: {K: \"${{ secrets['BITVAVO'] }}\"}"):
+        assert SECRETS_EXPR.search(evil)
+    for evil in ("NELYQOR_REAL_TRADING_ALLOWED: ${{ inputs.reel }}",
+                 'echo "NELYQOR_REAL_TRADING_ALLOWED=true" >> "$GITHUB_ENV"',
+                 "NELYQOR_REAL_TRADING_ALLOWED: 'TRUE'"):
+        assert _real_flag_lines_ok(evil), evil
+    assert not _real_flag_lines_ok('  NELYQOR_REAL_TRADING_ALLOWED: "false"')
+
+
+def test_checkout_without_persisted_credentials():
+    """Le jeton n'est laissé dans .git/config que par le workflow qui pousse l'archive prospective."""
+    for f in WF:
+        doc = yaml.safe_load(f.read_text())
+        for name, job in doc["jobs"].items():
+            for st in job.get("steps", []):
+                if str(st.get("uses", "")).startswith("actions/checkout"):
+                    persist = (st.get("with") or {}).get("persist-credentials", True)
+                    if f.name == "nelyqor-prospective.yml":
+                        continue
+                    assert persist is False, f"{f.name}/{name} : persist-credentials non désactivé"
+
+
 def test_no_fork_exposed_triggers():
     for f in WF:
         on = _on(yaml.safe_load(f.read_text()))

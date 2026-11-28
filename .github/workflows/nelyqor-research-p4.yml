@@ -31,6 +31,7 @@ jobs:
     timeout-minutes: 80
     steps:
       - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
       - run: pip install -r requirements.lock
@@ -72,6 +73,7 @@ jobs:
           - {part: robust, intervals: "1h,1d"}
     steps:
       - uses: actions/checkout@v4
+        with: {persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: "3.13", cache: pip, cache-dependency-path: nelyqor-trading/requirements.lock}
       - run: pip install -r requirements.lock
